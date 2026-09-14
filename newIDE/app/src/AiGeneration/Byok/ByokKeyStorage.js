@@ -101,7 +101,9 @@ export const deobfuscate = (obfuscated: string): ?string => {
 
   const bytes: Array<number> = [];
   for (let index = 0; index < binary.length; index++) {
-    bytes.push(binary.charCodeAt(index) ^ PEPPER_BYTES[index % PEPPER_BYTES.length]);
+    bytes.push(
+      binary.charCodeAt(index) ^ PEPPER_BYTES[index % PEPPER_BYTES.length]
+    );
   }
   return utf8BytesToText(bytes);
 };

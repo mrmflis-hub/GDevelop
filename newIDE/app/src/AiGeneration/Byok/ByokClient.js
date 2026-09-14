@@ -62,34 +62,48 @@ const makeNoModelListError = (): ByokError => ({
 
 /**
  * Fetch the raw entries of the model list exposed by the endpoint
- * (GET /models), validated as a list. This is the shared plumbing of
+ * (GET /models), validated as a list. The entries themselves are untrusted
+ * wire data (hence the `any` elements — the boundary of what the endpoint
+ * sent); `normalizeByokModels` in `ByokModelsCache.js` is what converts them
+ * to the typed `ByokModelInfo` shape. This is the shared plumbing of
  * `fetchByokModels` (dumb mapping, used for simple listings) and
- * `refreshByokModels` in `ByokModelsCache.js` (which parses the
- * context-window fields different servers report, so it needs the raw
- * entries).
+ * `refreshByokModels` (which parses the context-window fields different
+ * servers report, so it needs the raw entries).
  */
 export const fetchRawByokModels = async ({
   baseUrl,
   apiKey,
-}: ByokConnection): Promise<Array<Object>> => {
-  let response;
+}: ByokConnection): Promise<Array<any>> => {
+  // The JSON body of a /models response is the OpenAI "list" envelope:
+  // `{ data: [...] }`. A few servers return a bare array instead; accept
+  // both, reject anything else. It is untrusted data: `mixed` until proven
+  // to be one of the two accepted shapes.
+  let body: mixed = null;
   try {
     // The API key is only sent in the Authorization header, never in the
     // URL, the body, or any error message or log.
-    response = await axios.get(buildEndpointUrl(baseUrl, '/models'), {
+    // Same suppression as the other services (Generation.js): the
+    // flow-typed axios definition has an underconstrained generic on
+    // get/post.
+    // $FlowFixMe[underconstrained-implicit-instantiation]
+    const response = await axios.get(buildEndpointUrl(baseUrl, '/models'), {
       headers: { Authorization: `Bearer ${apiKey}` },
       timeout: MODELS_TIMEOUT_MS,
     });
+    body = ((response ? response.data : null): mixed);
   } catch (error) {
     throw makeThrownByokError(error, apiKey);
   }
 
-  const data = response ? response.data : null;
-  if (!data || !Array.isArray(data)) {
-    throw makeNoModelListError();
+  if (Array.isArray(body)) {
+    // `.slice()` turns the read-only array Flow refines to into the mutable
+    // array the callers iterate on.
+    return body.slice();
   }
-
-  return data;
+  if (body && typeof body === 'object' && Array.isArray(body.data)) {
+    return body.data.slice();
+  }
+  throw makeNoModelListError();
 };
 
 /**
@@ -148,6 +162,9 @@ export const sendByokChatCompletion = async ({
   try {
     // The API key is only sent in the Authorization header, never in the
     // URL, the body, or any error message or log.
+    // Same suppression as the other services (Generation.js): the flow-typed
+    // axios definition has an underconstrained generic on get/post.
+    // $FlowFixMe[underconstrained-implicit-instantiation]
     response = await axios.post(
       buildEndpointUrl(baseUrl, '/chat/completions'),
       body,

@@ -160,7 +160,11 @@ export const classifyByokError = (error: any): ByokError => {
   // The request was made but never got a response.
   if (error && error.request) {
     if (error.code === 'ECONNABORTED') {
-      return makeByokError('timeout', getGenericMessageForKind('timeout'), null);
+      return makeByokError(
+        'timeout',
+        getGenericMessageForKind('timeout'),
+        null
+      );
     }
     return makeByokError('network', getGenericMessageForKind('network'), null);
   }

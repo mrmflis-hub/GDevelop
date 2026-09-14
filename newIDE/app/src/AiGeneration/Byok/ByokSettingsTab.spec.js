@@ -6,7 +6,23 @@ import * as React from 'react';
 import { act } from 'react-dom/test-utils';
 import TestRenderer from 'react-test-renderer';
 import TextField from '../../UI/TextField';
-import { DEFAULT_BYOK_SETTINGS, type ByokSettings } from './ByokTypes';
+import RaisedButton from '../../UI/RaisedButton';
+import SelectOption from '../../UI/SelectOption';
+import {
+  DEFAULT_BYOK_SETTINGS,
+  type ByokSettings,
+  type ByokModelInfo,
+} from './ByokTypes';
+
+// The models cache and the client are mocked: the tab is tested against
+// their contracts, not against axios.
+jest.mock('./ByokModelsCache', () => ({
+  getCachedByokModels: (jest.fn(): any).mockReturnValue(null),
+  refreshByokModels: jest.fn(),
+}));
+jest.mock('./ByokClient', () => ({
+  sendByokChatCompletionWithRetries: jest.fn(),
+}));
 
 // jsdom does not implement matchMedia, which PreferencesContext.js calls at
 // module load to choose the default theme.
@@ -30,19 +46,29 @@ const PreferencesContext = require('../../MainFrame/Preferences/PreferencesConte
 const ByokSettingsTabModule = require('./ByokSettingsTab');
 const ByokSettingsTab = ByokSettingsTabModule.default;
 const clampContextWindow = ByokSettingsTabModule.clampContextWindow;
+const ByokModelsCache = require('./ByokModelsCache');
+const ByokClientModule = require('./ByokClient');
 const { I18nProvider } = require('@lingui/react');
 const { setupI18n } = require('@lingui/core');
+
+const mockRefreshByokModels = mockFn(ByokModelsCache.refreshByokModels);
+const mockGetCachedByokModels = mockFn(ByokModelsCache.getCachedByokModels);
+const mockSendForTestConnection = mockFn(
+  ByokClientModule.sendByokChatCompletionWithRetries
+);
 
 // The UI components used by the tab (SelectOption, TextField) need a lingui
 // i18n instance in their context, like the app provides with GDI18nProvider.
 // An empty catalogs set makes them render the English (source) messages.
 const i18n = setupI18n({ language: 'en', catalogs: {} });
 
+function mockFn(fn: any): JestMockFn<any, any> {
+  return fn;
+}
+
 const makePreferencesValues = (byok: ByokSettings = DEFAULT_BYOK_SETTINGS) => ({
   byok,
 });
-
-const mockFn = (fn: any): JestMockFn<any, any> => fn;
 
 const renderTab = (byok?: ByokSettings) => {
   const setMultipleValues = mockFn(jest.fn());
@@ -81,6 +107,10 @@ const flushPromises = async () => {
 describe('ByokSettingsTab', () => {
   beforeEach(() => {
     localStorage.clear();
+    mockRefreshByokModels.mockReset();
+    mockGetCachedByokModels.mockReset();
+    mockGetCachedByokModels.mockReturnValue(null);
+    mockSendForTestConnection.mockReset();
   });
 
   it('mounts and shows the BYOK title', async () => {
@@ -193,10 +223,290 @@ describe('ByokSettingsTab', () => {
       await flushPromises();
     });
 
-    const storedKey = JSON.parse(localStorage.getItem('gd-byok-key') || 'null');
-    expect(storedKey).toEqual({ key: 'sk-very-secret-key' });
+    // The key is stored obfuscated (version 2): the stored value is not the
+    // plaintext key, but the key storage loads it back unchanged.
+    const storedRawValue = localStorage.getItem('gd-byok-key') || '';
+    expect(storedRawValue).not.toContain('sk-very-secret-key');
+    expect(JSON.parse(storedRawValue).version).toBe(2);
+    const { loadByokKey } = require('./ByokKeyStorage');
+    expect(await loadByokKey()).toBe('sk-very-secret-key');
     // The preferences blob was never written with the key.
     expect(localStorage.getItem('gd-preferences')).toBe(null);
+  });
+
+  it('shows the obfuscated storage status when the key is not encrypted', async () => {
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(JSON.stringify(component.toJSON())).toContain(
+      'API key stored obfuscated'
+    );
+    expect(JSON.stringify(component.toJSON())).toContain(
+      'OS-level encryption is added on desktop'
+    );
+  });
+});
+
+describe('ByokSettingsTab: models fetching', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockRefreshByokModels.mockReset();
+    mockGetCachedByokModels.mockReset();
+    mockGetCachedByokModels.mockReturnValue(null);
+    mockSendForTestConnection.mockReset();
+  });
+
+  const getRaisedButtons = (component: any) =>
+    component.root.findAllByType(RaisedButton);
+
+  it('populates the models dropdown when the fetch succeeds', async () => {
+    const models: Array<ByokModelInfo> = [
+      { id: 'model-b', contextWindowTokens: null },
+      { id: 'model-a', contextWindowTokens: 32768 },
+    ];
+    mockRefreshByokModels.mockResolvedValueOnce(models);
+
+    const { component } = renderTab();
+    const fetchModelsButton = getRaisedButtons(component)[0];
+    expect(getRaisedButtons(component)).toHaveLength(2);
+
+    await act(async () => {
+      fetchModelsButton.props.onClick({});
+      await flushPromises();
+    });
+
+    // The dropdown appeared, with one option per fetched model (plus the
+    // reasoning-effort dropdown options that were always there).
+    const options = component.root.findAllByType(SelectOption);
+    const optionValues = options.map(option => option.props.value);
+    expect(optionValues).toContain('model-a');
+    expect(optionValues).toContain('model-b');
+    expect(mockRefreshByokModels).toHaveBeenCalledWith({
+      baseUrl: '',
+      apiKey: '',
+    });
+  });
+
+  it('falls back to the free-text model field when the fetch returns nothing', async () => {
+    mockRefreshByokModels.mockResolvedValueOnce([]);
+
+    const { component } = renderTab();
+    const fetchModelsButton = getRaisedButtons(component)[0];
+
+    await act(async () => {
+      fetchModelsButton.props.onClick({});
+      await flushPromises();
+    });
+
+    // The free-text model field is still there, with an explanation.
+    findFieldByName(component, 'byok-model');
+    expect(JSON.stringify(component.toJSON())).toContain(
+      'returned an empty model list'
+    );
+    const optionValues = component.root
+      .findAllByType(SelectOption)
+      .map(option => option.props.value);
+    expect(optionValues).not.toContain('model-a');
+  });
+
+  it('shows the ByokError message when the fetch fails', async () => {
+    mockRefreshByokModels.mockRejectedValueOnce({
+      kind: 'authentication',
+      message: 'Your API key was rejected by the endpoint (401).',
+      status: 401,
+    });
+
+    const { component } = renderTab();
+    const fetchModelsButton = getRaisedButtons(component)[0];
+
+    await act(async () => {
+      fetchModelsButton.props.onClick({});
+      await flushPromises();
+    });
+
+    expect(JSON.stringify(component.toJSON())).toContain(
+      'Your API key was rejected by the endpoint (401).'
+    );
+    // The free-text field is still shown.
+    findFieldByName(component, 'byok-model');
+  });
+
+  it('shows the models cached for the endpoint without a new fetch', () => {
+    mockGetCachedByokModels.mockReturnValueOnce([
+      { id: 'cached-model', contextWindowTokens: null },
+    ]);
+
+    const { component } = renderTab();
+    const optionValues = component.root
+      .findAllByType(SelectOption)
+      .map(option => option.props.value);
+    expect(optionValues).toContain('cached-model');
+    expect(mockRefreshByokModels).not.toHaveBeenCalled();
+  });
+});
+
+describe('ByokSettingsTab: per-model context windows', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockRefreshByokModels.mockReset();
+    mockGetCachedByokModels.mockReset();
+    mockGetCachedByokModels.mockReturnValue(null);
+    mockSendForTestConnection.mockReset();
+  });
+
+  it('persists a context window for the selected model via setMultipleValues', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      modelName: 'my-model',
+    };
+    const { component, setMultipleValues } = renderTab(settings);
+
+    const contextWindowField = findFieldByName(
+      component,
+      'byok-context-window-my-model'
+    );
+    act(() => {
+      contextWindowField.props.onChange({}, '4096');
+    });
+
+    expect(setMultipleValues).toHaveBeenCalledWith({
+      byok: {
+        ...DEFAULT_BYOK_SETTINGS,
+        modelName: 'my-model',
+        contextWindowByModel: { 'my-model': 4096 },
+      },
+    });
+  });
+
+  it('prefills the context window reported by the server, marked as auto (server)', () => {
+    mockGetCachedByokModels.mockReturnValueOnce([
+      { id: 'my-model', contextWindowTokens: 32768 },
+    ]);
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      modelName: 'my-model',
+    };
+
+    const { component } = renderTab(settings);
+
+    const contextWindowField = findFieldByName(
+      component,
+      'byok-context-window-my-model'
+    );
+    expect(contextWindowField.props.value).toBe(32768);
+    expect(JSON.stringify(component.toJSON())).toContain('auto (server)');
+  });
+
+  it('lets the user override an auto (server) context window', () => {
+    mockGetCachedByokModels.mockReturnValueOnce([
+      { id: 'my-model', contextWindowTokens: 32768 },
+    ]);
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      modelName: 'my-model',
+    };
+
+    const { component, setMultipleValues } = renderTab(settings);
+    const contextWindowField = findFieldByName(
+      component,
+      'byok-context-window-my-model'
+    );
+    act(() => {
+      contextWindowField.props.onChange({}, '16384');
+    });
+
+    expect(setMultipleValues).toHaveBeenCalledWith({
+      byok: {
+        ...DEFAULT_BYOK_SETTINGS,
+        modelName: 'my-model',
+        contextWindowByModel: { 'my-model': 16384 },
+      },
+    });
+  });
+});
+
+describe('ByokSettingsTab: test connection', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockRefreshByokModels.mockReset();
+    mockGetCachedByokModels.mockReset();
+    mockGetCachedByokModels.mockReturnValue(null);
+    mockSendForTestConnection.mockReset();
+  });
+
+  const renderTabAndClickTest = async () => {
+    const { component, setMultipleValues } = renderTab();
+    const raisedButtons = component.root.findAllByType(RaisedButton);
+    const testConnectionButton = raisedButtons[raisedButtons.length - 1];
+
+    await act(async () => {
+      testConnectionButton.props.onClick({});
+      await flushPromises();
+    });
+
+    return { component, setMultipleValues };
+  };
+
+  it('renders an inline success message when the endpoint answers', async () => {
+    mockSendForTestConnection.mockResolvedValueOnce({
+      choices: [{ message: { role: 'assistant', content: 'pong' } }],
+    });
+
+    const { component } = await renderTabAndClickTest();
+
+    expect(mockSendForTestConnection).toHaveBeenCalledTimes(1);
+    const call = mockSendForTestConnection.mock.calls[0][0];
+    expect(call.options.model).toBe('');
+    expect(call.options.messages).toEqual([{ role: 'user', content: 'ping' }]);
+    expect(JSON.stringify(component.toJSON())).toContain(
+      'Connection successful!'
+    );
+  });
+
+  it('sends the reasoning effort of the settings when it is not default', async () => {
+    mockSendForTestConnection.mockResolvedValueOnce({
+      choices: [{ message: { role: 'assistant', content: 'pong' } }],
+    });
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      endpointUrl: 'https://api.example.com/v1',
+      modelName: 'my-model',
+      reasoningEffort: 'high',
+    };
+
+    const { component } = renderTab(settings);
+    const raisedButtons = component.root.findAllByType(RaisedButton);
+    const testConnectionButton = raisedButtons[raisedButtons.length - 1];
+    await act(async () => {
+      testConnectionButton.props.onClick({});
+      await flushPromises();
+    });
+
+    expect(
+      mockSendForTestConnection.mock.calls[0][0].options.reasoningEffort
+    ).toBe('high');
+    expect(JSON.stringify(component.toJSON())).toContain(
+      'Connection successful!'
+    );
+  });
+
+  it('renders the error message inline when the endpoint rejects', async () => {
+    mockSendForTestConnection.mockRejectedValueOnce({
+      kind: 'not-found',
+      message: 'The endpoint was not found (404).',
+      status: 404,
+    });
+
+    const { component } = await renderTabAndClickTest();
+
+    expect(JSON.stringify(component.toJSON())).toContain(
+      'The endpoint was not found (404).'
+    );
+    expect(JSON.stringify(component.toJSON())).not.toContain(
+      'Connection successful!'
+    );
   });
 });
 

@@ -12,7 +12,9 @@ import { DEFAULT_BYOK_SETTINGS, type ByokSettings } from './ByokTypes';
 
 jest.mock('axios');
 
-const mockFn = (fn: any): JestMockFn<any, any> => fn;
+// The automocked axios, untyped: jest replaces get with a mock function,
+// and Flow refuses to unbind the real (typed) method to wrap it.
+const mockAxios = (axios: any);
 
 const makeSettings = (overrides?: Partial<ByokSettings>): ByokSettings => ({
   ...DEFAULT_BYOK_SETTINGS,
@@ -165,7 +167,11 @@ describe('resolveContextWindowTokens', () => {
   it('falls back to the global value set by the user', () => {
     const settings = makeSettings({ contextWindowTokens: 12345 });
     expect(
-      resolveContextWindowTokens(settings, { id: 'my-model', contextWindowTokens: null }, 'my-model')
+      resolveContextWindowTokens(
+        settings,
+        { id: 'my-model', contextWindowTokens: null },
+        'my-model'
+      )
     ).toBe(12345);
   });
 
@@ -208,15 +214,15 @@ describe('resolveContextWindowTokens', () => {
 
 describe('models cache and refreshByokModels', () => {
   beforeEach(() => {
-    mockFn(axios.get).mockReset();
+    mockAxios.get.mockReset();
   });
 
   it('fetches, normalizes, caches and returns the model list', async () => {
-    mockFn(axios.get).mockResolvedValueOnce({
-      data: [
-        { id: 'model-b', context_length: 32768 },
-        { id: 'model-a' },
-      ],
+    // The JSON body of a /models response is the OpenAI "list" envelope.
+    mockAxios.get.mockResolvedValueOnce({
+      data: {
+        data: [{ id: 'model-b', context_length: 32768 }, { id: 'model-a' }],
+      },
     });
 
     const models = await refreshByokModels({
@@ -249,15 +255,15 @@ describe('models cache and refreshByokModels', () => {
   });
 
   it('propagates the errors of the fetch, without caching anything', async () => {
-    mockFn(axios.get).mockRejectedValueOnce({
+    mockAxios.get.mockRejectedValueOnce({
       response: { status: 401, data: {} },
       request: {},
     });
 
-    let thrownError = null;
+    let thrownError: any = null;
     try {
       await refreshByokModels({
-        baseUrl: 'https://api.example.com/v1',
+        baseUrl: 'https://failing-endpoint.example.com/v1',
         apiKey: 'sk-test',
       });
     } catch (error) {
@@ -265,6 +271,8 @@ describe('models cache and refreshByokModels', () => {
     }
 
     expect(thrownError.kind).toBe('authentication');
-    expect(getCachedByokModels('https://api.example.com/v1')).toBe(null);
+    expect(getCachedByokModels('https://failing-endpoint.example.com/v1')).toBe(
+      null
+    );
   });
 });

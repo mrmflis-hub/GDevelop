@@ -72,6 +72,54 @@ describe('getByokSettings', () => {
   });
 });
 
+describe('getByokSettings: contextWindowByModel', () => {
+  it('defaults to an empty map when the field is missing', () => {
+    expect(getByokSettings({ byok: ({ endpointUrl: 'x' }: any) })).toEqual({
+      ...DEFAULT_BYOK_SETTINGS,
+      endpointUrl: 'x',
+    });
+  });
+
+  it('keeps the per-model entries that are positive numbers', () => {
+    const storedByok = {
+      contextWindowByModel: { 'model-a': 32768, 'model-b': 4096 },
+    };
+    expect(
+      getByokSettings({ byok: (storedByok: any) }).contextWindowByModel
+    ).toEqual({
+      'model-a': 32768,
+      'model-b': 4096,
+    });
+  });
+
+  it('drops the per-model entries that are not positive numbers', () => {
+    const storedByok = {
+      contextWindowByModel: {
+        'model-a': 'big',
+        'model-b': 0,
+        'model-c': -1,
+        'model-d': 2048,
+      },
+    };
+    expect(
+      getByokSettings({ byok: (storedByok: any) }).contextWindowByModel
+    ).toEqual({
+      'model-d': 2048,
+    });
+  });
+
+  it('defaults to an empty map when the field is not an object', () => {
+    expect(
+      getByokSettings({ byok: ({ contextWindowByModel: 'nope' }: any) })
+        .contextWindowByModel
+    ).toEqual({});
+    expect(
+      getByokSettings({ byok: ({ contextWindowByModel: [8192] }: any) })
+        .contextWindowByModel
+    ).toEqual({});
+  });
+});
+
 describe('isByokReasoningEffort', () => {
   it('accepts the four documented efforts', () => {
     expect(isByokReasoningEffort('default')).toBe(true);

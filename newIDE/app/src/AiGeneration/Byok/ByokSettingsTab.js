@@ -7,6 +7,7 @@ import Checkbox from '../../UI/Checkbox';
 import { Column, Line } from '../../UI/Grid';
 import { ColumnStackLayout, LineStackLayout } from '../../UI/Layout';
 import CompactSelectField from '../../UI/CompactSelectField';
+import RaisedButton from '../../UI/RaisedButton';
 import SelectOption from '../../UI/SelectOption';
 import Text from '../../UI/Text';
 import TextField from '../../UI/TextField';
@@ -16,9 +17,18 @@ import {
   MAX_CONTEXT_WINDOW_TOKENS,
   MIN_CONTEXT_WINDOW_TOKENS,
   getByokSettings,
+  type ByokChatCompletionOptions,
+  type ByokModelInfo,
   type ByokSettings,
 } from './ByokTypes';
-import { getByokKeyStorageInfo, saveByokKey } from './ByokKeyStorage';
+import {
+  getByokKeyStorageInfo,
+  loadByokKey,
+  saveByokKey,
+} from './ByokKeyStorage';
+import { classifyByokError } from './ByokErrors';
+import { getCachedByokModels, refreshByokModels } from './ByokModelsCache';
+import { sendByokChatCompletionWithRetries } from './ByokClient';
 
 /**
  * Keep the context window in a range every provider accepts: below the
@@ -32,6 +42,19 @@ export const clampContextWindow = (value: number): number => {
   return value;
 };
 
+// The value of the "Type manually…" option of the models dropdown: chosen,
+// it swaps the dropdown back to the free-text field (for servers without a
+// /models endpoint).
+const MANUAL_MODEL_OPTION_VALUE = '__manual__';
+
+type ConnectionTestResult = {| ok: boolean, message: React.Node |};
+
+type ContextWindowRow = {|
+  modelId: string,
+  tokens: number,
+  isAutoFromServer: boolean,
+|};
+
 const ByokSettingsTab = (): React.Node => {
   const { values, setMultipleValues } = React.useContext(PreferencesContext);
   const byokSettings = getByokSettings(values);
@@ -42,6 +65,28 @@ const ByokSettingsTab = (): React.Node => {
     isKeyStorageEncrypted,
     setIsKeyStorageEncrypted,
   ] = React.useState<boolean>(false);
+  const [
+    fetchedModels,
+    setFetchedModels,
+  ] = React.useState<?Array<ByokModelInfo>>(null);
+  const [isFetchingModels, setIsFetchingModels] = React.useState<boolean>(
+    false
+  );
+  const [
+    modelsFetchMessage,
+    setModelsFetchMessage,
+  ] = React.useState<?React.Node>(null);
+  const [
+    isManuallyTypingModel,
+    setIsManuallyTypingModel,
+  ] = React.useState<boolean>(false);
+  const [isTestingConnection, setIsTestingConnection] = React.useState<boolean>(
+    false
+  );
+  const [
+    connectionTestResult,
+    setConnectionTestResult,
+  ] = React.useState<?ConnectionTestResult>(null);
 
   React.useEffect(() => {
     let isSubscribed = true;
@@ -56,6 +101,118 @@ const ByokSettingsTab = (): React.Node => {
 
   const updateByokSetting = (partial: Partial<ByokSettings>) => {
     setMultipleValues({ byok: { ...byokSettings, ...partial } });
+  };
+
+  // The models fetched in a previous visit of the tab are shown right away
+  // (a pure read of the in-memory cache, safe during render).
+  const cachedModels = getCachedByokModels(byokSettings.endpointUrl);
+  const visibleModels = fetchedModels || cachedModels;
+
+  const showModelsDropdown =
+    !!visibleModels && visibleModels.length > 0 && !isManuallyTypingModel;
+
+  const onFetchModels = async () => {
+    setIsFetchingModels(true);
+    setModelsFetchMessage(null);
+    setIsManuallyTypingModel(false);
+
+    const storedApiKey = (await loadByokKey()) || '';
+    try {
+      const models = await refreshByokModels({
+        baseUrl: byokSettings.endpointUrl,
+        apiKey: storedApiKey,
+      });
+      setFetchedModels(models);
+      if (models.length === 0) {
+        setModelsFetchMessage(
+          <Trans>
+            The endpoint returned an empty model list. Type the model name
+            manually below.
+          </Trans>
+        );
+      }
+    } catch (rawError) {
+      const byokError = classifyByokError(rawError);
+      setModelsFetchMessage(byokError.message);
+    } finally {
+      setIsFetchingModels(false);
+    }
+  };
+
+  const onTestConnection = async () => {
+    setIsTestingConnection(true);
+    setConnectionTestResult(null);
+
+    const storedApiKey = (await loadByokKey()) || '';
+    const options: ByokChatCompletionOptions = {
+      model: byokSettings.modelName,
+      messages: [{ role: 'user', content: 'ping' }],
+    };
+    if (byokSettings.reasoningEffort !== 'default') {
+      options.reasoningEffort = byokSettings.reasoningEffort;
+    }
+
+    try {
+      await sendByokChatCompletionWithRetries({
+        baseUrl: byokSettings.endpointUrl,
+        apiKey: storedApiKey,
+        options,
+      });
+      setConnectionTestResult({
+        ok: true,
+        message: (
+          <Trans>
+            Connection successful! The endpoint answered the test message.
+          </Trans>
+        ),
+      });
+    } catch (rawError) {
+      const byokError = classifyByokError(rawError);
+      setConnectionTestResult({ ok: false, message: byokError.message });
+    } finally {
+      setIsTestingConnection(false);
+    }
+  };
+
+  // The rows of the per-model context windows: the models the user set a
+  // value for, plus the selected model (so its value can be set without
+  // being selected… it *is* selected, but it may not have a row yet).
+  const selectedModelInfo = visibleModels
+    ? visibleModels.find(model => model.id === byokSettings.modelName)
+    : null;
+  const selectedModelServerTokens =
+    selectedModelInfo &&
+    typeof selectedModelInfo.contextWindowTokens === 'number'
+      ? selectedModelInfo.contextWindowTokens
+      : null;
+  const contextWindowRows: Array<ContextWindowRow> = Object.keys(
+    byokSettings.contextWindowByModel
+  ).map(modelId => ({
+    modelId,
+    tokens: byokSettings.contextWindowByModel[modelId],
+    isAutoFromServer: false,
+  }));
+  if (
+    byokSettings.modelName &&
+    !contextWindowRows.some(row => row.modelId === byokSettings.modelName)
+  ) {
+    contextWindowRows.push({
+      modelId: byokSettings.modelName,
+      tokens:
+        selectedModelServerTokens !== null
+          ? selectedModelServerTokens
+          : byokSettings.contextWindowTokens,
+      isAutoFromServer: selectedModelServerTokens !== null,
+    });
+  }
+
+  const updateContextWindowForModel = (modelId: string, text: string) => {
+    updateByokSetting({
+      contextWindowByModel: {
+        ...byokSettings.contextWindowByModel,
+        [modelId]: clampContextWindow(parseInt(text, 10)),
+      },
+    });
   };
 
   const reasoningEffortLabels = {
@@ -91,8 +248,8 @@ const ByokSettingsTab = (): React.Node => {
       <Line noMargin>
         <Text size="body2" color="secondary">
           <Trans>
-            The base URL of your provider: /models and /chat/completions are
-            appended automatically.
+            The base URL of your provider, including /v1 if it uses one: /models
+            and /chat/completions are appended automatically.
           </Trans>
         </Text>
       </Line>
@@ -111,24 +268,122 @@ const ByokSettingsTab = (): React.Node => {
           {isKeyStorageEncrypted ? (
             <Trans>API key storage: encrypted by the system.</Trans>
           ) : (
-            <Trans>API key storage: not yet encrypted (planned).</Trans>
+            <Trans>
+              API key stored obfuscated in the browser storage — OS-level
+              encryption is added on desktop.
+            </Trans>
           )}
         </Text>
       </Line>
-      <TextField
-        name="byok-model"
-        floatingLabelText={<Trans>Model</Trans>}
-        value={byokSettings.modelName}
-        onChange={(event, text) => updateByokSetting({ modelName: text })}
-      />
-      <Line noMargin>
-        <Text size="body2" color="secondary">
-          <Trans>
-            Fetching the model list from your provider arrives in a later
-            update.
-          </Trans>
-        </Text>
-      </Line>
+      <LineStackLayout noMargin alignItems="center">
+        <Column noMargin expand>
+          <Text noMargin>
+            <Trans>Model</Trans>
+          </Text>
+        </Column>
+        <Column noMargin expand>
+          <RaisedButton
+            label={
+              isFetchingModels ? (
+                <Trans>Fetching…</Trans>
+              ) : (
+                <Trans>Fetch models</Trans>
+              )
+            }
+            onClick={onFetchModels}
+            disabled={isFetchingModels || !byokSettings.endpointUrl}
+          />
+        </Column>
+      </LineStackLayout>
+      {modelsFetchMessage && (
+        <Line noMargin>
+          <Text size="body2" color="error">
+            {modelsFetchMessage}
+          </Text>
+        </Line>
+      )}
+      {showModelsDropdown ? (
+        <CompactSelectField
+          value={byokSettings.modelName}
+          onChange={(value: string) => {
+            if (value === MANUAL_MODEL_OPTION_VALUE) {
+              setIsManuallyTypingModel(true);
+              return;
+            }
+
+            updateByokSetting({ modelName: value });
+          }}
+        >
+          {visibleModels &&
+            visibleModels.map(model => (
+              <SelectOption key={model.id} value={model.id} label={model.id} />
+            ))}
+          <SelectOption
+            value={MANUAL_MODEL_OPTION_VALUE}
+            label={t`Type manually…`}
+          />
+        </CompactSelectField>
+      ) : (
+        <TextField
+          name="byok-model"
+          floatingLabelText={<Trans>Model</Trans>}
+          hintText="gpt-4o-mini"
+          value={byokSettings.modelName}
+          onChange={(event, text) => updateByokSetting({ modelName: text })}
+        />
+      )}
+      <Text noMargin>
+        <Trans>Context windows per model (tokens)</Trans>
+      </Text>
+      {contextWindowRows.map(contextWindowRow => (
+        <LineStackLayout
+          key={contextWindowRow.modelId}
+          noMargin
+          alignItems="center"
+        >
+          <Column noMargin expand>
+            <Text noMargin>{contextWindowRow.modelId}</Text>
+          </Column>
+          {contextWindowRow.isAutoFromServer && (
+            <Text size="body2" color="secondary" noMargin>
+              <Trans>auto (server)</Trans>
+            </Text>
+          )}
+          <Column noMargin expand>
+            <TextField
+              name={`byok-context-window-${contextWindowRow.modelId}`}
+              type="number"
+              value={contextWindowRow.tokens}
+              min={MIN_CONTEXT_WINDOW_TOKENS}
+              max={MAX_CONTEXT_WINDOW_TOKENS}
+              onChange={(event, value) =>
+                updateContextWindowForModel(contextWindowRow.modelId, value)
+              }
+            />
+          </Column>
+        </LineStackLayout>
+      ))}
+      <LineStackLayout noMargin alignItems="center">
+        <Column noMargin expand>
+          <Text noMargin>
+            <Trans>Default context window (tokens)</Trans>
+          </Text>
+        </Column>
+        <Column noMargin expand>
+          <TextField
+            name="byok-context-window"
+            type="number"
+            value={byokSettings.contextWindowTokens}
+            min={MIN_CONTEXT_WINDOW_TOKENS}
+            max={MAX_CONTEXT_WINDOW_TOKENS}
+            onChange={(event, value) =>
+              updateByokSetting({
+                contextWindowTokens: clampContextWindow(parseInt(value, 10)),
+              })
+            }
+          />
+        </Column>
+      </LineStackLayout>
       <LineStackLayout noMargin alignItems="center">
         <Column noMargin expand>
           <Text noMargin>
@@ -160,24 +415,37 @@ const ByokSettingsTab = (): React.Node => {
       <LineStackLayout noMargin alignItems="center">
         <Column noMargin expand>
           <Text noMargin>
-            <Trans>Context window (tokens)</Trans>
+            <Trans>Connection</Trans>
           </Text>
         </Column>
         <Column noMargin expand>
-          <TextField
-            name="byok-context-window"
-            type="number"
-            value={byokSettings.contextWindowTokens}
-            min={MIN_CONTEXT_WINDOW_TOKENS}
-            max={MAX_CONTEXT_WINDOW_TOKENS}
-            onChange={(event, value) =>
-              updateByokSetting({
-                contextWindowTokens: clampContextWindow(parseInt(value, 10)),
-              })
+          <RaisedButton
+            label={
+              isTestingConnection ? (
+                <Trans>Testing…</Trans>
+              ) : (
+                <Trans>Test connection</Trans>
+              )
+            }
+            onClick={onTestConnection}
+            disabled={
+              isTestingConnection ||
+              !byokSettings.endpointUrl ||
+              !byokSettings.modelName
             }
           />
         </Column>
       </LineStackLayout>
+      {connectionTestResult && (
+        <Line noMargin>
+          <Text
+            size="body2"
+            color={connectionTestResult.ok ? 'secondary' : 'error'}
+          >
+            {connectionTestResult.message}
+          </Text>
+        </Line>
+      )}
     </ColumnStackLayout>
   );
 };

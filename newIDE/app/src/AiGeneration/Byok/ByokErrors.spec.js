@@ -19,10 +19,7 @@ const makeAxiosError = (overrides?: Object): Object => ({
   ...overrides,
 });
 
-const makeAxiosResponseError = (
-  status: number,
-  data?: any
-): Object =>
+const makeAxiosResponseError = (status: number, data?: any): Object =>
   makeAxiosError({
     response: { status, data: data === undefined ? {} : data },
   });
@@ -84,7 +81,10 @@ describe('classifyByokError', () => {
 
   it('classifies an aborted request (ECONNABORTED) as timeout', () => {
     const error = classifyByokError(
-      makeAxiosError({ code: 'ECONNABORTED', message: 'timeout of 100ms exceeded' })
+      makeAxiosError({
+        code: 'ECONNABORTED',
+        message: 'timeout of 100ms exceeded',
+      })
     );
     expect(error.kind).toBe('timeout');
     expect(error.status).toBe(null);
@@ -100,7 +100,10 @@ describe('classifyByokError', () => {
   it('uses the message of the OpenAI-style error body when present', () => {
     const error = classifyByokError(
       makeAxiosResponseError(401, {
-        error: { message: 'Incorrect API key provided.', type: 'invalid_request_error' },
+        error: {
+          message: 'Incorrect API key provided.',
+          type: 'invalid_request_error',
+        },
       })
     );
     expect(error.kind).toBe('authentication');
@@ -191,9 +194,9 @@ describe('describeInvalidRequestForReasoningEffort', () => {
 
 describe('redactSecretFromMessage', () => {
   it('replaces every occurrence of the secret', () => {
-    expect(redactSecretFromMessage('key sk-abc and sk-abc again', 'sk-abc')).toBe(
-      'key [redacted] and [redacted] again'
-    );
+    expect(
+      redactSecretFromMessage('key sk-abc and sk-abc again', 'sk-abc')
+    ).toBe('key [redacted] and [redacted] again');
   });
 
   it('leaves the message alone when the secret is empty', () => {

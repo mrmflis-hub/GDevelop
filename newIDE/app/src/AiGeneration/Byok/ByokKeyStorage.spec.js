@@ -92,10 +92,7 @@ describe('ByokKeyStorage', () => {
   });
 
   it('loads null on a v2 entry without a value', async () => {
-    localStorage.setItem(
-      BYOK_KEY_STORAGE_ITEM,
-      JSON.stringify({ version: 2 })
-    );
+    localStorage.setItem(BYOK_KEY_STORAGE_ITEM, JSON.stringify({ version: 2 }));
     expect(await loadByokKey()).toBe(null);
   });
 

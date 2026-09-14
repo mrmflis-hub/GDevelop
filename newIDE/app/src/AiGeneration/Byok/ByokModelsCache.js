@@ -1,10 +1,11 @@
 // @flow
+import { fetchRawByokModels } from './ByokClient';
 import {
-  fetchRawByokModels,
+  DEFAULT_BYOK_SETTINGS,
   type ByokConnection,
   type ByokModelInfo,
-} from './ByokClient';
-import { DEFAULT_BYOK_SETTINGS, type ByokSettings } from './ByokTypes';
+  type ByokSettings,
+} from './ByokTypes';
 
 /**
  * Read the context window from a raw `/models` entry, trying in order the
