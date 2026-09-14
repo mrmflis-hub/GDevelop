@@ -27,6 +27,7 @@ import defaultShortcuts from '../../KeyboardShortcuts/DefaultShortcuts';
 import AlertMessage from '../../UI/AlertMessage';
 import ErrorBoundary from '../../UI/ErrorBoundary';
 import CompactSelectField from '../../UI/CompactSelectField';
+import ByokSettingsTab from '../../AiGeneration/Byok/ByokSettingsTab';
 const electron = optionalRequire('electron');
 
 type Props = {|
@@ -115,6 +116,7 @@ const PreferencesDialog = ({
           options={[
             { value: 'preferences', label: <Trans>Preferences</Trans> },
             { value: 'shortcuts', label: <Trans>Keyboard Shortcuts</Trans> },
+            { value: 'byok', label: <Trans>BYOK</Trans> },
             ...(electron
               ? [{ value: 'folders', label: <Trans>Folders</Trans> }]
               : []),
@@ -714,6 +716,11 @@ const PreferencesDialog = ({
             onChange={setNewProjectsDefaultFolder}
             type="default-workspace"
           />
+        </ColumnStackLayout>
+      )}
+      {currentTab === 'byok' && (
+        <ColumnStackLayout noMargin>
+          <ByokSettingsTab />
         </ColumnStackLayout>
       )}
     </Dialog>

@@ -14,6 +14,10 @@ import { type GamesDashboardOrderBy } from '../../GameDashboard/GamesList';
 import optionalRequire from '../../Utils/OptionalRequire';
 import { findDefaultFolder } from '../../ProjectsStorage/LocalFileStorageProvider/LocalPathFinder';
 import { isWebGLSupported } from '../../Utils/WebGL';
+import {
+  DEFAULT_BYOK_SETTINGS,
+  type ByokSettings,
+} from '../../AiGeneration/Byok/ByokTypes';
 
 const electron = optionalRequire('electron');
 const remote = optionalRequire('@electron/remote');
@@ -253,6 +257,7 @@ export type PreferencesValues = {|
   gameplayTestFrameZoomFactor: number | null,
   showAiAskButtonInTitleBar: boolean,
   automaticallyUseCreditsForAiRequests: boolean,
+  byok: ByokSettings,
   automaticallyApplyAiRequestEditsByProjectId: { [string]: boolean },
   useBackgroundSerializerForSaving: boolean,
   disableNpmScriptConfirmation: boolean,
@@ -455,6 +460,7 @@ export const initialPreferences = {
     gameplayTestFrameZoomFactor: null,
     showAiAskButtonInTitleBar: true,
     automaticallyUseCreditsForAiRequests: false,
+    byok: DEFAULT_BYOK_SETTINGS,
     automaticallyApplyAiRequestEditsByProjectId: {},
     useBackgroundSerializerForSaving: false,
     disableNpmScriptConfirmation: false,

@@ -1,0 +1,196 @@
+// @flow
+
+/**
+ * The kinds of failures a BYOK endpoint (or the network in between) can
+ * produce. The kind drives what the app does next: whether to retry (see
+ * `isRetryableByokError`), what to tell the user, and how to degrade
+ * gracefully (see `describeInvalidRequestForReasoningEffort`).
+ */
+export type ByokErrorKind =
+  | 'authentication' // 401 / invalid key
+  | 'forbidden' // 403
+  | 'not-found' // 404 — a wrong base URL is the usual cause
+  | 'rate-limit' // 429
+  | 'invalid-request' // 400 — e.g. an unknown parameter
+  | 'server' // 5xx
+  | 'network' // the request never got a response
+  | 'timeout'
+  | 'unknown';
+
+/**
+ * Every failure surfaced by the BYOK modules, ready to be shown to the user
+ * as-is. Note that the API key must never end up in `message` — see
+ * `redactSecretFromMessage`.
+ */
+export type ByokError = {|
+  kind: ByokErrorKind,
+  message: string,
+  status: ?number,
+|};
+
+export const makeByokError = (
+  kind: ByokErrorKind,
+  message: string,
+  status: ?number
+): ByokError => ({
+  kind,
+  message,
+  status,
+});
+
+/**
+ * The human-readable fallback for each kind, used when the server did not
+ * provide a readable message of its own.
+ */
+const getGenericMessageForKind = (kind: ByokErrorKind): string => {
+  if (kind === 'authentication') {
+    return 'Your API key was rejected by the endpoint (401). Check the API key in the BYOK settings.';
+  }
+  if (kind === 'forbidden') {
+    return 'The endpoint refused the request (403). Your API key may not have access to this model or resource.';
+  }
+  if (kind === 'not-found') {
+    return 'The endpoint was not found (404). Check the base URL in the BYOK settings: for most providers it should end with /v1.';
+  }
+  if (kind === 'rate-limit') {
+    return 'The endpoint is rate-limiting the requests (429). Wait a moment and try again.';
+  }
+  if (kind === 'invalid-request') {
+    return 'The endpoint rejected the request as invalid (400). The request contained something it does not accept.';
+  }
+  if (kind === 'server') {
+    return 'The endpoint had an internal error. Try again later.';
+  }
+  if (kind === 'network') {
+    return 'Could not reach the endpoint (network error). Check the base URL and your internet connection.';
+  }
+  if (kind === 'timeout') {
+    return 'The endpoint took too long to answer (timeout). Try again in a moment.';
+  }
+  return 'The endpoint returned an unexpected error.';
+};
+
+/**
+ * Extract a readable message out of an OpenAI-style error body
+ * (`{ error: { message: "..." } }`), or null when the body has none. Bodies
+ * from OpenAI-compatible servers vary a lot, so this stays defensive.
+ */
+const extractOpenAiErrorMessage = (data: any): ?string => {
+  if (!data || typeof data !== 'object') return null;
+
+  const error = data.error;
+  if (error && typeof error === 'object' && typeof error.message === 'string') {
+    return error.message;
+  }
+
+  // Some servers put the message at the top level of the body instead.
+  if (typeof data.message === 'string') return data.message;
+
+  return null;
+};
+
+/**
+ * Map an HTTP status code to an error kind. Returns null for the statuses
+ * that have no specific kind (they become `unknown`).
+ */
+const getKindForStatus = (status: number): ?ByokErrorKind => {
+  if (status === 401) return 'authentication';
+  if (status === 403) return 'forbidden';
+  if (status === 404) return 'not-found';
+  if (status === 429) return 'rate-limit';
+  if (status === 400) return 'invalid-request';
+  if (status >= 500 && status < 600) return 'server';
+  return null;
+};
+
+/**
+ * Remove a secret (typically the API key) from an error message, so that no
+ * thrown or displayed string can ever carry it. A safety net used by the
+ * client when it builds its errors: the key travels in headers only, but the
+ * "the key never appears in an error" promise should not depend on that
+ * staying true forever.
+ */
+export const redactSecretFromMessage = (
+  message: string,
+  secret: string
+): string => {
+  if (!secret) return message;
+  return message.split(secret).join('[redacted]');
+};
+
+/**
+ * Same as `redactSecretFromMessage`, for an already-built ByokError.
+ */
+export const redactSecretFromByokError = (
+  error: ByokError,
+  secret: string
+): ByokError => ({
+  kind: error.kind,
+  message: redactSecretFromMessage(error.message, secret),
+  status: error.status,
+});
+
+/**
+ * Normalize any error (an axios error, anything thrown) into a typed,
+ * user-presentable ByokError. A ByokError is returned unchanged, so it is
+ * always safe to call this on whatever a piece of code threw.
+ */
+export const classifyByokError = (error: any): ByokError => {
+  // Already classified (e.g. a ByokError re-thrown through a retry helper).
+  if (
+    error &&
+    typeof error === 'object' &&
+    typeof error.kind === 'string' &&
+    typeof error.message === 'string' &&
+    !error.response &&
+    !error.request
+  ) {
+    return error;
+  }
+
+  // The server answered with an HTTP error status.
+  if (error && error.response && typeof error.response.status === 'number') {
+    const status = error.response.status;
+    const kind = getKindForStatus(status) || 'unknown';
+    const serverMessage = extractOpenAiErrorMessage(error.response.data);
+    const message = serverMessage || getGenericMessageForKind(kind);
+    return makeByokError(kind, message, status);
+  }
+
+  // The request was made but never got a response.
+  if (error && error.request) {
+    if (error.code === 'ECONNABORTED') {
+      return makeByokError('timeout', getGenericMessageForKind('timeout'), null);
+    }
+    return makeByokError('network', getGenericMessageForKind('network'), null);
+  }
+
+  return makeByokError('unknown', getGenericMessageForKind('unknown'), null);
+};
+
+/**
+ * True for the failures worth retrying as-is: the endpoint is temporarily
+ * unavailable or asked us to slow down. Authentication and invalid-request
+ * errors would fail again identically, so they are never retried.
+ */
+export const isRetryableByokError = (error: ByokError): boolean => {
+  return (
+    error.kind === 'rate-limit' ||
+    error.kind === 'server' ||
+    error.kind === 'network' ||
+    error.kind === 'timeout'
+  );
+};
+
+/**
+ * True when the endpoint rejected the request specifically because of the
+ * `reasoning_effort` parameter (some OpenAI-compatible servers don't know
+ * it). The caller can then retry once without the parameter instead of
+ * failing the whole chat.
+ */
+export const describeInvalidRequestForReasoningEffort = (
+  error: ByokError
+): boolean => {
+  if (error.kind !== 'invalid-request') return false;
+  return error.message.toLowerCase().includes('reasoning_effort');
+};
