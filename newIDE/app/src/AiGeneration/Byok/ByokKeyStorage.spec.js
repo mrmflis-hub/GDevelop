@@ -2,21 +2,81 @@
  * @jest-environment jsdom
  */
 // @flow
-import {
-  saveByokKey,
-  loadByokKey,
-  clearByokKey,
-  isByokKeyEncryptionAvailable,
-  getByokKeyStorageInfo,
-  obfuscate,
-  deobfuscate,
-} from './ByokKeyStorage';
+
+// The Electron module is mocked so the storage can be loaded in two modes:
+// desktop (ipcRenderer present, talking to mocked IPC handlers) and web
+// (optionalRequire returns null). The variables below are read lazily by the
+// jest.mock factory when the module under test is loaded — hence the "mock"
+// prefix, required by jest for out-of-scope references in the factory.
+const mockIpcRendererInvoke = (jest.fn(): any);
+let mockElectronModule: any = null;
+
+jest.mock('../../Utils/OptionalRequire', () => ({
+  __esModule: true,
+  default: jest.fn(() => mockElectronModule),
+}));
 
 const BYOK_KEY_STORAGE_ITEM = 'gd-byok-key';
 
-describe('ByokKeyStorage', () => {
+// A deliberately opaque fake ciphertext: nothing like the plaintext, so the
+// "the key is not stored in plaintext" assertions are meaningful.
+const FAKE_CIPHER_TEXT = 'ZmFrZS1jaXBoZXJ0ZXh0';
+
+// The fake main-process state: what decrypting FAKE_CIPHER_TEXT returns.
+let fakeDecryptedKey: string | null = null;
+
+/**
+ * Loads the module under test in the requested environment. The module reads
+ * Electron at import time, so each load needs a fresh module registry.
+ */
+const loadKeyStorageModule = (isDesktop: boolean) => {
+  mockElectronModule = isDesktop
+    ? { ipcRenderer: { invoke: mockIpcRendererInvoke } }
+    : null;
+  jest.resetModules();
+  return require('./ByokKeyStorage');
+};
+
+/**
+ * The mocked IPC handlers of the main process: by default, encryption is
+ * available and everything succeeds.
+ */
+const setSuccessfulIpcHandlers = () => {
+  mockIpcRendererInvoke.mockImplementation(
+    async (channel: string, value: string) => {
+      if (channel === 'byok-encryption-available') return true;
+      if (channel === 'byok-encrypt') {
+        fakeDecryptedKey = value;
+        return { ok: true, data: FAKE_CIPHER_TEXT };
+      }
+      if (channel === 'byok-decrypt') {
+        if (fakeDecryptedKey === null) {
+          return { ok: false, error: 'Unknown ciphertext' };
+        }
+        return { ok: true, data: fakeDecryptedKey };
+      }
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    }
+  );
+};
+
+describe('ByokKeyStorage (web build: obfuscated storage)', () => {
+  let saveByokKey;
+  let loadByokKey;
+  let clearByokKey;
+  let isByokKeyEncryptionAvailable;
+  let getByokKeyStorageInfo;
+
   beforeEach(() => {
     localStorage.clear();
+    mockIpcRendererInvoke.mockReset();
+    const keyStorageModule = loadKeyStorageModule(false);
+    saveByokKey = keyStorageModule.saveByokKey;
+    loadByokKey = keyStorageModule.loadByokKey;
+    clearByokKey = keyStorageModule.clearByokKey;
+    isByokKeyEncryptionAvailable =
+      keyStorageModule.isByokKeyEncryptionAvailable;
+    getByokKeyStorageInfo = keyStorageModule.getByokKeyStorageInfo;
   });
 
   it('saves then loads the same key', async () => {
@@ -96,7 +156,14 @@ describe('ByokKeyStorage', () => {
     expect(await loadByokKey()).toBe(null);
   });
 
-  it('reports encryption as not available in Phase 2 (obfuscated storage)', async () => {
+  it('never touches Electron on the web build', async () => {
+    await saveByokKey('sk-test-1234567890');
+    await loadByokKey();
+    await isByokKeyEncryptionAvailable();
+    expect(mockIpcRendererInvoke).not.toHaveBeenCalled();
+  });
+
+  it('reports encryption as not available on the web build', async () => {
     expect(await isByokKeyEncryptionAvailable()).toBe(false);
   });
 
@@ -108,7 +175,161 @@ describe('ByokKeyStorage', () => {
   });
 });
 
+describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
+  let saveByokKey;
+  let loadByokKey;
+  let clearByokKey;
+  let isByokKeyEncryptionAvailable;
+  let getByokKeyStorageInfo;
+  let obfuscate;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockIpcRendererInvoke.mockReset();
+    setSuccessfulIpcHandlers();
+    const keyStorageModule = loadKeyStorageModule(true);
+    saveByokKey = keyStorageModule.saveByokKey;
+    loadByokKey = keyStorageModule.loadByokKey;
+    clearByokKey = keyStorageModule.clearByokKey;
+    isByokKeyEncryptionAvailable =
+      keyStorageModule.isByokKeyEncryptionAvailable;
+    getByokKeyStorageInfo = keyStorageModule.getByokKeyStorageInfo;
+    obfuscate = keyStorageModule.obfuscate;
+  });
+
+  it('checks encryption availability through the main process', async () => {
+    expect(await isByokKeyEncryptionAvailable()).toBe(true);
+    expect(mockIpcRendererInvoke).toHaveBeenCalledWith(
+      'byok-encryption-available'
+    );
+  });
+
+  it('reports the storage info as encrypted', async () => {
+    expect(await getByokKeyStorageInfo()).toEqual({
+      encrypted: true,
+      obfuscated: false,
+    });
+  });
+
+  it('saves through byok-encrypt: the stored value is v3 ciphertext, not the key', async () => {
+    await saveByokKey('sk-test-1234567890');
+
+    expect(mockIpcRendererInvoke).toHaveBeenCalledWith(
+      'byok-encrypt',
+      'sk-test-1234567890'
+    );
+
+    const storedValue = localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || '';
+    expect(JSON.parse(storedValue)).toEqual({
+      version: 3,
+      value: FAKE_CIPHER_TEXT,
+    });
+    expect(storedValue).not.toContain('sk-test-1234567890');
+  });
+
+  it('loads through byok-decrypt and round-trips the key', async () => {
+    await saveByokKey('clé-privée-🔑');
+    expect(await loadByokKey()).toBe('clé-privée-🔑');
+    expect(mockIpcRendererInvoke).toHaveBeenCalledWith(
+      'byok-decrypt',
+      FAKE_CIPHER_TEXT
+    );
+  });
+
+  it('loads null when the main process cannot decrypt (ok: false), without throwing', async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    await saveByokKey('sk-test-1234567890');
+
+    // Corrupt the fake main-process state: decryption no longer knows the key.
+    fakeDecryptedKey = null;
+    await expect(loadByokKey()).resolves.toBe(null);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('falls back to the obfuscated v2 form when encryption fails (ok: false)', async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    mockIpcRendererInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'byok-encryption-available') return true;
+      if (channel === 'byok-encrypt') {
+        return { ok: false, error: 'safeStorage refused' };
+      }
+      return { ok: true, data: 'never-used' };
+    });
+
+    await saveByokKey('sk-test-1234567890');
+
+    const storedValue = localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || '';
+    expect(JSON.parse(storedValue).version).toBe(2);
+    expect(storedValue).not.toContain('sk-test-1234567890');
+    // The key is still readable through the renderer-side deobfuscation.
+    expect(await loadByokKey()).toBe('sk-test-1234567890');
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('migrates a v2 (obfuscated) entry to v3 on read', async () => {
+    localStorage.setItem(
+      BYOK_KEY_STORAGE_ITEM,
+      JSON.stringify({ version: 2, value: obfuscate('sk-older-key') })
+    );
+
+    expect(await loadByokKey()).toBe('sk-older-key');
+
+    const storedValue = JSON.parse(
+      localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || 'null'
+    );
+    expect(storedValue).toEqual({ version: 3, value: FAKE_CIPHER_TEXT });
+    expect(mockIpcRendererInvoke).toHaveBeenCalledWith(
+      'byok-encrypt',
+      'sk-older-key'
+    );
+  });
+
+  it('migrates a v1 (plaintext) entry straight to v3 on read', async () => {
+    localStorage.setItem(
+      BYOK_KEY_STORAGE_ITEM,
+      JSON.stringify({ key: 'sk-old-plaintext-key' })
+    );
+
+    expect(await loadByokKey()).toBe('sk-old-plaintext-key');
+
+    const storedValue = localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || '';
+    expect(JSON.parse(storedValue)).toEqual({
+      version: 3,
+      value: FAKE_CIPHER_TEXT,
+    });
+    expect(storedValue).not.toContain('sk-old-plaintext-key');
+  });
+
+  it('clears the entry without calling the main process', async () => {
+    await saveByokKey('sk-test-1234567890');
+    mockIpcRendererInvoke.mockClear();
+
+    await clearByokKey();
+
+    expect(localStorage.getItem(BYOK_KEY_STORAGE_ITEM)).toBe(null);
+    expect(mockIpcRendererInvoke).not.toHaveBeenCalled();
+  });
+});
+
 describe('obfuscate / deobfuscate', () => {
+  let obfuscate;
+  let deobfuscate;
+
+  beforeEach(() => {
+    mockIpcRendererInvoke.mockReset();
+    const keyStorageModule = loadKeyStorageModule(false);
+    obfuscate = keyStorageModule.obfuscate;
+    deobfuscate = keyStorageModule.deobfuscate;
+  });
+
   it('round-trips a key', () => {
     expect(deobfuscate(obfuscate('sk-test-1234567890'))).toBe(
       'sk-test-1234567890'

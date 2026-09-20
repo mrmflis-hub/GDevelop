@@ -71,6 +71,32 @@ import { listAllExamples } from '../Utils/GDevelopServices/Example';
 import UrlStorageProvider from '../ProjectsStorage/UrlStorageProvider';
 import { prepareAiUserContent } from './PrepareAiUserContent';
 import { AiRequestContext } from './AiRequestContext';
+import { processEditorFunctionCalls } from '../EditorFunctions/EditorFunctionCallRunner';
+import {
+  editorFunctions,
+  editorFunctionsWithoutProject,
+} from '../EditorFunctions';
+import { useEnsureExtensionInstalled } from './UseEnsureExtensionInstalled';
+import {
+  createByokChat,
+  getByokChat,
+  subscribeByokChats,
+  updateByokChat,
+} from './Byok/ByokChatStore';
+import {
+  createByokOrchestrator,
+  type ByokOrchestrator,
+} from './Byok/ByokOrchestrator';
+import { createByokUsageTracker } from './Byok/ByokUsageTracker';
+import { loadByokKey } from './Byok/ByokKeyStorage';
+import { getByokSettings } from './Byok/ByokTypes';
+import {
+  buildByokChatProps,
+  byokCallRequiresApproval,
+  createByokEditorFunctionCallExecutor,
+  isByokAiRequestId,
+  shouldUseByokForNewRequest,
+} from './Byok/ByokSeam';
 import { getAiConfigurationPresetsWithAvailability } from './AiConfiguration';
 import {
   setEditorHotReloadNeeded,
@@ -125,6 +151,13 @@ const styles = {
     minWidth: 0,
   },
 };
+
+// Reducer of the "BYOK chats changed" force-update signal: its state is
+// never read, the dispatch only exists to re-render the container when the
+// BYOK chat store notifies (the explicit `void` action pins the reducer's
+// action type for Flow).
+const byokChatsForceUpdateReducer = (count: number, action: void): number =>
+  count + 1;
 
 type Props = {|
   isActive: boolean,
@@ -457,8 +490,6 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         [projectGameId, setAiRequestSummariesGameId]
       );
 
-      const canStartNewChat = !!selectedAiRequestId;
-
       const onToggleHistory = React.useCallback(() => {
         setIsHistoryOpen(isHistoryOpen => !isHistoryOpen);
       }, []);
@@ -494,9 +525,198 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         null
       );
 
-      const {
-        values: { automaticallyUseCreditsForAiRequests },
-      } = React.useContext(PreferencesContext);
+      const { values: preferencesValues } = React.useContext(
+        PreferencesContext
+      );
+      const { automaticallyUseCreditsForAiRequests } = preferencesValues;
+
+      // ---- BYOK (Bring Your Own Key) chats --------------------------------
+      // A BYOK chat runs a client-side agent loop (ByokOrchestrator) and lives
+      // in its own store (ByokChatStore). It must never enter
+      // AiRequestContext: that would make it be loaded and polled on
+      // GDevelop's servers. Selection is therefore tracked locally here.
+      const [
+        selectedByokChatId,
+        setSelectedByokChatId,
+      ] = React.useState<?string>(null);
+      // The version is never read: the dispatch exists only to force a
+      // re-render when the BYOK store changes (hence the hole below).
+      const [, forceByokChatsUpdate] = React.useReducer(
+        byokChatsForceUpdateReducer,
+        0
+      );
+      React.useEffect(() => subscribeByokChats(forceByokChatsUpdate), [
+        forceByokChatsUpdate,
+      ]);
+      const byokOrchestratorsRef = React.useRef<Map<string, ByokOrchestrator>>(
+        new Map()
+      );
+      const selectedByokChat = selectedByokChatId
+        ? getByokChat(selectedByokChatId)
+        : null;
+
+      const { ensureExtensionInstalled } = useEnsureExtensionInstalled({
+        project,
+        i18n,
+      });
+      const executeByokFunctionCalls = React.useMemo(
+        () =>
+          createByokEditorFunctionCallExecutor({
+            processEditorFunctionCalls,
+            project,
+            i18n,
+            editorCallbacks,
+            ensureExtensionInstalled,
+            onSceneEventsModifiedOutsideEditor,
+            onInstancesModifiedOutsideEditor,
+            onObjectsModifiedOutsideEditor,
+            onObjectGroupsModifiedOutsideEditor,
+            onProjectItemRenamedOutsideEditor,
+            onWillDeleteScene,
+            onWillDeleteGameplayTest,
+            onWillDeleteObject,
+            onWillInstallExtension,
+            onExtensionInstalled,
+          }),
+        [
+          project,
+          i18n,
+          editorCallbacks,
+          ensureExtensionInstalled,
+          onSceneEventsModifiedOutsideEditor,
+          onInstancesModifiedOutsideEditor,
+          onObjectsModifiedOutsideEditor,
+          onObjectGroupsModifiedOutsideEditor,
+          onProjectItemRenamedOutsideEditor,
+          onWillDeleteScene,
+          onWillDeleteGameplayTest,
+          onWillDeleteObject,
+          onWillInstallExtension,
+          onExtensionInstalled,
+        ]
+      );
+
+      const suspendByokChat = React.useCallback((aiRequestId: string) => {
+        const orchestrator = byokOrchestratorsRef.current.get(aiRequestId);
+        if (orchestrator) orchestrator.suspend();
+      }, []);
+
+      // The single suspend entry of the container: BYOK chats are suspended
+      // locally (no server request exists for them), server chats through
+      // the provider.
+      const suspendAiRequestWithByokSupport = React.useCallback(
+        async (aiRequestId: string) => {
+          if (!isByokAiRequestId(aiRequestId)) {
+            await suspendAiRequest(aiRequestId);
+            return;
+          }
+          suspendByokChat(aiRequestId);
+        },
+        [suspendAiRequest, suspendByokChat]
+      );
+
+      const startByokChat = React.useCallback(
+        async (userRequest: string) => {
+          const byokSettings = getByokSettings(preferencesValues);
+          const chat = createByokChat();
+          setSelectedAiRequestId(null);
+          setSelectedByokChatId(chat.id);
+          const aiRequestChatRefCurrent = aiRequestChatRef.current;
+          if (aiRequestChatRefCurrent) {
+            aiRequestChatRefCurrent.resetUserInput('');
+            aiRequestChatRefCurrent.resetUserInput(chat.id);
+          }
+
+          const apiKey = await loadByokKey();
+          if (!apiKey) {
+            chat.status = 'error';
+            chat.error = {
+              code: 'byok-missing-key',
+              message:
+                'No API key is stored for BYOK. Add one in Preferences > BYOK, then send your message again.',
+            };
+            updateByokChat(chat);
+            return;
+          }
+
+          const orchestrator = createByokOrchestrator({
+            connection: {
+              baseUrl: byokSettings.endpointUrl,
+              apiKey,
+            },
+            settings: byokSettings,
+            aiRequest: chat,
+            hasOpenedProject: !!project,
+            executeFunctionCalls: executeByokFunctionCalls,
+            getProjectUserContent: async () => {
+              if (!project) return null;
+              const simplifiedProjectBuilder = makeSimplifiedProjectBuilder(gd);
+              return JSON.stringify(
+                simplifiedProjectBuilder.getSimplifiedProject(project, {})
+              );
+            },
+            onAiRequestUpdated: updatedChat => updateByokChat(updatedChat),
+            doesCallRequireApproval: functionCall => {
+              const editorFunction =
+                editorFunctions[functionCall.name] ||
+                editorFunctionsWithoutProject[functionCall.name] ||
+                null;
+              try {
+                return byokCallRequiresApproval(
+                  editorFunction,
+                  JSON.parse(functionCall.arguments)
+                );
+              } catch (error) {
+                // Unparsable arguments: require approval (safe default).
+                return true;
+              }
+            },
+            onRequestEditApproval: async modifyingCalls => {
+              if (getIsAutoEditEnabled()) return true;
+              return requestEditApproval({
+                aiRequestId: chat.id,
+                callIds: modifyingCalls.map(call => call.call_id),
+                label: modifyingCalls.map(call => call.name).join(', '),
+              });
+            },
+            usageTracker: createByokUsageTracker(),
+            onFunctionCallsExecuted: (results, { createdSceneNames }) => {
+              if (
+                results.some(
+                  result =>
+                    result.status === 'finished' && result.didModifyProject
+                )
+              ) {
+                triggerUnsavedChanges();
+              }
+              createdSceneNames.forEach(sceneName => {
+                onOpenLayout(sceneName, {
+                  openEventsEditor: true,
+                  openSceneEditor: true,
+                  focusWhenOpened: 'scene',
+                });
+              });
+            },
+          });
+          byokOrchestratorsRef.current.set(chat.id, orchestrator);
+
+          await orchestrator.startNewChat(userRequest);
+        },
+        [
+          preferencesValues,
+          project,
+          executeByokFunctionCalls,
+          getIsAutoEditEnabled,
+          requestEditApproval,
+          triggerUnsavedChanges,
+          onOpenLayout,
+          setSelectedAiRequestId,
+        ]
+      );
+      // ---- end of BYOK chats ---------------------------------------------
+
+      // A new chat can be started as soon as one is selected (server or BYOK).
+      const canStartNewChat = !!selectedAiRequestId || !!selectedByokChatId;
 
       const authenticatedUser = React.useContext(AuthenticatedUserContext);
       const {
@@ -545,6 +765,15 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           (async () => {
             if (!newAiRequestOptions) return;
             console.info('Starting a new AI request...');
+
+            // BYOK chats run entirely client-side — no GDevelop account (and
+            // no credits) involved.
+            if (shouldUseByokForNewRequest(preferencesValues)) {
+              const { userRequest } = newAiRequestOptions;
+              startNewAiRequest(null);
+              await startByokChat(userRequest);
+              return;
+            }
 
             if (!profile) {
               onOpenCreateAccountDialog();
@@ -691,6 +920,8 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           newAiRequestOptions,
           automaticallyUseCreditsForAiRequests,
           storageProviderName,
+          preferencesValues,
+          startByokChat,
         ]
       );
 
@@ -709,6 +940,20 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           createdProject?: ?gdProject,
           editorFunctionCallResults: Array<EditorFunctionCallResult>,
         |}) => {
+          // BYOK chats continue through their local orchestrator — never the
+          // backend (and no GDevelop account is needed).
+          if (isByokAiRequestId(aiRequestId)) {
+            if (userMessage) {
+              const orchestrator = byokOrchestratorsRef.current.get(
+                aiRequestId
+              );
+              if (orchestrator) {
+                await orchestrator.sendUserMessage(userMessage);
+              }
+            }
+            return;
+          }
+
           if (!profile) return;
 
           const aiRequestForMessage = aiRequests[aiRequestId];
@@ -1042,11 +1287,22 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         ) => {
           if (!options) return;
           const { aiRequestId } = options;
+          const selectAiRequest = () => {
+            setSelectedByokChatId(null);
+            setSelectedAiRequestId(aiRequestId);
+          };
           // When navigating away from a working request, ask the user to confirm
           // stopping it (or to cancel). Unlike closing the editor, we do NOT
           // offer to keep it running in the background here: a request you have
           // navigated away from while opening another chat would be confusing.
-          if (selectedAiRequest && aiRequestId !== selectedAiRequest.id) {
+          // (BYOK chats are covered too: they report work in progress the same
+          // way, and suspending them is a local operation.)
+          const currentlySelectedRequest =
+            selectedByokChat || selectedAiRequest;
+          if (
+            currentlySelectedRequest &&
+            aiRequestId !== currentlySelectedRequest.id
+          ) {
             // upToDateConfirmStopping is declared below this callback, but it is
             // only ever called at event-handler time (post-render), so it is
             // always initialised by the time this runs.
@@ -1057,14 +1313,14 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 message: t`The AI is currently working on your project. Opening another chat will stop it. Do you want to continue?`,
               })
               .then(shouldProceed => {
-                if (shouldProceed) setSelectedAiRequestId(aiRequestId);
+                if (shouldProceed) selectAiRequest();
               });
             return;
           }
-          setSelectedAiRequestId(aiRequestId);
+          selectAiRequest();
         },
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [setSelectedAiRequestId, selectedAiRequest]
+        [setSelectedAiRequestId, selectedAiRequest, selectedByokChat]
       );
       // Start a new chat with a pre-filled user request, when asked from
       // elsewhere in the editor ("Edit with AI" buttons...).
@@ -1171,26 +1427,35 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
 
       const getHasWorkInProgress = React.useCallback(
         () => {
-          if (!selectedAiRequest) return false;
+          // BYOK chats are checked like server ones (their "work in progress"
+          // lives in the local store record).
+          const requestToCheck = selectedByokChat || selectedAiRequest;
+          if (!requestToCheck) return false;
           const editorFunctionCallResultsForRequest =
-            getEditorFunctionCallResults(selectedAiRequest.id) || [];
+            getEditorFunctionCallResults(requestToCheck.id) || [];
           return aiRequestHasWorkInProgress(
-            selectedAiRequest,
+            requestToCheck,
             editorFunctionCallResultsForRequest
           );
         },
-        [selectedAiRequest, getEditorFunctionCallResults]
+        [selectedAiRequest, selectedByokChat, getEditorFunctionCallResults]
       );
 
       const onStop = React.useCallback(
         async () => {
-          if (!selectedAiRequest) return;
+          const requestToStop = selectedByokChat || selectedAiRequest;
+          if (!requestToStop) return;
           if (!getHasWorkInProgress()) return;
-          // Delegates to the provider so the suspend logic lives in a single
-          // place and also works when triggered outside of this editor.
-          await suspendAiRequest(selectedAiRequest.id);
+          // Delegates to the container-level suspend, which routes BYOK chats
+          // to their orchestrator and server chats to the provider.
+          await suspendAiRequestWithByokSupport(requestToStop.id);
         },
-        [selectedAiRequest, getHasWorkInProgress, suspendAiRequest]
+        [
+          selectedAiRequest,
+          selectedByokChat,
+          getHasWorkInProgress,
+          suspendAiRequestWithByokSupport,
+        ]
       );
 
       const upToDateOnStop = useStableUpToDateRef(onStop);
@@ -1614,7 +1879,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 project={project}
                 fileMetadata={fileMetadata}
                 ref={aiRequestChatRef}
-                aiRequest={selectedAiRequest}
+                aiRequest={selectedByokChat || selectedAiRequest}
                 // The selected chat was opened from the history, which only
                 // has its summary: its conversation is being loaded.
                 aiRequestLoadingState={
@@ -1634,16 +1899,19 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 }: {|
                   userMessage: string,
                 |}) => {
-                  if (!selectedAiRequestId) return;
+                  const chatAiRequestId =
+                    selectedByokChatId || selectedAiRequestId;
+                  if (!chatAiRequestId) return;
                   await onSendMessage({
-                    aiRequestId: selectedAiRequestId,
+                    aiRequestId: chatAiRequestId,
                     userMessage,
-                    editorFunctionCallResults: selectedAiRequest
-                      ? getEditorFunctionCallResults(selectedAiRequest.id) || []
-                      : [],
+                    editorFunctionCallResults:
+                      getEditorFunctionCallResults(chatAiRequestId) || [],
                   });
                 }}
-                onRetryAfterError={onRetryAfterError}
+                onRetryAfterError={
+                  selectedByokChat ? undefined : onRetryAfterError
+                }
                 onIsAutoEditEnabledChange={enabled => {
                   isAutoEditEnabledRef.current = enabled;
                   // Toggling auto-edit revokes any blanket approvals already
@@ -1653,9 +1921,13 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 }}
                 pendingEditApproval={pendingEditApproval}
                 onResolveEditApproval={resolveEditApproval}
-                isSending={isSendingAiRequest(selectedAiRequestId)}
+                isSending={isSendingAiRequest(
+                  selectedByokChatId || selectedAiRequestId
+                )}
                 isSendingUserMessage={isSendingUserMessage}
-                lastSendError={getLastSendError(selectedAiRequestId)}
+                lastSendError={getLastSendError(
+                  selectedByokChatId || selectedAiRequestId
+                )}
                 quota={quota}
                 increaseQuotaOffering={
                   !hasValidSubscriptionPlan(subscription)
@@ -1666,13 +1938,18 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 }
                 onProcessFunctionCalls={onProcessSelectedAiRequestFunctionCalls}
                 editorFunctionCallResults={
-                  (selectedAiRequest &&
-                    getEditorFunctionCallResults(selectedAiRequest.id)) ||
-                  null
+                  selectedByokChat
+                    ? // BYOK tool executions are driven by the orchestrator;
+                      // there are no per-request execution records to show.
+                      null
+                    : (selectedAiRequest &&
+                        getEditorFunctionCallResults(selectedAiRequest.id)) ||
+                      null
                 }
                 price={aiRequestPrice}
                 availableCredits={availableCredits}
                 isRefreshingLimits={isRefreshingLimits}
+                {...(selectedByokChat ? buildByokChatProps() : {})}
                 onSendFeedback={onSendFeedback}
                 hasOpenedProject={!!project}
                 onStop={onStop}

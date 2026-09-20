@@ -23,6 +23,13 @@ jest.mock('./ByokModelsCache', () => ({
 jest.mock('./ByokClient', () => ({
   sendByokChatCompletionWithRetries: jest.fn(),
 }));
+// The key storage is partially mocked: only the storage info is faked (to
+// simulate the desktop/web environments), the save/load functions stay real
+// so the "key never in preferences" guarantees keep being exercised.
+jest.mock('./ByokKeyStorage', () => ({
+  ...jest.requireActual('./ByokKeyStorage'),
+  getByokKeyStorageInfo: jest.fn(),
+}));
 
 // jsdom does not implement matchMedia, which PreferencesContext.js calls at
 // module load to choose the default theme.
@@ -46,8 +53,10 @@ const PreferencesContext = require('../../MainFrame/Preferences/PreferencesConte
 const ByokSettingsTabModule = require('./ByokSettingsTab');
 const ByokSettingsTab = ByokSettingsTabModule.default;
 const clampContextWindow = ByokSettingsTabModule.clampContextWindow;
+const getKeyStorageStatusText = ByokSettingsTabModule.getKeyStorageStatusText;
 const ByokModelsCache = require('./ByokModelsCache');
 const ByokClientModule = require('./ByokClient');
+const ByokKeyStorageModule = require('./ByokKeyStorage');
 const { I18nProvider } = require('@lingui/react');
 const { setupI18n } = require('@lingui/core');
 
@@ -55,6 +64,9 @@ const mockRefreshByokModels = mockFn(ByokModelsCache.refreshByokModels);
 const mockGetCachedByokModels = mockFn(ByokModelsCache.getCachedByokModels);
 const mockSendForTestConnection = mockFn(
   ByokClientModule.sendByokChatCompletionWithRetries
+);
+const mockGetByokKeyStorageInfo = mockFn(
+  ByokKeyStorageModule.getByokKeyStorageInfo
 );
 
 // The UI components used by the tab (SelectOption, TextField) need a lingui
@@ -111,6 +123,13 @@ describe('ByokSettingsTab', () => {
     mockGetCachedByokModels.mockReset();
     mockGetCachedByokModels.mockReturnValue(null);
     mockSendForTestConnection.mockReset();
+    // By default the tab is tested as on the web build (obfuscated storage);
+    // desktop-specific tests override this with mockResolvedValueOnce.
+    mockGetByokKeyStorageInfo.mockReset();
+    mockGetByokKeyStorageInfo.mockResolvedValue({
+      encrypted: false,
+      obfuscated: true,
+    });
   });
 
   it('mounts and shows the BYOK title', async () => {
@@ -234,18 +253,73 @@ describe('ByokSettingsTab', () => {
     expect(localStorage.getItem('gd-preferences')).toBe(null);
   });
 
-  it('shows the obfuscated storage status when the key is not encrypted', async () => {
+  it('hides the storage status row when no key is stored', async () => {
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const renderedJson = JSON.stringify(component.toJSON());
+    expect(renderedJson).not.toContain('light obfuscation');
+    expect(renderedJson).not.toContain('encrypted by');
+  });
+
+  it('shows the obfuscation warning on web when a key is stored', async () => {
+    const { saveByokKey } = require('./ByokKeyStorage');
+    await saveByokKey('sk-web-key');
+
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const renderedJson = JSON.stringify(component.toJSON());
+    expect(renderedJson).toContain('light obfuscation');
+    expect(renderedJson).not.toContain('encrypted by your operating system');
+  });
+
+  it('shows the OS-encryption status when the storage is encrypted (desktop)', async () => {
+    mockGetByokKeyStorageInfo.mockResolvedValueOnce({
+      encrypted: true,
+      obfuscated: false,
+    });
+    const { saveByokKey } = require('./ByokKeyStorage');
+    await saveByokKey('sk-desktop-key');
+
     const { component } = renderTab();
     await act(async () => {
       await flushPromises();
     });
 
     expect(JSON.stringify(component.toJSON())).toContain(
-      'API key stored obfuscated'
+      'encrypted by your operating system'
     );
-    expect(JSON.stringify(component.toJSON())).toContain(
-      'OS-level encryption is added on desktop'
+  });
+
+  it('shows the storage status once a key is saved from the field', async () => {
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(JSON.stringify(component.toJSON())).not.toContain(
+      'light obfuscation'
     );
+
+    const apiKeyField = findFieldByName(component, 'byok-api-key');
+    act(() => {
+      apiKeyField.props.onChange(
+        { target: { value: 'sk-newly-typed-key' } },
+        'sk-newly-typed-key'
+      );
+    });
+    await act(async () => {
+      await apiKeyField.props.onBlur({
+        currentTarget: { value: 'sk-newly-typed-key' },
+      });
+      await flushPromises();
+    });
+
+    expect(JSON.stringify(component.toJSON())).toContain('light obfuscation');
   });
 });
 
@@ -256,6 +330,13 @@ describe('ByokSettingsTab: models fetching', () => {
     mockGetCachedByokModels.mockReset();
     mockGetCachedByokModels.mockReturnValue(null);
     mockSendForTestConnection.mockReset();
+    // By default the tab is tested as on the web build (obfuscated storage);
+    // desktop-specific tests override this with mockResolvedValueOnce.
+    mockGetByokKeyStorageInfo.mockReset();
+    mockGetByokKeyStorageInfo.mockResolvedValue({
+      encrypted: false,
+      obfuscated: true,
+    });
   });
 
   const getRaisedButtons = (component: any) =>
@@ -354,6 +435,13 @@ describe('ByokSettingsTab: per-model context windows', () => {
     mockGetCachedByokModels.mockReset();
     mockGetCachedByokModels.mockReturnValue(null);
     mockSendForTestConnection.mockReset();
+    // By default the tab is tested as on the web build (obfuscated storage);
+    // desktop-specific tests override this with mockResolvedValueOnce.
+    mockGetByokKeyStorageInfo.mockReset();
+    mockGetByokKeyStorageInfo.mockResolvedValue({
+      encrypted: false,
+      obfuscated: true,
+    });
   });
 
   it('persists a context window for the selected model via setMultipleValues', () => {
@@ -434,6 +522,13 @@ describe('ByokSettingsTab: test connection', () => {
     mockGetCachedByokModels.mockReset();
     mockGetCachedByokModels.mockReturnValue(null);
     mockSendForTestConnection.mockReset();
+    // By default the tab is tested as on the web build (obfuscated storage);
+    // desktop-specific tests override this with mockResolvedValueOnce.
+    mockGetByokKeyStorageInfo.mockReset();
+    mockGetByokKeyStorageInfo.mockResolvedValue({
+      encrypted: false,
+      obfuscated: true,
+    });
   });
 
   const renderTabAndClickTest = async () => {
@@ -530,6 +625,34 @@ describe('clampContextWindow', () => {
   it('falls back to the default context window on a non-number (empty field)', () => {
     expect(clampContextWindow(NaN)).toBe(
       DEFAULT_BYOK_SETTINGS.contextWindowTokens
+    );
+  });
+});
+
+describe('getKeyStorageStatusText', () => {
+  const renderNodeToText = (node: any) =>
+    JSON.stringify(
+      TestRenderer.create(
+        <I18nProvider i18n={i18n} language="en">
+          {node}
+        </I18nProvider>
+      ).toJSON()
+    );
+
+  it('returns null (row hidden) when no key is stored', () => {
+    expect(getKeyStorageStatusText(false, false)).toBe(null);
+    expect(getKeyStorageStatusText(true, false)).toBe(null);
+  });
+
+  it('returns the OS-encryption text when the key is encrypted', () => {
+    expect(renderNodeToText(getKeyStorageStatusText(true, true))).toContain(
+      'encrypted by your operating system'
+    );
+  });
+
+  it('returns the obfuscation warning when the key is not encrypted', () => {
+    expect(renderNodeToText(getKeyStorageStatusText(false, true))).toContain(
+      'light obfuscation'
     );
   });
 });

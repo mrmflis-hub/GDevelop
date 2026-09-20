@@ -47,6 +47,11 @@ const {
 const { setupWatcher, disableWatcher } = require('./LocalFilesystemWatcher');
 const { installCliInPath } = require('./InstallCliInPath');
 const {
+  isByokEncryptionAvailable,
+  encryptByokSecret,
+  decryptByokSecret,
+} = require('./ByokSafeStorage');
+const {
   setWindowFileIdentifier,
   clearWindowFileIdentifier,
 } = require('./OpenProjectsRegistry');
@@ -454,6 +459,16 @@ app.on('ready', function() {
     // vanishes on quit; APPIMAGE is the stable file path (still breaks if moved).
     return installCliInPath(process.env.APPIMAGE || process.execPath);
   });
+
+  // BYOK API key encryption: the renderer delegates to safeStorage (the
+  // OS key store — DPAPI on Windows), see ByokSafeStorage.js.
+  ipcMain.handle('byok-encryption-available', () => isByokEncryptionAvailable());
+  ipcMain.handle('byok-encrypt', (_event, plainText) =>
+    encryptByokSecret(String(plainText))
+  );
+  ipcMain.handle('byok-decrypt', (_event, cipherText) =>
+    decryptByokSecret(String(cipherText))
+  );
 
   ipcMain.on('set-main-menu', (event, mainMenuTemplate) => {
     const window = BrowserWindow.fromWebContents(event.sender);

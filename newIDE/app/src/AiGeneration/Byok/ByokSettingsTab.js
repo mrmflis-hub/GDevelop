@@ -42,6 +42,32 @@ export const clampContextWindow = (value: number): number => {
   return value;
 };
 
+/**
+ * The storage-status text shown under the API key field: null (row hidden)
+ * when no key is stored, the OS-encryption text on the desktop app, and the
+ * honest obfuscation warning on the web build.
+ */
+export const getKeyStorageStatusText = (
+  encrypted: boolean,
+  hasStoredKey: boolean
+): React.Node => {
+  if (!hasStoredKey) return null;
+  if (encrypted) {
+    return (
+      <Trans>
+        Your API key is encrypted by your operating system (DPAPI on Windows)
+        and can only be read by this app under your user account.
+      </Trans>
+    );
+  }
+  return (
+    <Trans>
+      Your API key is stored with light obfuscation only. The desktop app
+      protects it with OS-level encryption.
+    </Trans>
+  );
+};
+
 // The value of the "Type manually…" option of the models dropdown: chosen,
 // it swaps the dropdown back to the free-text field (for servers without a
 // /models endpoint).
@@ -65,6 +91,7 @@ const ByokSettingsTab = (): React.Node => {
     isKeyStorageEncrypted,
     setIsKeyStorageEncrypted,
   ] = React.useState<boolean>(false);
+  const [hasStoredKey, setHasStoredKey] = React.useState<boolean>(false);
   const [
     fetchedModels,
     setFetchedModels,
@@ -92,7 +119,11 @@ const ByokSettingsTab = (): React.Node => {
     let isSubscribed = true;
     (async () => {
       const storageInfo = await getByokKeyStorageInfo();
-      if (isSubscribed) setIsKeyStorageEncrypted(storageInfo.encrypted);
+      const storedKey = await loadByokKey();
+      if (!isSubscribed) return;
+
+      setIsKeyStorageEncrypted(storageInfo.encrypted);
+      setHasStoredKey(!!storedKey);
     })();
     return () => {
       isSubscribed = false;
@@ -222,6 +253,11 @@ const ByokSettingsTab = (): React.Node => {
     high: t`High`,
   };
 
+  const keyStorageStatusText = getKeyStorageStatusText(
+    isKeyStorageEncrypted,
+    hasStoredKey
+  );
+
   return (
     <ColumnStackLayout>
       <Text size="block-title">
@@ -260,21 +296,16 @@ const ByokSettingsTab = (): React.Node => {
         value={apiKey}
         onChange={(event, text) => setApiKey(text)}
         onBlur={() => {
-          saveByokKey(apiKey);
+          saveByokKey(apiKey).then(() => setHasStoredKey(!!apiKey));
         }}
       />
-      <Line noMargin>
-        <Text size="body2" color="secondary">
-          {isKeyStorageEncrypted ? (
-            <Trans>API key storage: encrypted by the system.</Trans>
-          ) : (
-            <Trans>
-              API key stored obfuscated in the browser storage — OS-level
-              encryption is added on desktop.
-            </Trans>
-          )}
-        </Text>
-      </Line>
+      {keyStorageStatusText && (
+        <Line noMargin>
+          <Text size="body2" color="secondary">
+            {keyStorageStatusText}
+          </Text>
+        </Line>
+      )}
       <LineStackLayout noMargin alignItems="center">
         <Column noMargin expand>
           <Text noMargin>
