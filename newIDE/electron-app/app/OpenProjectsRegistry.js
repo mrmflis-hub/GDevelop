@@ -25,9 +25,7 @@ const normalizeFileIdentifier = fileIdentifier => {
 
 const writeOpenProjectsRegistry = () => {
   try {
-    const fileIdentifiers = Array.from(
-      new Set(windowFileIdentifiers.values())
-    );
+    const fileIdentifiers = Array.from(new Set(windowFileIdentifiers.values()));
     fs.writeFileSync(registryFilePath, JSON.stringify(fileIdentifiers));
   } catch (e) {}
 };

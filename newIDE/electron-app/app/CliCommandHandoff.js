@@ -6,7 +6,12 @@ const {
 } = require('./OpenProjectsRegistry');
 
 const argsParserOptions = {
-  boolean: ['dev-tools', 'disable-update-check', 'keep-open', 'block-on-diagnostic-errors'],
+  boolean: [
+    'dev-tools',
+    'disable-update-check',
+    'keep-open',
+    'block-on-diagnostic-errors',
+  ],
   string: ['_', 'run-command', 'cmd-args'],
 };
 
@@ -25,7 +30,9 @@ const parseGDevelopArgs = argv =>
       const argName = arg.slice(2).split('=')[0];
       if (knownCliFlagNames.has(argName)) return true;
       // Allow --no-<known-bool-flag> (minimist negation syntax).
-      return argName.startsWith('no-') && booleanFlagNames.has(argName.slice(3));
+      return (
+        argName.startsWith('no-') && booleanFlagNames.has(argName.slice(3))
+      );
     }),
     argsParserOptions
   );
@@ -36,8 +43,8 @@ const parseGDevelopArgs = argv =>
 const parseSecondInstanceArgs = ({ commandLine, additionalData, isDev }) =>
   additionalData && additionalData.args
     ? additionalData.args
-    // In dev, electron is launched with an extra argument, so skip one more.
-    : parseGDevelopArgs(commandLine.slice(isDev ? 2 : 1));
+    : // In dev, electron is launched with an extra argument, so skip one more.
+      parseGDevelopArgs(commandLine.slice(isDev ? 2 : 1));
 
 const isCliProjectAlreadyOpenElsewhere = parsedArgs => {
   const fileIdentifier = normalizeFileIdentifier(parsedArgs._[0]);
