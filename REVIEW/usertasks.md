@@ -28,14 +28,13 @@ postponements live in `deferred.md` as by-design entries.
    every user message, after the AI finishes responding, and on app closure;
    the chat window starts clear on reopen and old chats are loadable from a
    history button in the chat tab; chat names = first 5 words of the first
-   prompt + date of last interaction. → design recorded in `Phase9.md`
-   step 9.3, backlog entry F1 in `outofscoped.md`.
+   prompt + date of last interaction. → design recorded in `Phase9.md`,
+   backlog entry F1 in `outofscoped.md`.
 2. **D2 — Token streaming.** Recommend: backlog.
    **Answer: NO streaming for now** — keep the spinner. Instead the owner
    approved the alternative UX (progress updates via prompt + watchdog
    notices — entry F2 in `outofscoped.md`). Streaming stays in
-   `deferred.md`. F2 is planned: prompt half `Phase7.md` step 7.1,
-   watchdog `Phase9.md` step 9.1.
+   `deferred.md`.
 3. **D3 — Re-admit store tools.** Recommend: keep excluded.
    **Answer: REJECTED — never re-admit.** Users who need asset-store tools
    swap back to the official workflow. Owner also confirmed the routing
@@ -45,19 +44,16 @@ postponements live in `deferred.md` as by-design entries.
 4. **D4 — Sub-agents (edit/explorer).** Recommend: build in Phase 8.
    **Answer: DEFERRED** — stays in `deferred.md` (Phase 8 home unchanged).
 5. **D5 — BYOK badge in the chat header + exact token row.** Recommend: build.
-   **Answer: APPROVED** → `outofscoped.md`, planned in `Phase9.md` step 9.4
-   (with F3).
+   **Answer: APPROVED** → `outofscoped.md`.
 6. **D6 — Per-chat model/effort override UI.** Recommend: backlog.
    **Answer: APPROVED — build**, ZCode-style: users register providers
    (name + endpoint + key); the chat gets two dropdowns — models listed as
    `provider name/model name` (pulled from the server) and an effort
    dropdown defaulting to low/medium/high, or the per-model effort levels
-   when the server lists them. → entry F3 in `outofscoped.md`, planned in
-   `Phase9.md` step 9.4.
+   when the server lists them. → entry F3 in `outofscoped.md`.
 7. **D8 — Shrink `AskAiEditorContainer.js`'s BYOK additions into a hook.**
    Recommend: at the start of Phase 8.
-   **Answer: keep local for now** — unchanged, stays deferred to Phase 8
-   (now step 8.0 in `Phase8.md`).
+   **Answer: keep local for now** — unchanged, stays deferred to Phase 8.
 8. **D9 — Upstream export of the helpers BYOK reimplements.** Recommend: skip.
    **Answer: KEEP LOCAL.** Owner context: GDevelop is not accepting
    BYOK-fork PRs at the moment; this may be the only full
@@ -70,30 +66,24 @@ postponements live in `deferred.md` as by-design entries.
    low-skill users; non-obvious destructive gestures defeat the point. Only
    the "Clear the stored key" button (and a deliberate empty-blur after the
    user actually typed) removes the key; an untouched empty field never
-   clears. → `outofscoped.md`, planned in `Phase7.md` step 7.0.
+   clears. → `outofscoped.md`.
 10. **O1 — Like/dislike buttons are inert on BYOK chats.** Recommend: hide.
     **Answer: APPROVED — hide, but do NOT delete the code** (keep the no-op
-    handler for a possible future upstream PR). → `outofscoped.md`,
-    planned in `Phase7.md` step 7.0.
+    handler for a possible future upstream PR). → `outofscoped.md`.
 11. **O13 — The chat's "process function calls" affordances are silent no-ops
     on BYOK chats.** Recommend: hide.
-    **Answer: APPROVED** (owner: "do both", with #15) → `outofscoped.md`,
-    planned in `Phase7.md` step 7.0.
+    **Answer: APPROVED** (owner: "do both", with #15) → `outofscoped.md`.
 12. **O2 — The context guard disappears when an endpoint omits `usage`.**
     Recommend: accept.
     **Answer: ACCEPT** — the round cap holds; the char-estimate fallback is
     recorded as **deferred** (not never) in `deferred.md`.
 13. **O3 — Executor/`ensureExtensionInstalled` memo staleness.**
-    **Not explicitly answered** (was not in the chat round) — the
-    recommendation **stands: defer to Phase 8** unless the owner objects
-    (now step 8.0 in `Phase8.md`).
+    **Answer: defer to Phase 8** .
 14. **O4 — Transcript images not rendered to the user.**
-    **Not explicitly answered** (was not in the chat round) — the
-    recommendation **stands: Phase 7/8 polish** unless the owner objects
-    (placed in `Phase7.md` step 7.0).
+    **Answer: present user with an in-chat link to saved img, no need to render chat.**
 15. **O7 — `byok-empty-answer` wording.** **Answer: APPROVED** via the
     owner's "do both" — wording "The model returned an empty answer."
-    (retryable) → `outofscoped.md`, planned in `Phase7.md` step 7.0.
+    (retryable) → `outofscoped.md`.
 16. **E2 — electron-app format gate red on two upstream files.**
     **Answer: APPROVED and DONE 2026-09-22** — formatted and committed as
     `7283b2fc1c`; the electron-app `check-format` gate is fully green.
@@ -362,33 +352,3 @@ needs a vision-capable model. **Recorded in:** worklog 2026-09-22 (Phases
      `image_url` parts in the request bodies.
    - [ ] with "Auto-detect": point at a text-only model → the chat degrades
      to text-only once and continues (one console note).
-
-## Task 9 — Phase 7 desktop QA: knowledge, skills and the F2 waiting experience
-
-**Why you:** the step 7.9 checklist needs the desktop app and a real
-endpoint. **Recorded in:** worklog 2026-09-22 (Phase 7), "Issues found";
-`Phase7.md` §2 step 7.9 / §3.
-
-1. "Make movement feel juicy" on a bare project:
-   - [ ] the plan names Tween / particles / camera shake (design pack).
-2. "What behaviors exist for platformers?":
-   - [ ] `search_reference` is used and quotes correct parameter names.
-3. Load `platformer-game` via `load_skill`, then ask for a platformer build:
-   - [ ] the follow-up build follows the skill's recipe.
-4. `search_docs` / `read_doc`:
-   - [ ] an expression/picking question is answered offline (no network in
-     DevTools; with "Fetch missing documentation pages online" off).
-5. Custom instructions: set "Always answer in French" in Preferences → BYOK:
-   - [ ] answers come back in French (last prompt section works).
-6. F2 discipline: give a multi-step request:
-   - [ ] one-sentence progress updates arrive as to-do items complete.
-7. Step 7.0 sweep:
-   - [ ] like/dislike + "process function calls" affordances hidden on a
-     BYOK chat, visible on a hosted one.
-   - [ ] "Clear the stored key" works; blur on an untouched empty field does
-     not clear the key; an unreadable key (simulate a DPAPI failure by
-     restoring the entry under a new Windows account) says "cannot be
-     decrypted" instead of "no key stored".
-   - [ ] a screenshot-returning tool call shows its image in the chat (O4).
-8. Prompt size: with all knowledge flags on, the DevTools console logs the
-   composed length per turn — at or under the ~6k-token budget.
