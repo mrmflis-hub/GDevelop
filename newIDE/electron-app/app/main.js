@@ -52,6 +52,7 @@ const {
   encryptByokSecret,
   decryptByokSecret,
 } = require('./ByokSafeStorage');
+const { readByokUserSkills } = require('./ByokUserSkills');
 const {
   setWindowFileIdentifier,
   clearWindowFileIdentifier,
@@ -109,24 +110,32 @@ if (!gotTheLock) {
   // Second instance attempted - quit immediately
   app.quit();
 } else {
-  app.on('second-instance', (event, commandLine, workingDirectory, additionalData) => {
-    const secondInstanceArgs = parseSecondInstanceArgs({
-      commandLine,
-      additionalData,
-      isDev,
-    });
+  app.on(
+    'second-instance',
+    (event, commandLine, workingDirectory, additionalData) => {
+      const secondInstanceArgs = parseSecondInstanceArgs({
+        commandLine,
+        additionalData,
+        isDev,
+      });
 
-    if (routeCliCommandToLiveEditor({ parsedArgs: secondInstanceArgs, mainWindows })) {
-      return;
+      if (
+        routeCliCommandToLiveEditor({
+          parsedArgs: secondInstanceArgs,
+          mainWindows,
+        })
+      ) {
+        return;
+      }
+
+      // Update the global args so the new window's renderer (which reads them
+      // via remote.getGlobal('args')) picks up the second-instance CLI flags
+      // (e.g. --run-command, positional project file).
+      global['args'] = secondInstanceArgs;
+
+      createNewWindow(secondInstanceArgs);
     }
-
-    // Update the global args so the new window's renderer (which reads them
-    // via remote.getGlobal('args')) picks up the second-instance CLI flags
-    // (e.g. --run-command, positional project file).
-    global['args'] = secondInstanceArgs;
-
-    createNewWindow(secondInstanceArgs);
-  });
+  );
 }
 
 // Quit when all windows are closed.
@@ -324,9 +333,7 @@ function createNewWindow(windowArgs = args) {
       // Extract the theme background color passed via the features string
       // by WindowPortal (e.g. "...,themeBackgroundColor=%23282828").
       let backgroundColor = '#000';
-      const match = details.features.match(
-        /themeBackgroundColor=([^,]*)/
-      );
+      const match = details.features.match(/themeBackgroundColor=([^,]*)/);
       if (match) {
         try {
           backgroundColor = decodeURIComponent(match[1]);
@@ -367,8 +374,15 @@ function createNewWindow(windowArgs = args) {
   newWindow.webContents.on('did-create-window', (childWindow, details) => {
     require('@electron/remote/main').enable(childWindow.webContents);
 
-    if (!details.frameName || !details.frameName.startsWith('GDevelopWindowPortal')) {
-      console.warn(`Unexpected frameName for child window: ${details.frameName} - verify handling on Electron side.`);
+    if (
+      !details.frameName ||
+      !details.frameName.startsWith('GDevelopWindowPortal')
+    ) {
+      console.warn(
+        `Unexpected frameName for child window: ${
+          details.frameName
+        } - verify handling on Electron side.`
+      );
     }
 
     // Track child window by frameName so the renderer can look up its
@@ -473,33 +487,40 @@ app.on('ready', function() {
     decryptByokSecret(String(cipherText))
   );
 
+  // BYOK user skills: the .md files the user dropped in
+  // `<userData>/byok-skills`, read here and parsed/validated by the
+  // renderer (ByokSkills.js).
+  ipcMain.handle('byok-read-user-skills', () =>
+    readByokUserSkills(app.getPath('userData'))
+  );
+
   // BYOK perception: capture a screenshot of an open preview window (the
   // last one when no id is given) as base64 PNG — works while the window is
   // occluded. The renderer side lives in ByokRuntimeTools.
-  ipcMain.handle(
-    'byok-preview-capture',
-    (_event, previewId) => {
-      const openPreviews = getPreviewWindows()
-        .map(entry => entry.previewWindow)
-        .filter(window => window && !window.isDestroyed());
-      const previewWindow =
-        (typeof previewId === 'number'
-          ? openPreviews.find(window => window.id === previewId)
-          : null) ||
-        openPreviews[openPreviews.length - 1] ||
-        null;
-      if (!previewWindow) {
-        return Promise.resolve({ ok: false, error: 'No preview window is open.' });
-      }
-      return previewWindow.webContents
-        .capturePage()
-        .then(image => ({ ok: true, data: image.toPNG().toString('base64') }))
-        .catch(error => ({
-          ok: false,
-          error: (error && error.message) || String(error),
-        }));
+  ipcMain.handle('byok-preview-capture', (_event, previewId) => {
+    const openPreviews = getPreviewWindows()
+      .map(entry => entry.previewWindow)
+      .filter(window => window && !window.isDestroyed());
+    const previewWindow =
+      (typeof previewId === 'number'
+        ? openPreviews.find(window => window.id === previewId)
+        : null) ||
+      openPreviews[openPreviews.length - 1] ||
+      null;
+    if (!previewWindow) {
+      return Promise.resolve({
+        ok: false,
+        error: 'No preview window is open.',
+      });
     }
-  );
+    return previewWindow.webContents
+      .capturePage()
+      .then(image => ({ ok: true, data: image.toPNG().toString('base64') }))
+      .catch(error => ({
+        ok: false,
+        error: (error && error.message) || String(error),
+      }));
+  });
 
   ipcMain.on('set-main-menu', (event, mainMenuTemplate) => {
     const window = BrowserWindow.fromWebContents(event.sender);

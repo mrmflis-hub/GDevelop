@@ -59,7 +59,16 @@ const getAiRequestErrorKind = (error: ?AiRequestError): AiRequestErrorKind => {
   return 'transient';
 };
 
-const renderTitle = (errorKind: AiRequestErrorKind): React.Node => {
+const renderTitle = (
+  error: ?AiRequestError,
+  errorKind: AiRequestErrorKind
+): React.Node => {
+  // BYOK-specific case worth its own heading: the model answered with
+  // nothing at all. It stays 'transient' (retryable), but the generic
+  // "The AI ran into an error" would hide what actually happened.
+  if (error && error.code === 'byok-empty-answer') {
+    return <Trans>The model returned an empty answer.</Trans>;
+  }
   if (errorKind === 'too-large') return <Trans>This chat is too long</Trans>;
   if (errorKind === 'stuck') return <Trans>The AI got stuck</Trans>;
   return <Trans>The AI ran into an error</Trans>;
@@ -161,7 +170,7 @@ export const AiRequestErrorRow = ({
             // $FlowFixMe[incompatible-type]
             style={styles.title}
           >
-            {renderTitle(errorKind)}
+            {renderTitle(error, errorKind)}
           </Text>
         </span>
         {error && (

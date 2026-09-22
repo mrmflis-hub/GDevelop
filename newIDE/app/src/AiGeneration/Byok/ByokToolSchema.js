@@ -156,6 +156,20 @@ const effectChangeProperty = objectProperty('One effect change.', {
   // parts); change_gameplay_tests goes through the registry as-is.
   'run_gameplay_test',
   'change_gameplay_tests',
+  // Engine reference (Phase 7): queries the generated catalog instead of
+  // carrying it in the prompt. Intercepted (ByokExtraTools) — there is no
+  // upstream editor function for it.
+  'search_reference',
+  // Skills (Phase 7): progressive disclosure — metadata in the prompt,
+  // bodies on demand. Intercepted (ByokExtraTools).
+  'load_skill',
+  // Docs access (Phase 7): the curated bundled subset, optionally expanded
+  // online. Intercepted (ByokExtraTools).
+  'search_docs',
+  'read_doc',
+  // Per-project memory (Phase 7): the agent's own notes, injected at chat
+  // start. Intercepted (ByokExtraTools).
+  'update_project_notes',
 ];
 
 /**
@@ -1039,6 +1053,94 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
       required: ['project_name', 'template_slug'],
     },
   },
+  {
+    name: 'search_reference',
+    description:
+      'Search the engine reference: every object, behavior, action, condition, expression and effect that exists in GDevelop, with their exact names and parameters. Use it instead of guessing an instruction or parameter name.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: stringProperty(
+          'What to look for: a name or a topic (e.g. "lerp", "platformer jump", "gravity"). Empty lists everything of the requested kind.'
+        ),
+        kind: enumProperty('Restrict the search to one kind of entry.', [
+          'object',
+          'behavior',
+          'action',
+          'condition',
+          'expression',
+          'effect',
+        ]),
+        owner: stringProperty(
+          'Restrict the search to one extension (e.g. "Physics2", "Tween", "BuiltinAudio").'
+        ),
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'load_skill',
+    description:
+      'Load the full playbook of one skill from the "Available skills" list: its instructions stay available for the rest of the conversation. Load a skill when its topic matters for the current task (a platformer to build, a save system to add…).',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: stringProperty(
+          'Name of the skill to load, exactly as listed in "Available skills".'
+        ),
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'search_docs',
+    description:
+      'Search the official GDevelop documentation bundled with the app (events, expressions, object picking, JS code…): page titles and what matched. Follow up with read_doc to read a page.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: stringProperty(
+          'What to look for (e.g. "object picking", "for each", "variables").'
+        ),
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_doc',
+    description:
+      'Read one documentation page (a path returned by search_docs, e.g. "events/object-picking/index.md"). Returns its Markdown, capped; pass an anchor to read only one section.',
+    parameters: {
+      type: 'object',
+      properties: {
+        page: stringProperty('Path of the page to read (from search_docs).'),
+        anchor: stringProperty(
+          'Optional: read only the section whose heading contains this text.'
+        ),
+      },
+      required: ['page'],
+    },
+  },
+  {
+    name: 'update_project_notes',
+    description:
+      'Update your persistent notes about this project (shown to you at the start of every chat about it): the project conventions to follow, what is currently in progress, and the design/technical decisions taken. Send only the fields you want to replace.',
+    parameters: {
+      type: 'object',
+      properties: {
+        conventions: stringProperty(
+          'The conventions of the project (naming, structure, style). Replace the whole list.'
+        ),
+        inProgress: stringProperty(
+          'What is currently in progress or left unfinished.'
+        ),
+        decisions: stringProperty(
+          'The design and technical decisions taken, so they stay consistent.'
+        ),
+      },
+      required: [],
+    },
+  },
 ];
 
 /**
@@ -1132,6 +1234,11 @@ export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
   'read_preview_logs',
   'get_runtime_errors',
   'inspect_runtime_state',
+  'search_reference',
+  'load_skill',
+  'search_docs',
+  'read_doc',
+  'update_project_notes',
 ];
 
 const BYOK_ONLY_TOOL_NAMES_SET: Set<string> = new Set(BYOK_ONLY_TOOL_NAMES);
@@ -1202,15 +1309,16 @@ export const validateByokToolSchemas = (
       problems.push(`Whitelisted tool "${toolName}" has no schema.`);
     }
   }
-  // The cap grew with Phase 6 (perception + gameplay tests, 9 tools): the
-  // roadmap's tool-count guidance yields to the phase-mandated surface,
-  // descriptions stay concise, and Phase 7's skills can scope per-task
-  // subsets.
-  if (BYOK_TOOL_NAMES.length > 32) {
+  // The cap grew with Phase 6 (perception + gameplay tests, 9 tools) and
+  // Phase 7 (search_reference + load_skill): the roadmap's tool-count
+  // guidance yields to the phase-mandated surface — the descriptions stay
+  // concise, and the skills system (7.6) is the mechanism to scope
+  // per-task tool subsets later.
+  if (BYOK_TOOL_NAMES.length > 36) {
     problems.push(
       `The default tool set has ${
         BYOK_TOOL_NAMES.length
-      } tools — the cap is 32.`
+      } tools — the cap is 36.`
     );
   }
 

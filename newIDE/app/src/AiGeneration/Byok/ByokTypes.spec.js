@@ -24,6 +24,8 @@ describe('DEFAULT_BYOK_SETTINGS', () => {
       imageSupport: 'auto',
       contextWindowTokens: 8192,
       contextWindowByModel: {},
+      onlineDocsEnabled: false,
+      customInstructions: '',
     });
   });
 });

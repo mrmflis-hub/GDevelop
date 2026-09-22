@@ -6,6 +6,111 @@ one is already recorded in `worklog.md` under "Issues found"; this file turns
 them into step-by-step instructions. Work top to bottom — the first two are
 the phase gates that are still open.
 
+> **Monitoring note (2026-09-22):** the actionable triage is split across
+> three files — [`outofscoped.md`](outofscoped.md) (agent backlog, "to be
+> tackled"), [`deferred.md`](deferred.md) (deliberately postponed, with
+> reasoning), and this file (everything needing a human decision, action, or
+> assistance). [`audit2209.md`](audit2209.md) keeps the full findings detail
+> behind them.
+
+---
+
+## Owner decisions — presented and answered 2026-09-22
+
+This is the canonical record of the 16 decisions presented in chat on
+2026-09-22, each with the agent's recommendation and **the owner's answer**.
+Approved work lives in `outofscoped.md` (or its phase step); rejections and
+postponements live in `deferred.md` as by-design entries.
+
+1. **D1 — Persisted BYOK chat history.** Recommend: build in Phase 9.
+   **Answer: APPROVED — build**, with the owner's design: chats are saved to
+   file (YAML or Markdown — implementation picks, see `Phase9.md`) after
+   every user message, after the AI finishes responding, and on app closure;
+   the chat window starts clear on reopen and old chats are loadable from a
+   history button in the chat tab; chat names = first 5 words of the first
+   prompt + date of last interaction. → design recorded in `Phase9.md`
+   step 9.3, backlog entry F1 in `outofscoped.md`.
+2. **D2 — Token streaming.** Recommend: backlog.
+   **Answer: NO streaming for now** — keep the spinner. Instead the owner
+   approved the alternative UX (progress updates via prompt + watchdog
+   notices — entry F2 in `outofscoped.md`). Streaming stays in
+   `deferred.md`. F2 is planned: prompt half `Phase7.md` step 7.1,
+   watchdog `Phase9.md` step 9.1.
+3. **D3 — Re-admit store tools.** Recommend: keep excluded.
+   **Answer: REJECTED — never re-admit.** Users who need asset-store tools
+   swap back to the official workflow. Owner also confirmed the routing
+   model: the user stays logged in; the BYOK-enabled setting is the router
+   toggle (BYOK on → new chats route to BYOK; off → official AI); all
+   non-AI features are identical either way. → by-design in `deferred.md`.
+4. **D4 — Sub-agents (edit/explorer).** Recommend: build in Phase 8.
+   **Answer: DEFERRED** — stays in `deferred.md` (Phase 8 home unchanged).
+5. **D5 — BYOK badge in the chat header + exact token row.** Recommend: build.
+   **Answer: APPROVED** → `outofscoped.md`, planned in `Phase9.md` step 9.4
+   (with F3).
+6. **D6 — Per-chat model/effort override UI.** Recommend: backlog.
+   **Answer: APPROVED — build**, ZCode-style: users register providers
+   (name + endpoint + key); the chat gets two dropdowns — models listed as
+   `provider name/model name` (pulled from the server) and an effort
+   dropdown defaulting to low/medium/high, or the per-model effort levels
+   when the server lists them. → entry F3 in `outofscoped.md`, planned in
+   `Phase9.md` step 9.4.
+7. **D8 — Shrink `AskAiEditorContainer.js`'s BYOK additions into a hook.**
+   Recommend: at the start of Phase 8.
+   **Answer: keep local for now** — unchanged, stays deferred to Phase 8
+   (now step 8.0 in `Phase8.md`).
+8. **D9 — Upstream export of the helpers BYOK reimplements.** Recommend: skip.
+   **Answer: KEEP LOCAL.** Owner context: GDevelop is not accepting
+   BYOK-fork PRs at the moment; this may be the only full
+   server-independent BYOK implementation, and the owner may approach a team
+   member about how such a PR could ever land — until then, no upstreaming.
+   → by-design in `deferred.md`; O12 closes as by-design with it.
+9. **D10 — API-key field: focus + blur empty clears the stored key.**
+   Recommend: fix.
+   **Answer: APPROVED — explicit delete only.** Rationale: GDevelop targets
+   low-skill users; non-obvious destructive gestures defeat the point. Only
+   the "Clear the stored key" button (and a deliberate empty-blur after the
+   user actually typed) removes the key; an untouched empty field never
+   clears. → `outofscoped.md`, planned in `Phase7.md` step 7.0.
+10. **O1 — Like/dislike buttons are inert on BYOK chats.** Recommend: hide.
+    **Answer: APPROVED — hide, but do NOT delete the code** (keep the no-op
+    handler for a possible future upstream PR). → `outofscoped.md`,
+    planned in `Phase7.md` step 7.0.
+11. **O13 — The chat's "process function calls" affordances are silent no-ops
+    on BYOK chats.** Recommend: hide.
+    **Answer: APPROVED** (owner: "do both", with #15) → `outofscoped.md`,
+    planned in `Phase7.md` step 7.0.
+12. **O2 — The context guard disappears when an endpoint omits `usage`.**
+    Recommend: accept.
+    **Answer: ACCEPT** — the round cap holds; the char-estimate fallback is
+    recorded as **deferred** (not never) in `deferred.md`.
+13. **O3 — Executor/`ensureExtensionInstalled` memo staleness.**
+    **Not explicitly answered** (was not in the chat round) — the
+    recommendation **stands: defer to Phase 8** unless the owner objects
+    (now step 8.0 in `Phase8.md`).
+14. **O4 — Transcript images not rendered to the user.**
+    **Not explicitly answered** (was not in the chat round) — the
+    recommendation **stands: Phase 7/8 polish** unless the owner objects
+    (placed in `Phase7.md` step 7.0).
+15. **O7 — `byok-empty-answer` wording.** **Answer: APPROVED** via the
+    owner's "do both" — wording "The model returned an empty answer."
+    (retryable) → `outofscoped.md`, planned in `Phase7.md` step 7.0.
+16. **E2 — electron-app format gate red on two upstream files.**
+    **Answer: APPROVED and DONE 2026-09-22** — formatted and committed as
+    `7283b2fc1c`; the electron-app `check-format` gate is fully green.
+
+**Also answered outside the numbered list (2026-09-22):**
+
+- **Direction: PAUSE.** No feature building until the owner says so; this
+  session readjusted the docs and recorded these decisions. The human-QA
+  tasks below (1, 2, 6, 7) remain the owner's whenever they choose.
+- **AGENTS.md refresh:** DONE by the owner (the file now reflects the git
+  repo, the `C:\` path, Git Bash, the triage docs and this decision
+  process).
+- **libGD pinning:** DONE by the owner — a working `libgd-2.3.3` copy is
+  saved at the repo root (import-libGD no longer depends on the 404-ing S3
+  mirrors), and the `GDevelop-documentation` repository is cloned to `DOCs/`
+  at the repo root for the Phase 7 knowledge work.
+
 ---
 
 ## Task 1 — Phase 3 desktop verification (safeStorage / DPAPI)
@@ -103,11 +208,14 @@ as designed — the fix verification steps are marked with a star (★).
 
 ---
 
-## Task 3 — Decide and commit the pending git state
+## Task 3 — Decide and commit the pending git state — **DONE 2026-09-22**
 
 **Why you:** the checkout became a git repository after the docs were
 written; committing was never the agent's to do.
-**Recorded in:** worklog 2026-09-19/20, "Issues found" (repository drift).
+**Status:** committed by the user as `0802d2d21e` "phase5-9 planned" (audit
+fixes + Phases 5–6); the doc-move was resolved then too (`agents.md` /
+`styleguide.md` live at the repo root). What may still be worth doing: the
+AGENTS.md refresh described below.
 
 Current uncommitted state (verify with `git status`):
 - `newIDE/electron-app/app/main.js` + `ByokSafeStorage.js` (Phase 3),
@@ -160,6 +268,9 @@ worklog entry). What remains for you:
 **Why you:** all of these were deliberately deferred and need an owner
 decision + prioritization before anyone builds them.
 **Recorded in:** `Phase4.md` §4 (post-Phase-4 backlog); worklog 2026-09-20.
+**Answer via decisions #1–#8 in the pending-decisions list above** (the
+per-feature rationale now lives in [`deferred.md`](deferred.md)); the table
+below is the seam detail.
 
 | # | Feature | Where the seam is today |
 |---|---|---|
@@ -176,11 +287,15 @@ other phases.
 
 ---
 
-## Task 6 — Housekeeping decisions (small, optional)
+## Task 8 — Housekeeping decisions (small, optional)
+
+*(Renumbered from "Task 6" on 2026-09-22 — the Phase 5 QA task below had
+taken the number.)*
 
 1. **API-key field clears the stored key** when you focus+blur it empty
    (pre-existing Phase 1 behavior, `saveByokKey('')` clears; see audit C11).
-   Decide: fix (skip the save on blur of an untouched empty field) or accept.
+   Decide: fix (skip the save on blur of an untouched empty field) or accept —
+   this is decision #9 above.
 2. **Real-provider smoke**: run the settings-tab "Test connection" once
    against a real provider (the Phase 2 smoke used a local mock server —
    12/12, but a real provider was never hit).
@@ -247,3 +362,33 @@ needs a vision-capable model. **Recorded in:** worklog 2026-09-22 (Phases
      `image_url` parts in the request bodies.
    - [ ] with "Auto-detect": point at a text-only model → the chat degrades
      to text-only once and continues (one console note).
+
+## Task 9 — Phase 7 desktop QA: knowledge, skills and the F2 waiting experience
+
+**Why you:** the step 7.9 checklist needs the desktop app and a real
+endpoint. **Recorded in:** worklog 2026-09-22 (Phase 7), "Issues found";
+`Phase7.md` §2 step 7.9 / §3.
+
+1. "Make movement feel juicy" on a bare project:
+   - [ ] the plan names Tween / particles / camera shake (design pack).
+2. "What behaviors exist for platformers?":
+   - [ ] `search_reference` is used and quotes correct parameter names.
+3. Load `platformer-game` via `load_skill`, then ask for a platformer build:
+   - [ ] the follow-up build follows the skill's recipe.
+4. `search_docs` / `read_doc`:
+   - [ ] an expression/picking question is answered offline (no network in
+     DevTools; with "Fetch missing documentation pages online" off).
+5. Custom instructions: set "Always answer in French" in Preferences → BYOK:
+   - [ ] answers come back in French (last prompt section works).
+6. F2 discipline: give a multi-step request:
+   - [ ] one-sentence progress updates arrive as to-do items complete.
+7. Step 7.0 sweep:
+   - [ ] like/dislike + "process function calls" affordances hidden on a
+     BYOK chat, visible on a hosted one.
+   - [ ] "Clear the stored key" works; blur on an untouched empty field does
+     not clear the key; an unreadable key (simulate a DPAPI failure by
+     restoring the entry under a new Windows account) says "cannot be
+     decrypted" instead of "no key stored".
+   - [ ] a screenshot-returning tool call shows its image in the chat (O4).
+8. Prompt size: with all knowledge flags on, the DevTools console logs the
+   composed length per turn — at or under the ~6k-token budget.

@@ -1,9 +1,10 @@
 # Agents Working in This Repository — Operating Manual
 
 You are an AI agent (or a human following agent-style discipline) working in
-`D:\Projects\GDevelop`. Read this file fully before touching anything. The style
+`C:\Projects\GDevelop`. Read this file fully before touching anything. The style
 rules live in [styleguide.md](styleguide.md); this file is the operating manual:
-what the project is, what you may do, and what makes a run pass or fail.
+what the project is, where it stands, what you may do, how decisions get made
+and recorded, and what makes a run pass or fail.
 
 ---
 
@@ -18,11 +19,55 @@ means building a client-side orchestrator that reuses the existing tool registry
 types (`src\Utils\GDevelopServices\Generation.js`), while adding as little code
 as possible to existing files.
 
-Read `REVIEW/report.md` first. Then work phase by phase from
-`REVIEW/Phase1.md` → `REVIEW/Phase4.md`. Do not skip ahead: each phase assumes
-the previous one's acceptance criteria (ACs) all pass.
+The roadmap is `REVIEW/Phase1.md` → `REVIEW/Phase9.md`, worked strictly in
+order: each phase assumes the previous one's acceptance criteria (ACs) all
+pass. `REVIEW/report.md` is the original architecture survey;
+`REVIEW/AIflow.md` maps the AI prompt/tool flow as actually built.
 
-## 2. Non-negotiable rules
+## 2. Where the project stands — keep this section current
+
+Status as of 2026-09-22 (update at the end of every session):
+
+- **Implemented and committed** (owner commit `0802d2d21e` on `master`):
+  Phases 1–6 — settings UI, client engine, Electron safeStorage integration,
+  client-side agent loop, local EventScript event writing + full tool parity,
+  perception (vision, screenshots, previews, gameplay tests). Prompt version
+  `byok-v4`.
+- **Planned, not started:** Phase 7 (knowledge/prompts/skills), Phase 8
+  (autonomous build workflow), Phase 9 (scale, robustness, model economics).
+- **Quality bar at the last full verification:** 164 test suites / 1740 tests
+  green, `lint` 0 warnings, `flow` 0 errors, `check-format` clean in
+  `newIDE\app`; the electron-app `check-format` gate is green too (fully
+  installed + committed `7283b2fc1c`).
+- **Audits:** every 2026-09-21 audit B-finding is fixed. The remaining open
+  findings are consolidated in `REVIEW/audit2209.md` (full detail) and triaged
+  into three actionable docs:
+  - `REVIEW/outofscoped.md` — approved work to be tackled (agent backlog;
+    includes the owner-designed features F1–F3),
+  - `REVIEW/deferred.md` — deliberately postponed / by-design items, with
+    reasoning,
+  - `REVIEW/usertasks.md` — the answered decision record + human QA
+    (Tasks 1, 2, 6, 7 open).
+- **Owner decisions:** all 16 decisions of 2026-09-22 are **answered**
+  (canonical record in `usertasks.md`; dispositions in the triage docs).
+  Every approved/queued item now has a committed phase home: the fixes
+  batch is `Phase7.md` step 7.0 (D10, O1, O4, O5–O11, O13), F2's halves
+  are `Phase7.md` step 7.1 + `Phase9.md` step 9.1, the owner's
+  persistence + multi-provider designs are `Phase9.md` steps 9.3/9.4
+  (with D5), and the Phase 8 prep (D8 hook + O3 memo fix) is
+  `Phase8.md` step 8.0. Streaming (D2) and the O2 char-estimate stay
+  **conditional** in `deferred.md` / `Phase9.md` §4 — no Phase 10 was
+  needed.
+- **Project state: PAUSED by owner decision (2026-09-22).** Do not start
+  feature work (Phases 7–9, F1–F3, O-items) until the owner restarts it;
+  doc upkeep and the owner's own QA (usertasks Tasks 1, 2, 6, 7) continue.
+- Owner-provided local assets: `libgd-2.3.3\` (repo root — import-libGD
+  source of truth) and `DOCs\` (the GDevelop-documentation clone, Phase 7
+  input).
+- The working tree may carry uncommitted in-progress changes between owner
+  commits — run `git status` before assuming a clean slate.
+
+## 3. Non-negotiable rules
 
 A run **fails** if any of these is violated:
 
@@ -31,68 +76,51 @@ A run **fails** if any of these is violated:
    actions, bugs found, issues found, full list of files worked on). Subagents
    must **not** write worklog entries — only the orchestrating agent writes them,
    one consolidated entry per session. Missing any of the 5 items = failed run.
-2. **Max 5 subagents at once.** The provider rate-limits more. Waves of ≤ 5.
-3. **Windows 11 machine.** Shell is the classic Command Prompt: `dir`, `findstr`,
-   `type` work; `ls`, `head`, `grep`, `cat`, `sed`, `awk` do not. Prefer the
-   dedicated Read/Glob/Grep tools over shell text-mangling. Paths with spaces
-   need quotes. npm is the package manager in this checkout.
-4. **Every function gets a test.** Co-located `*.spec.js`, same style as
+2. **End-of-session triage.** Alongside the worklog entry, classify everything
+   that surfaced but was not done (section 5.2). If nothing new fell into a
+   bucket, the worklog entry must say so verbatim: `no OOS`, `no deferred`,
+   `no UT`.
+3. **Max 5 subagents at once.** The provider rate-limits more. Waves of ≤ 5.
+4. **Windows 11, Git Bash.** The agent shell is Git Bash: `ls`, `grep`, `cat`
+   and friends work (older docs claiming cmd-only are outdated). Still prefer
+   the dedicated Read/Glob/Grep tools over shell text-mangling. Quote paths
+   with spaces. npm is the package manager in this checkout.
+5. **Every function gets a test.** Co-located `*.spec.js`, same style as
    `AiRequestUtils.spec.js` (small `makeXxx()` factories). DOM-dependent tests
    need `@jest-environment jsdom` docblock. All of `npm test`, `npm run lint`,
    `npm run flow`, `npm run check-format` must pass from `newIDE\app` before you
    declare a step done.
-5. **Code is written for humans.** No nested loops, no nested ifs (guard clauses
+6. **Code is written for humans.** No nested loops, no nested ifs (guard clauses
    and early returns instead), no clever one-liners, longer-but-readable wins.
    Flow-typed (`// @flow`, exact object types), Prettier-formatted, Lingui
    `<Trans>` for every user-visible string. Details in styleguide.md section 5.
 
-## 3. Scope rules
+## 4. Scope rules
 
-- **New BYOK code goes in `newIDE\app\src\AiGeneration\Byok\`** (plus one new
-  helper module and one small handler block in `newIDE\electron-app\app` in
-  Phase 3). Existing files may only be changed at the exact touchpoints listed in
-  the phase documents (`report.md` section 5 is the full budget). If you find
-  yourself editing anything else, stop and record why in the worklog under
-  "Issues found" before doing it.
-- **Documentation only in `/REVIEW`.** Never create `.md` files elsewhere.
+- **New BYOK code goes in `newIDE\app\src\AiGeneration\Byok\`** (plus the small
+  handler blocks already added in `newIDE\electron-app\app`, and the audited,
+  BYOK-gated touchpoints in shared files recorded in the worklogs). Existing
+  files may only be changed at touchpoints justified by the current phase
+  document or an owner decision. If you find yourself editing anything else,
+  stop and record why in the worklog under "Issues found" before doing it —
+  and expect the touch to become a `usertasks.md` budget approval.
+- **Documentation only in `/REVIEW`** — except `AGENTS.md` and `styleguide.md`,
+  which live at the repo root by owner decision. Never create `.md` files
+  anywhere else.
 - **No new npm dependencies** without explicit user approval.
 - **Never** edit anything under `newIDE\app\src\locales` by hand (Lingui
   pipeline owns it), and never modify files under `Binaries`, `Core`, `GDJS`,
   `Extensions`, `GDevelop.js` for this project — the BYOK feature is IDE-only.
-- Git: this checkout is not a git repository, so there is no committing. Do not
-  initialize one, do not delete or "clean up" files you did not create.
+- **Git:** this checkout **is** a git repository (branch `master`). The owner
+  reviews diffs and commits at milestones (e.g. `0802d2d21e`); agents do not
+  commit unless the owner asks in that session. Keep the tree free of
+  unrelated changes: after any `npm install`, restore dirtied
+  `package-lock.json` files with `git checkout --`, and never delete or
+  "clean up" files you did not create.
 
-## 4. Environment cheat sheet
+## 5. Workflow
 
-```
-cd /d D:\Projects\GDevelop\newIDE\app     (cd needs /d to switch drives in cmd)
-dir /b src\AiGeneration                    list a folder
-findstr /n /s /i "Byok" src\*.js           search (n=line numbers, s=subfolders, i=case-insensitive)
-type src\SomeFile.js                       print a file (prefer the Read tool)
-npm test -- --watchAll=false               run the Jest suite once
-npm run lint                               ESLint, zero warnings allowed
-npm run flow                               Flow type check
-npm run check-format                       Prettier diff check
-npm run format                             Prettier write
-```
-
-Electron main process (`newIDE\electron-app\app`) has **no test runner** — keep
-anything you add there trivial (thin handlers delegating to renderer-tested
-logic) and verify it with the manual checklist in `Phase3.md`.
-
-## 5. Using subagents
-
-- Use subagents for **read-only mapping and verification** ("find where X
-  happens, with file:line evidence"), not for writing code. Code is written by
-  the orchestrating agent so the style rules are enforced consistently.
-- A subagent prompt must be self-contained: absolute repo path, the question,
-  what files/areas to look at, the required output format, and "READ-ONLY, do not
-  modify anything".
-- Dispatch at most 5 per wave; wait for results before the next wave.
-- After a wave: consolidate findings, then write the single worklog entry for the
-  session yourself (the subagents do not).
-
-## 6. Working a step (per-phase loop)
+### 5.1 Working a step (per-phase loop)
 
 For each step in the current `PhaseN.md`:
 
@@ -107,16 +135,106 @@ For each step in the current `PhaseN.md`:
 6. After the phase's last step: run the phase's manual QA checklist (if any),
    then write the worklog entry.
 
-## 7. When something doesn't match the docs
+### 5.2 End-of-session triage
 
-The repository moves; the phase docs were written on 2026-09-13. If a line
-number, function name, or structure has shifted upstream:
+After the last gate run, before closing the session, sweep everything you
+found but did not fix, and put each item in **exactly one** place:
+
+- **`REVIEW/outofscoped.md`** — it should be tackled, but was outside this
+  session's scope/budget (or waits on an owner decision already listed in
+  `usertasks.md`). One entry per item: what, where (`file:line`), what blocks
+  it. **Remove an entry as soon as it is fixed and verified** (the permanent
+  record then lives only in the worklog) — this file is only "to be tackled".
+- **`REVIEW/deferred.md`** — you deliberately decided to postpone it. Write it
+  human-readable: what it is, why deferred, when it should be tackled, and the
+  standing proposal to the owner.
+- **`REVIEW/usertasks.md`** — it needs a human decision, action, or other
+  assistance: desktop-only QA, real-endpoint runs, budget approvals,
+  accept-or-fix calls, wording of user-visible strings.
+
+If nothing new went into a bucket, the worklog entry says so verbatim:
+`no OOS`, `no deferred`, `no UT`. Cross-reference instead of duplicating: each
+item lives in one triage doc and may be linked from the others.
+`audit2209.md` keeps the full findings detail behind the triage docs.
+
+### 5.3 Decision making
+
+- **Decide yourself** anything reversible, in-scope, and covered by the
+  current step's ACs — then record the decision in the worklog.
+- **Defer deliberately** (→ `deferred.md`) when the right fix belongs to a
+  later phase, a mid-phase refactor would churn a file that is still growing,
+  or the work depends on upstream GDevelop changes.
+- **Escalate to the owner** (→ `usertasks.md`) when it changes scope or
+  product behavior: touching upstream files beyond the recorded budget,
+  build/backlog/never on a deferred feature, accept-vs-fix on a known flaw,
+  anything needing accounts, a real endpoint, or the desktop app.
+- **Present decisions as one numbered plain-text chat message**, each item
+  with a one-line recommendation — not as interactive multiple-choice prompts.
+  After the owner answers: approved work goes to `outofscoped.md` (or gets
+  done immediately if in scope); rejections become by-design entries in
+  `deferred.md`.
+- The owner clears the triage docs between roadmap stretches. When a
+  `deferred.md` item is green-lit, plan it like a phase step; when an
+  `outofscoped.md` item is picked up, it re-enters the 5.1 loop.
+
+## 6. Environment cheat sheet
+
+```
+cd /c/Projects/GDevelop/newIDE/app
+npm test -- --watchAll=false               run the Jest suite once (never raw npx jest)
+npm run lint                               ESLint, zero warnings allowed
+npm run flow                               Flow type check (see quirk below)
+npm run check-format                       Prettier diff check
+npm run format                             Prettier write
+```
+
+- **Fresh-checkout rebuild** (when `node_modules` is missing): in `newIDE\app`
+  run `npm install --ignore-scripts` → `npx patch-package` → `npm run
+  make-version-metadata` → `npm run build-theme-resources` → `node
+  scripts/import-libGD.js` (the HEAD/HEAD~1 S3 objects 404; the HEAD~3
+  fallback downloads). Then `git checkout -- package-lock.json` (the install
+  always dirties it). `newIDE\electron-app` additionally needs `npm install
+  --ignore-scripts` at its root and in `electron-app\app` for its
+  check-format/node checks — the Electron binary itself stays undownloaded
+  until a desktop session (usertasks Task 1).
+- **Flow quirk:** flow clients can hang when their stdout is a pipe; if `npm
+  run flow` stalls, kill stale `flow.exe` processes and run
+  `node_modules\flow-bin\flow-win64-v0.299.0\flow.exe check` directly. If
+  `node`/`npm` are not on PATH, prefix `C:\Program Files\nodejs`.
+- Electron main process (`newIDE\electron-app\app`) has **no test runner** —
+  keep anything you add there trivial (thin handlers delegating to
+  renderer-tested logic) and verify it with the manual checklist in
+  `Phase3.md`. Its `check-format` is green (the two upstream files were
+  formatted in owner commit `7283b2fc1c`) — all BYOK electron files pass.
+
+## 7. Using subagents
+
+- Use subagents for **read-only mapping and verification** ("find where X
+  happens, with file:line evidence"), not for writing code. Code is written by
+  the orchestrating agent so the style rules are enforced consistently.
+- A subagent prompt must be self-contained: absolute repo path, the question,
+  what files/areas to look at, the required output format, and "READ-ONLY, do not
+  modify anything".
+- Dispatch at most 5 per wave; wait for results before the next wave. Large
+  waves can still hit provider rate limits — retry the failed agents, don't
+  redo the whole wave.
+- After a wave: consolidate findings, then write the single worklog entry for the
+  session yourself (the subagents do not).
+
+## 8. When something doesn't match the docs
+
+The repository moves; the phase docs were written on 2026-09-13 (Phases 1–4)
+and 2026-09-21 (Phases 5–9). If a line number, function name, or structure has
+shifted upstream:
 
 - Re-locate the equivalent spot yourself (search, don't guess).
 - Record the difference in the worklog under "Issues found" with the new
   `file:line`.
 - Keep the *intent* of the step (the ACs), not the literal line numbers.
 
+This applies to this manual too: if AGENTS.md contradicts reality, fix the
+manual in the same session and say so in the worklog.
+
 ---
 
-*Last updated: 2026-09-13.*
+*Last updated: 2026-09-22.*

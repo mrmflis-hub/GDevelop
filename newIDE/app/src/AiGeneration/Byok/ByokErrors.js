@@ -4,7 +4,7 @@
  * The kinds of failures a BYOK endpoint (or the network in between) can
  * produce. The kind drives what the app does next: whether to retry (see
  * `isRetryableByokError`), what to tell the user, and how to degrade
- * gracefully (see `describeInvalidRequestForReasoningEffort`).
+ * gracefully (see `isInvalidRequestForReasoningEffort`).
  */
 export type ByokErrorKind =
   | 'authentication' // 401 / invalid key
@@ -104,7 +104,11 @@ const getKindForStatus = (status: number): ?ByokErrorKind => {
   if (status === 403) return 'forbidden';
   if (status === 404) return 'not-found';
   if (status === 429) return 'rate-limit';
-  if (status === 400) return 'invalid-request';
+  // 422 ("Unprocessable Entity") is the same "your request contains
+  // something I don't accept" failure as 400 on many OpenAI-compatible
+  // servers (e.g. an unknown reasoning_effort parameter) — classified the
+  // same so the degraded retries can engage on it too.
+  if (status === 400 || status === 422) return 'invalid-request';
   if (status >= 500 && status < 600) return 'server';
   return null;
 };
@@ -236,10 +240,11 @@ export const isRetryableByokError = (error: ByokError): boolean => {
 /**
  * True when the endpoint rejected the request specifically because of the
  * `reasoning_effort` parameter (some OpenAI-compatible servers don't know
- * it). The caller can then retry once without the parameter instead of
- * failing the whole chat.
+ * it; they answer 400 or 422 — both classify as 'invalid-request'). The
+ * caller can then retry once without the parameter instead of failing the
+ * whole chat.
  */
-export const describeInvalidRequestForReasoningEffort = (
+export const isInvalidRequestForReasoningEffort = (
   error: ByokError
 ): boolean => {
   if (error.kind !== 'invalid-request') return false;

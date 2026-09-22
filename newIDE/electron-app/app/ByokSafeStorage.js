@@ -20,7 +20,7 @@ const isByokEncryptionAvailable = () => {
  * @returns {{ ok: true, data: string } | { ok: false, error: string }} the
  * base64 ciphertext — errors come back as values, never as exceptions.
  */
-const encryptByokSecret = (plainText) => {
+const encryptByokSecret = plainText => {
   try {
     const encryptedBuffer = safeStorage.encryptString(plainText);
     return { ok: true, data: encryptedBuffer.toString('base64') };
@@ -34,7 +34,7 @@ const encryptByokSecret = (plainText) => {
  * @param {string} base64CipherText
  * @returns {{ ok: true, data: string } | { ok: false, error: string }}
  */
-const decryptByokSecret = (base64CipherText) => {
+const decryptByokSecret = base64CipherText => {
   try {
     const plainText = safeStorage.decryptString(
       Buffer.from(base64CipherText, 'base64')

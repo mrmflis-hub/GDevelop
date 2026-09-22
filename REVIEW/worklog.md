@@ -21,6 +21,461 @@ orchestrating agent writes one consolidated entry per session.
 
 ---
 
+## 2026-09-22 — Phase 7 implemented: knowledge, prompts, and the skills system (+ step 7.0 backlog clearing)
+
+**Agent:** ZCode main orchestrator (no subagents — all code written and
+verified in-session).
+
+**Actions:**
+
+- **Step 7.0 (backlog clearing) — all 11 items implemented, tested, verified:**
+  - **O1** — `onSendFeedback` is now an optional prop in `AiRequestChat/index.js` +
+    `ChatMessages.js`; the like/dislike buttons (and the dislike-dialog callback) are
+    gated on its presence; the container passes it only for hosted chats. The no-op
+    handler was kept per the owner's instruction, hoisted to module scope as
+    `onSendByokNoopFeedback` (an unused per-render useCallback would fail the
+    zero-warnings lint gate) — exported for the possible future upstream PR.
+  - **O13** — same optional-prop pattern for `onProcessFunctionCalls` (index.js,
+    ChatMessages.js, OrchestratorPlan.js, SuggestionLines.js); the dead threading into
+    TaskRow (which never used it) was removed; the container passes it only for hosted
+    chats. Tests: `ChatMessages.spec.js` asserts the plan receives the callback for a
+    hosted chat and `undefined` for a BYOK one.
+  - **O4** — tool outputs carrying `images` render inline in the chat: new
+    `tool_result_images` render item (`AiRequestChat/Utils.js` — touch justified: the
+    RenderItem union lives there), rendered from a `getToolResultImage` prop the
+    container wires to `getByokImage` for BYOK chats only. jsdom tests: an
+    image-bearing transcript renders an `<img>`; without the lookup prop nothing
+    renders; unknown ids (post-reload) render nothing; text-only transcripts unchanged.
+  - **O7** — `AiRequestErrorRow` maps `byok-empty-answer` to the approved heading
+    "The model returned an empty answer." keeping the retryable kind. New spec covers
+    the mapping, the generic fallback, and the `byok-context-full` too-large path.
+  - **D10** — the API-key field commits only when the user actually edited it
+    (`isKeyFieldEdited`): blur on an untouched empty field never saves (never clears);
+    typing then erasing everything + blur is an explicit delete; a second untouched
+    blur re-saves nothing. Tests: all three cases + the double-blur edge case.
+  - **O5** — `loadByokKey` returns `ByokKeyLoadResult` (`none` / `unreadable` / `ok`
+    with the key only when ok). All callers updated; the container's missing-key error
+    picks the line per status ("add a key" vs "cannot be decrypted on this computer —
+    clear and re-enter", code `byok-unreadable-key`); the settings tab keeps the Clear
+    button available for unreadable entries. Spec updated per status + a
+    distinct-from-none test on a simulated DPAPI failure.
+  - **O6** — the v1-plaintext migration replaces the entry only on a confirmed write:
+    `performSaveByokKey`'s boolean is now checked; on failure the plaintext entry is
+    kept (logged) and the migration retried on the next load. Test: failed write keeps
+    the plaintext entry, next load migrates it to v3.
+  - **O8** — `APPROVED_CALL_IDS_CAPACITY = 500` in `ByokSeam.js` (testable home) with
+    a why-comment (bounded memory; clear-all kept as-is, worst case a re-approval is
+    asked); used by the container; pinned by a ByokSeam spec.
+  - **O9** — the duplicate "working" persist is gone: `runLoop` no longer sets/persists
+    the status; `appendUserMessage` (message path) and `retryAfterError` (retry path)
+    each persist exactly once per turn start. Tests count persists while the model
+    call is pending on both paths.
+  - **O10** — renamed to `isInvalidRequestForReasoningEffort` (**spec deviation from
+    Phase 2's mandated name recorded here**); `getKindForStatus` now maps 422 like 400
+    (invalid-request), so the reasoning-effort degradation engages on 422 too. Spec
+    adds the 422 case.
+  - **O11** — the 5 duplicated `beforeEach` blocks in `ByokSettingsTab.spec.js`
+    hoisted into one file-level reset (the 5th block was 4 lines shorter — it omitted
+    the models/test-connection mock resets; the shared block resets those harmlessly);
+    `ByokSeam.spec.js` converted to ES imports.
+- **Step 7.1 — prompt composer (`byok-v5`):** new
+  `Byok/Knowledge/ByokKnowledgeSections.js`: section registry (core sections
+  registered once: role 10, tools 20, project context 30, project notes 35, output
+  rules 40, planning+F2 50, single-agent 60, EventScript core 70, script batching 80,
+  look/verify 90, grounding 100, skills appendix 110, custom instructions 999) + pure
+  composer (`composeByokPromptSections`): priority-ordered, global budget
+  `BYOK_SYSTEM_PROMPT_BUDGET_TOKENS = 6000` (~4 chars/token), per-section budgets,
+  degradable knowledge sections collapse to a first-line summary + pointer, overflow
+  summaries drop, non-degradable sections truncate at their own budget. The F2
+  progress discipline (decision #2) lives in the planning section: obligatory to-do
+  list via `create_or_update_plan` (internal, hidden acceptable) + one-sentence
+  progress update per completed to-do item; single long answers stay acceptable.
+  `ByokPrompts.js` is now the composer facade: same call signature + optional full
+  `context`, version bumped to `byok-v5`, composed length logged to the console per
+  turn (7.9 QA). Tests: budget under many sections, stable priority order, idempotent
+  registration, graceful degradation, drop, truncate, empty-section skip, F2 content
+  markers, notes/skills/custom-instructions rendering.
+- **Step 7.2 — engine reference + `search_reference`:** `scripts/byokEngineReferenceParser.js`
+  (tolerant static parser of `Extensions/<name>/JsExtension.js` and
+  `Core/GDCore/Extensions/Builtin/**.cpp` registration calls: balanced-paren argument
+  lists, translated-string unquoting incl. adjacent literals, chained parameter
+  capture, longest-string descriptions for behaviors/objects/effects,
+  duplicated/scoped/AECAA variants) + `scripts/generate-byok-engine-reference.js`
+  (walks the repo, dedupes, sorts, writes the committed catalog). **Catalog: 1962
+  entries** (836 actions, 509 conditions, 537 expressions, 21 behaviors, 13 objects,
+  46 effects), 54 tolerated warnings (dynamic names / metadata-only effects),
+  committed at `Byok/docs/engine-reference.json`. `ByokEngineReference.js`: lazy +
+  defensive loader (injectable for tests; a missing file degrades to "unavailable",
+  never a crash), prefix > substring > description/owner scoring, cap 40 with a
+  "narrow your query" steering line. Tool `search_reference(query, kind?, owner?)`
+  registered (schema, whitelist, interception), answering compacted entries. The
+  always-on cheat-sheet section (event anatomy, object picking, TimeDelta, ~30 top
+  expressions, pointer to `search_reference`).
+- **Step 7.3 — EventScript pack:** `Byok/Knowledge/ByokEventScriptPack.js` — full
+  grammar reference (statement forms, and/not/Or/once, disabled, escaping, anchors,
+  collapse markers, placement relations, "what does not fit EventScript") + 8 worked
+  examples. **Test-linked to the Phase 5 parser: every example parses**
+  (`parseByokEventScript`), which caught and fixed pseudo-syntax in three first-draft
+  examples (a natural-language collision condition, `SceneVariable(Score) >= 100`
+  comparisons, `Enemy.Y()` conditions) — the shipped examples use only
+  metadata-verified instruction names. Degradable section (priority 200); the
+  operational core stays always-on (7.1).
+- **Step 7.4 — game-design pack:** authored, opinionated core (design-first rule,
+  loop-first heuristic, juice vocabulary mapped to the engine, introduce → combine →
+  twist, numbers-in-variables, smallest-playable-slice, explicit win/lose).
+  Content-marker + budget + no-external-citations tests.
+- **Step 7.5 — math/physics + JS packs:** math/physics core (never compute in your
+  head, TimeDelta frame-rate independence, degrees-0=right-clockwise-down angle
+  conventions, vector/probability recipes, Box2D joints/forces discipline, Platformer
+  parameters, Jolt 3D) and JS API core (prefer-events churn warning, JS event scope,
+  extension-function scope + `eventsFunctionContext`, the `gdjs.evtTools.*` list,
+  Pixi/three renderer access, docs pointer incl. a `[docs: events/js-code/index.md]`
+  link).
+- **Step 7.6 — skills system:** skill format (Markdown + `name`/`description`/`tools?`
+  frontmatter, 32 KB cap); `ByokSkills.js` parses/validates/merges (builtin first,
+  user override by name; broken files logged and skipped); the builtin set ships as
+  11 authored `Byok/Skills/*.md` files (platformer-game, top-down-shooter,
+  puzzle-grid, hud-and-menus, save-system, juice-and-game-feel, physics-2d-recipes,
+  3d-scene-basics, js-custom-rendering, eventscript-authoring, gameplay-testing) + a
+  generator script (`generate-byok-skills-index.js`) emitting a committed ES module
+  (the repo's generated-artifact pattern — no webpack raw-loader needed). Desktop
+  user skills: `electron-app/app/ByokUserSkills.js` reads `<userData>/byok-skills/*.md`
+  over the new `byok-read-user-skills` IPC (registered in `main.js`; Phase 3
+  errors-as-values pattern). Tool `load_skill(name)` returns the body as a tool output
+  (persists in the transcript); unknown names list what is available. Settings tab:
+  skills-folder hint row. The prompt appendix renders metadata-only via the 7.1
+  context.
+- **Step 7.7 — docs access:** **license verified first:** the GDevelop-documentation
+  content is **CC Attribution-Share Alike 4.0 International** (stated in its
+  `mkdocs.yml` copyright and the site footer; no LICENSE file at the repo root — the
+  mkdocs statement is the license declaration). Redistribution is permitted with
+  attribution + share-alike; `Byok/docs/ABOUT.md` records the source, license, date
+  and manifest. **15 curated pages** copied from the local `DOCs/` checkout (all
+  events pages incl. js-code/object-picking/expressions — **path drift vs the phase
+  doc recorded in Issues**); indexed via `generate-byok-docs-index.js` → committed
+  `BundledDocs.generated.js` (title + headings + content per page). `ByokDocs.js`:
+  substring search (title > path > headings > body), cap 15, `read_doc` capped at
+  12000 chars with anchor section-slicing, offline-first online expansion (bundled →
+  24 h localStorage cache → raw.githubusercontent fetch, only when the new
+  `onlineDocsEnabled` setting is on; injectable fetcher; **asserted never to fetch
+  when off**). Tools `search_docs`/`read_doc` registered + intercepted; zero
+  GDevelop-backend calls (no `GDevelopServices` imports). The Phase 5 exclusion-list
+  test updated: `search_docs` is now legitimately implemented client-side
+  (`read_full_docs` stays excluded).
+- **Step 7.8 — project notes + custom instructions:** `ByokProjectNotes.js` —
+  a `{conventions, inProgress, decisions, updatedAt}` record per project file
+  identifier (cloud-save `fileMetadata.fileIdentifier`, fallback FNV-1a name hash),
+  localStorage for v1 (Phase 9 moves persistence to IndexedDB), 8 KB blob cap +
+  2000-char field cap, merge semantics (absent = keep, explicit string = replace,
+  empty = clear). Tool `update_project_notes` (merge, refuses when over cap,
+  actionable failure without a project); the orchestrator gains
+  `getProjectNotesIdentifier` (option + collaborator) and injects the notes + skills
+  metadata + custom instructions into every turn's prompt context (async build).
+  Settings tab: "Custom instructions" textarea (2000-char cap) and "Fetch missing
+  documentation pages online" checkbox; both new settings added to `ByokSettings`
+  with defaults + validation tests.
+- **Step 7.9 — phase gate:** all four gates green from `newIDE\app` (**176 test
+  suites / 1866 tests passed, 1 pre-existing skip; lint 0 warnings; flow 0 errors;
+  check-format clean**) and the electron-app `check-format` green as well. The manual
+  desktop QA checklist cannot run headless — recorded as **usertasks Task 9** (see
+  Issues).
+
+**Bugs found:**
+
+1. **(new code this session — engine-reference parser — FIXED)**
+   `parseArgumentList` mis-bookkept the initial parenthesis: the opening paren was
+   both accumulated into the first argument and treated as depth 0, so every argument
+   list failed to terminate and the generator emitted **0 entries**. Repro:
+   `parseArgumentList("addBehavior('X', _('Y'))", 11)` returned null. Root cause:
+   the depth accounting did not treat the initial `(` as level 1. Fix: start at
+   depth 1 after the opening paren, return on the matching `)` at depth 1
+   (`scripts/byokEngineReferenceParser.js`).
+2. **(new code this session — FIXED, caught by the pack/parser test-link)**
+   `addExpressionAndConditionAndAction` / `AddExpressionAndCondition` entries were
+   named by their **type** argument (arg 0: "number", "string"…) instead of their
+   name (arg 1), so the dedupe key collapsed them: 1655 entries, ~305 lost, and
+   nonsense type-named entries in the catalog. Repro: parse
+   `Extensions/3D/JsExtension.js` and look for `name: "number"`. Root cause: the
+   AECAA signature is `(type, name, …)` — its name sits at index 1. Fix: index the
+   name by entry form; regenerated catalog (1962 entries, 0 type-named).
+3. **(new code this session — FIXED)** both generator scripts' doc comments contained
+   the glob `Extensions/*/JsExtension.js` — the `*/` terminated the block comment
+   (SyntaxError on first run). Fix: reworded to `Extensions/<name>/JsExtension.js`.
+4. **(pre-existing — FIXED as O9)** every user message persisted the "working" status
+   twice (`appendUserMessage` and `runLoop` both set+persisted). Root cause: the
+   retry path's needs were met inside the shared loop; fix moves the persist to the
+   two callers (`ByokOrchestrator.js`).
+5. **(pre-existing — FIXED as O10)** `describeInvalidRequestForReasoningEffort` was a
+   predicate named "describe…" and a 422 from the endpoint classified as `unknown`
+   (so a reasoning_effort 422 never degraded). Root cause: `getKindForStatus` mapped
+   only 400. Fix: predicate renamed + `status === 400 || status === 422`.
+6. **(pre-existing UI contract — FIXED during the O4/D10 work; note for future
+   code)** passing a React element to `TextField`'s `hintText` prop breaks
+   `TestRenderer.toJSON()` serialization ("Converting circular structure to JSON"
+   via `_context`): `UI/TextField` requires `hintText: string` or
+   `translatableHintText: MessageDescriptor`. Fixed by using `translatableHintText`
+   for the custom-instructions field.
+
+**Issues found:**
+
+- **Docs path drift (AGENTS.md §8):** the phase doc's `js-code.md`,
+  `expressions.md`, `object-picking.md` live upstream as `events/js-code/index.md`,
+  `events/expressions/index.md`, `events/object-picking/index.md`; the bundled
+  subset uses the real paths under `Byok/docs/gdevelop-docs/events/`.
+- **Reference-parameter shape deviation:** the step's entry shape says
+  `parameters:[{name,type,description}]`; upstream metadata carries **no parameter
+  names** (only a type + a label), so entries emit
+  `parameters:[{type,description}]`.
+- **Catalog shipping:** the step says "run at build or first launch"; the catalog is
+  generated by the dev script and **committed** (like VersionMetadata / theme
+  variables), refreshed whenever engine metadata changes — a first-launch generation
+  would depend on repo sources an installed app does not ship.
+- **O8 boundary nuance:** the eviction trigger moved from `size > 500` to
+  `size >= APPROVED_CALL_IDS_CAPACITY` (capacity semantics; the set can no longer
+  momentarily hold 500 ids). Behavior stays "bounded, occasionally re-asks".
+- **Tool-count cap raised 32 → 36** (validator + spec pin updated with comment):
+  this phase whitelists 5 new BYOK-only tools (`search_reference`, `load_skill`,
+  `search_docs`, `read_doc`, `update_project_notes`); total = 36.
+- **`AiRequestChat/Utils.js` touched** (new `ToolResultImagesRenderItem` in the
+  `RenderItem` union) — not in step 7.0's files list, but required by O4's ordered
+  rendering; justified under the step and recorded here per the budget rule.
+- **Raw `npx jest` re-confirmed broken** for this repo (react-app-rewired
+  `npm test` is the runner): one mid-session false suite failure ("self is not
+  defined") — AGENTS §6 already says so; cost a detour.
+- **electron-app `check-format` is now fully green** — the two pre-existing upstream
+  files were formatted in owner commit `7283b2fc1c`; AGENTS.md §6 updated in this
+  session (per §8) along with the §2 status block.
+- **Desktop QA (step 7.9)** cannot run in this environment (headless, no real
+  endpoint): recorded as **usertasks Task 9** with the full checklist; the "visibly
+  works in QA" AC items there remain unchecked by design of this environment.
+
+**Triage:** 1 new OOS item (project-notes identifier staleness across a mid-chat
+"Save as…" — `outofscoped.md`); `no deferred`; 1 new UT entry (Task 9, the Phase 7
+desktop QA checklist — `usertasks.md`). Removed from `outofscoped.md` as
+implemented+verified: O1, O4, O5, O6, O7, O8, O9, O10, O11, O13, D10; F2's entry now
+tracks only the watchdog half (the prompt half landed in step 7.1).
+
+**Audit greps (artifacts of the ACs, as run at gate time):**
+
+```
+=== AC1: Step 7.0 backlog items ===
+--- O1 (optional onSendFeedback + render gate):
+src/AiGeneration/AiRequestChat/ChatMessages.js:80:  onSendFeedback?: (
+src/AiGeneration/AiRequestChat/index.js:155:  onSendFeedback?: (
+ChatMessages.js render gates: 876: !!onSendFeedback ? (   1114: !!onSendFeedback ? (
+--- O13 (optional onProcessFunctionCalls):
+OrchestratorPlan.js:31 / index.js:178 / SuggestionLines.js:36 / ChatMessages.js:90:  onProcessFunctionCalls?: (
+--- O4 (tool result images):
+ChatMessages.js:99:  getToolResultImage?: (imageId: string) => ?{| dataUrl: string |},
+ChatMessages.js:366: !!getToolResultImage    ChatMessages.js:935: const image = getToolResultImage
+--- O7 (byok-empty-answer mapped):
+AiRequestErrorRow.js:69:  if (error && error.code === 'byok-empty-answer') {
+AiRequestErrorRow.spec.js:36:  it('maps byok-empty-answer to its dedicated heading and offers retry')
+--- D10 (explicit delete only):
+ByokSettingsTab.js:193 isKeyFieldEdited ; :389 commitApiKeyField ; :390 if (!isKeyFieldEdited) return ; :527 onBlur={commitApiKeyField}
+--- O5 (status shape):
+ByokKeyStorage.js:264: export type ByokKeyLoadResult =
+  | {| status: 'none' |} | {| status: 'unreadable' |} | {| status: 'ok', key: string |};
+--- O6 (clear only after confirmed write):
+ByokKeyStorage.js:291: let isMigrationWritten = false ; :303 = await performSaveByokKey(...) ; :305 if (!isMigrationWritten) {
+--- O8 (named constant):
+ByokSeam.js:41: export const APPROVED_CALL_IDS_CAPACITY = 500
+ByokSeam.spec.js:16: expect(APPROVED_CALL_IDS_CAPACITY).toBe(500) ; AskAiEditorContainer.js:99 (import)
+--- O9 (single working persist):
+ByokOrchestrator.js:965: // The 'working' status is persisted once per turn start by the caller
+--- O10 (predicate rename + 422):
+ByokErrors.js:247: export const isInvalidRequestForReasoningEffort = ...
+ByokErrors.js:111: if (status === 400 || status === 422) return 'invalid-request' ; ByokClient.js:291 (caller)
+--- O11 (spec hygiene):
+ByokSeam.spec.js require( count: 0 ; ByokSettingsTab.spec.js beforeEach count: 1
+
+=== AC2: F2 prompt half ===
+ByokKnowledgeSections.js:136: - Every time you complete a to-do item, send the user a one-sentence progress update...
+ByokPrompts.spec.js:85 / ByokKnowledgeSections.spec.js:269: contains 'one-sentence progress update'
+=== AC3: composer + byok-v5 + budget + sync test ===
+ByokPrompts.js:27: BYOK_AGENT_PROMPT_VERSION = 'byok-v5' ; ByokPrompts.spec.js:76 pins it
+ByokKnowledgeSections.js:21: BYOK_SYSTEM_PROMPT_BUDGET_TOKENS = 6000
+ByokPrompts.spec.js:14: 'contains every tool name from getByokToolSchemas, keeping prompt and schemas in sync'
+=== AC4: engine reference + search_reference + cheat-sheet ===
+catalog entries: 1962 ; ByokToolSchema.js:1057 search_reference schema ; ByokExtraTools.js:136 interception
+ByokEngineReference.js:172 TimeDelta rule ; :188 id: 'engine-cheat-sheet'
+=== AC5: EventScript pack test-linked to parser ===
+ByokEventScriptPack.spec.js:3 imports parseByokEventScript
+:66 'every worked example parses with the Phase 5 parser' ; :76 parseByokEventScript(example.source)
+=== AC6: pack content markers ===
+ByokGameDesignPack.js:15 '- Design first: ...' ; ByokMathPhysicsPack.js:15 '- Never compute geometry...'
+ByokJsApiPack.js:15 '- Prefer events. ...'
+=== AC7: skills system ===
+11 .md skills shipped ; ByokExtraTools.js:177 load_skill
+ByokSkills.spec.js:136 'merges user skills over builtin ones' (:159 user:platformer-game.md)
+ByokSettingsTab.js:561 byok-skills hint ; electron main.js + ByokUserSkills.js + ByokSkills.js:150 byok-read-user-skills
+=== AC8: docs (license + offline + zero backend calls) ===
+ABOUT.md: 'CC Attribution-Share Alike 4.0' + 'CC BY-SA 4.0' ; 15 bundled .md pages
+ByokDocs.js GDevelopServices imports: 0
+=== AC9: project notes + custom instructions ===
+ByokExtraTools.js:299 update_project_notes ; ByokTypes.js:48/:72 customInstructions + default
+ByokOrchestrator.js:358 customInstructions: settings.customInstructions
+```
+
+**Files worked on:**
+
+- Created (app): `src/AiGeneration/Byok/Knowledge/ByokKnowledgeSections.js` + spec,
+  `ByokEventScriptPack.js` + spec, `ByokGameDesignPack.js` + spec,
+  `ByokMathPhysicsPack.js` + spec, `ByokJsApiPack.js` + spec;
+  `src/AiGeneration/Byok/ByokEngineReference.js` + spec,
+  `ByokEngineReferenceParser.spec.js`, `ByokSkills.js` + spec, `ByokDocs.js` + spec,
+  `ByokProjectNotes.js` + spec; `src/AiGeneration/AiRequestChat/ChatMessages.spec.js`,
+  `AiRequestErrorRow.spec.js`; `src/AiGeneration/Byok/docs/engine-reference.json`
+  (generated), `docs/ABOUT.md`, `docs/gdevelop-docs/**` (15 curated pages +
+  `BundledDocs.generated.js`); `src/AiGeneration/Byok/Skills/*.md` (11) +
+  `ByokBuiltinSkills.generated.js`.
+- Created (scripts): `byokEngineReferenceParser.js`,
+  `generate-byok-engine-reference.js`, `generate-byok-skills-index.js`,
+  `generate-byok-docs-index.js`.
+- Created (electron-app): `app/ByokUserSkills.js`.
+- Modified (app): `Byok/ByokKeyStorage.js` + spec, `Byok/ByokSettingsTab.js` + spec,
+  `Byok/ByokErrors.js` + spec, `Byok/ByokClient.js`, `Byok/ByokSeam.js` + spec,
+  `Byok/ByokOrchestrator.js` + spec, `Byok/ByokToolSchema.js` + spec,
+  `Byok/ByokExtraTools.js` + spec, `Byok/ByokTypes.js` + spec, `Byok/ByokPrompts.js` +
+  spec, `AskAiEditorContainer.js`, `AiRequestChat/index.js`,
+  `AiRequestChat/ChatMessages.js`, `AiRequestChat/OrchestratorPlan.js`,
+  `AiRequestChat/SuggestionLines.js`, `AiRequestChat/Utils.js`,
+  `AiRequestChat/AiRequestErrorRow.js`.
+- Modified (electron-app): `app/main.js`.
+- Docs: `AGENTS.md` (§2 status, §6 electron note — per §8), `REVIEW/outofscoped.md`
+  (11 entries removed as verified, F2 narrowed, 1 new item), `REVIEW/usertasks.md`
+  (Task 9 added), this worklog entry.
+
+---
+
+## 2026-09-22 — Replan: all triage tasks split into the phase docs (steps 7.0/7.1, 8.0, 9.1/9.4); no Phase 10 needed
+
+**Agent:** ZCode main orchestrator (no subagents).
+
+**Actions:**
+- Read the answered decision record (`usertasks.md` "Owner decisions — presented and answered 2026-09-22") plus `deferred.md` and `outofscoped.md`, and assigned every to-be-implemented/fixed item a committed phase home. Cross-doc step references were surveyed first (AGENTS.md "9.3/9.4", `Phase8.md` "9.2/9.5", `Phase7.md` internal 7.6–7.8), so **no existing step number changed** — new steps were inserted as 7.0/8.0 and step 9.1 was repurposed in place:
+  - `Phase7.md` **step 7.0** (new, worked first on restart): the whole approved backlog — D10, O1, O4, O5, O6, O7, O8, O9, O10, O11, O13, grouped chat-UX / settings+storage / engine+spec-hygiene, each with files + tests; upstream touchpoints recorded as owner-approved (#10/#11/#14/#15). **Step 7.1** amended to carry the **F2 prompt half** (obligatory to-dos via `create_or_update_plan` + one-sentence progress per completed item); intro, modified-files budget, 7.9 QA list and §3 ACs updated.
+  - `Phase8.md` **step 8.0** (new prep): the D8 hook extraction (`useByokChatSeam`) + the O3 `ensureExtensionInstalled` memo staleness fix; intro, new-files list and §3 ACs updated.
+  - `Phase9.md`: step 9.1 rewritten from streaming to the **F2 stall watchdog** (`ByokWatchdog.js`, in-chat notices, one per stall window — owner decision #2 rejected streaming); step 9.4 expanded to the full **F3 multi-provider** design (provider registry with per-provider keys, `provider name/model name` dropdown from `/models`, effort dropdown with server-listed levels, legacy-endpoint migration) with **D5** (badge + exact token row) folded in; step 9.5's capability list dropped streaming and gained `effortLevels`; intro items 1/4, files lists, 9.9 QA, §3 ACs updated; streaming (D2) + the O2 char-estimate recorded as conditional in §4.
+  - **No Phase10.md created:** every approved item fits in Phases 7–9; the only unplanned items are the two conditional ones (D2 streaming, O2 estimate), whose home is `deferred.md` until the owner green-lights them — consistent with the owner's answers.
+- Propagated the pointers: `outofscoped.md` (phase-home column/lines + a header note; entries stay until fixed + verified per the file rules), `deferred.md` (committed homes on D2/D4/D8/O3/O4/O2-fallback; conditionals cross-referenced to `Phase9.md` §4), `usertasks.md` decision list (planning annotations only — the answers themselves untouched), `AGENTS.md` §2 (phase-home summary replaces the standing-recommendations sentence).
+
+**Bugs found:** none (documentation-only session; no code touched, so the four gates are unaffected — the last full verification stands: 164 suites / 1740 tests / lint / flow / format green).
+
+**Issues found:**
+- Doc drift fixed in passing: `Phase9.md` step 9.5 referenced "9.0's auto result" — a step number that does not exist; it meant the Phase 6 vision auto-detect, and now says so.
+- Phase 9 is the largest phase after the fold-ins (F1 + F3 + D5 + watchdog + compaction + capabilities + evals); judged still coherent under the "scale/robustness/economics" theme. If the owner prefers a smaller Phase 9 at restart time, F3/D5 is the natural split point for a Phase 10.
+- Triage statement for this session: **no OOS, no deferred, no UT** *newly surfaced* — planning only; existing entries gained phase-home pointers and stay in their triage docs until fixed + verified.
+
+**Files worked on:**
+- Modified: `REVIEW/Phase7.md`, `REVIEW/Phase8.md`, `REVIEW/Phase9.md`, `REVIEW/outofscoped.md`, `REVIEW/deferred.md`, `REVIEW/usertasks.md`, `AGENTS.md`, `REVIEW/worklog.md` (this entry).
+- Read: `REVIEW/usertasks.md`, `REVIEW/deferred.md`, `REVIEW/outofscoped.md`, `REVIEW/audit2209.md`, `REVIEW/Phase7.md`, `REVIEW/Phase8.md`, `REVIEW/Phase9.md`, `REVIEW/worklog.md` (format + entry order), `AGENTS.md`.
+
+---
+
+## 2026-09-22 — Owner decisions (16/16) recorded across the triage docs; electron format gate green (7283b2fc1c); project PAUSED
+
+**Agent:** ZCode main orchestrator (no subagents).
+
+**Actions:**
+- Walked the owner through all 16 pending decisions in chat (per AGENTS.md §5.3) and recorded the answers in the canonical list (`usertasks.md`): **approved** — D1 chat history *with the owner's file-based design* (save on every user message + AI completion + app closure, YAML or Markdown, history button in the chat tab, 5-words-of-first-prompt + last-interaction-date naming), D5 badge/token row, D6 per-chat model+effort *with a ZCode-style multi-provider design* (provider registration; `provider/model` dropdown from `/models`; effort dropdown defaulting low/medium/high or server-listed levels), D10 explicit-delete-only for the API key, O1 hide-but-keep-code, O7+O13 chat cleanups, E2; **rejected/by-design** — D3 never re-admit store tools (confirmed routing model: login stays, BYOK-enabled setting routes AI), D9 keep local (GDevelop not accepting BYOK-fork PRs; owner may approach the team); **still deferred** — D2 streaming (superseded by the approved progress-updates+watchdog design, F2), D4 sub-agents (Phase 8), D8 container hook (Phase 8), O2 char-estimate fallback. O3/O4 were not in the chat round — their standing recommendations (Phase 8 / Phase 7–8 polish) were recorded as standing unless the owner objects.
+- Propagated the dispositions: `outofscoped.md` (approved rows re-statused + new F1 history / F2 progress+watchdog / F3 providers design entries), `deferred.md` (by-design D3/D9 with the owner's reasoning; departures removed), `audit2209.md` (§1 disposition note, §2 table synced, Task 5 done, E2/E4/DOC1 resolved), `Phase9.md` (step 9.3 rewritten to the owner's file-based persistence design — superseding the IndexedDB-only plan, kept as the web fallback; step 9.4 annotated with F3), `Phase7.md` (DOCs/ clone noted as the docs-source input), `AGENTS.md` §2 (answers recorded, PAUSED state, owner assets `libgd-2.3.3\` + `DOCs\`).
+- Executed the approved E15: prettier-formatted the two pre-existing upstream electron files (`CliCommandHandoff.js`, `OpenProjectsRegistry.js`) and committed them as `7283b2fc1c` — the electron-app `check-format` gate is fully green now.
+- Owner completed out-of-band: AGENTS.md rewrite (decision process + triage docs + reality), saved `libgd-2.3.3` at the repo root, cloned `GDevelop-documentation` to `DOCs/`.
+
+**Bugs found:** none (documentation, triage and one formatting-only commit; no behavior change — `node --check` passes both formatted files).
+
+**Issues found:**
+- The chat round omitted O3 and O4 (they were context in earlier rounds, never numbered questions) — recorded with their standing recommendations and flagged to the owner for objection rather than assumed answered.
+- Triage statement for this session: **no OOS, no deferred, no UT** *newly surfaced* — the session's triage output consists entirely of dispositions of the 16 owner answers (F1–F3 added to `outofscoped.md` as approved designs, D3/D9 rejections filed as by-design in `deferred.md`); no new findings, deferrals or user tasks were discovered.
+- Open implementation choices inside the owner's F1 design (deliberately left to the build session, recorded in Phase9.md): YAML vs Markdown format, web-build storage fallback, image sidecar layout.
+
+**Files worked on:**
+- Modified: `REVIEW/usertasks.md` (answers recorded against the canonical list + extras), `REVIEW/outofscoped.md` (statuses + F1–F3), `REVIEW/deferred.md` (rewritten to post-decision state), `REVIEW/audit2209.md` (synced), `REVIEW/Phase9.md` (step 9.3 owner design + 9.4 note + overview bullet), `REVIEW/Phase7.md` (DOCs note), `AGENTS.md` (§2 standing section), `REVIEW/worklog.md` (this entry); `newIDE/electron-app/app/CliCommandHandoff.js` + `OpenProjectsRegistry.js` (prettier only — committed `7283b2fc1c`); agent memory (project state: paused, decisions recorded, owner assets).
+- Read: `usertasks.md` (canonical decision list), `outofscoped.md`/`deferred.md` (pre-disposition state), `audit2209.md`, `Phase9.md` §9.3–9.4, `Phase7.md` header, `AGENTS.md` (owner's rewrite).
+
+---
+
+## 2026-09-22 — AGENTS.md refreshed; triage system introduced (`outofscoped.md`, `deferred.md`); pending owner decisions recorded in usertasks.md
+
+**Agent:** ZCode main orchestrator (no subagents).
+
+**Actions:**
+- **Rewrote `AGENTS.md`** (repo root) to match reality: path `C:\Projects\GDevelop` (was `D:\`), Git Bash shell (replaces the cmd-only claims), the checkout **is** a git repository with owner-made milestone commits (e.g. `0802d2d21e`; agents commit only when asked), a new "Where the project stands" status section (Phases 1–6 implemented and committed, Phases 7–9 planned, prompt `byok-v4`, 164 suites / 1740 tests / lint / flow / format green), a "Workflow" section that keeps the per-phase loop and adds the end-of-session triage + decision-making rules (decide/defer/escalate, one numbered chat message with recommendations, `no OOS`/`no deferred`/`no UT` markers in the worklog), a fresh-checkout rebuild recipe and the flow/electron gate quirks in the cheat sheet, and a rate-limit retry note for subagent waves.
+- **Created `REVIEW/outofscoped.md`** — the "to be tackled" backlog: items that should be fixed but fell outside a session's scope/budget; entries are **removed** once fixed and verified (the permanent record stays in the worklog). Seeded with audit2209 §1 findings O1–O13, each with its blocker (or a link to the owner decision that gates it).
+- **Created `REVIEW/deferred.md`** — the human-readable deferral log (what / why deferred / when to tackle / proposal to the owner). Seeded with D1–D6, D8–D10; D7 noted as de-scoped by design.
+- **Updated `REVIEW/usertasks.md`:** new "Pending owner decisions" section — the canonical numbered record (#1–#16, recommendations included) of the 16 decisions presented in chat on 2026-09-22, answers pending; the monitoring note now points at the three-doc triage; Task 5 and Task 8.1 got cross-references to the decision numbers so they stop reading as competing decision lists.
+- **Updated `REVIEW/audit2209.md` header:** the triage docs are now the actionable layer; audit2209 keeps the findings detail and history (its earlier "single place to watch" claim was softened to avoid divergence).
+
+**Bugs found:** none (documentation only; no code touched).
+
+**Issues found:**
+- The old AGENTS.md contradicted reality on three points (D:\ path, "not a git repository", cmd-only shell) — all fixed; the manual now carries a self-drift rule (fix the manual in the same session and say so here).
+- Decision numbering #1–#16 in `usertasks.md` is now canonical; when the owner answers in chat, map answers onto these numbers before moving items between docs.
+- Uncommitted tree at session start: `main.js`/`ByokSafeStorage.js` (formatting-only from the earlier 2026-09-22 session, verified via `git diff`), the doc edits of that session, untracked `audit2209.md`, and an untracked `.kilo/` directory not created by this project's work — left untouched.
+
+**Files worked on:**
+- Modified: `AGENTS.md` (root, full rewrite), `REVIEW/usertasks.md` (monitoring note, pending-decisions section, Task 5/8.1 cross-refs), `REVIEW/audit2209.md` (header), `REVIEW/worklog.md` (this entry).
+- Created: `REVIEW/outofscoped.md`, `REVIEW/deferred.md`.
+- Read (verification): `REVIEW/audit2209.md`, `REVIEW/usertasks.md`, `REVIEW/worklog.md` (latest entries), `REVIEW/Phase7.md`/`Phase8.md`/`Phase9.md` (headers, for the status section), `git status`/`git diff`/`git log` (uncommitted state, recent commits).
+
+---
+
+## 2026-09-22 — electron-app dev deps installed (prettier gate runnable) + open findings consolidated into audit2209.md
+
+**Agent:** ZCode main orchestrator (no subagents).
+
+**Actions:**
+- **Environment:** installed `newIDE/electron-app` dependencies for future runs — `npm install --ignore-scripts` at the electron-app root (375 packages: prettier 1.15.3, electron-builder, …) **and** inside `electron-app/app` (331 packages: @electron/remote, discord-rpc, electron-log, …). `--ignore-scripts` deliberately skips the Electron binary download and the zipped-extensions import: dev tooling (`npm run check-format`, `node --check`) works; actually running/packaging the desktop app still needs a full `npm install` there (usertasks Task 1 step 1 unchanged). Both dirtied lockfiles restored with `git checkout --`.
+- Ran the electron-app's own `check-format` for the first time: it flagged our two BYOK files plus two pre-existing upstream diffs. Formatted only the BYOK files (`app/main.js`, `app/ByokSafeStorage.js` — +58/−45, formatting only; `node --check` passes both). The two upstream files (`app/CliCommandHandoff.js`, `app/OpenProjectsRegistry.js`) were left untouched (out of budget) — the gate stays red on them, recorded as ENV item E2.
+- **Consolidation (user request):** created `REVIEW/audit2209.md` — the single tracker of everything not yet fixed, gathered from the five `audit2109*.md` reports, `audit.md`, the 2026-09-21/22 worklog entries, `usertasks.md` and the agent memory: 13 open code findings (O1–O13, e.g. inert feedback buttons needing an optional upstream prop, usage-less context guard, user-facing image rendering), the deferred-feature table (D1–D10, statuses updated for Phase 5–6 reality), the USER-QA queue (Tasks 1–8 + AGENTS.md refresh), environment notes (E1–E7) and by-design decisions. Memory no longer duplicates the deferred lists — it points here.
+- **usertasks.md fixes:** the duplicate "Task 6" heading (Housekeeping vs Phase-5 QA) renumbered Housekeeping → Task 8; Task 3 (commit) marked DONE (`0802d2d21e`); monitoring note added pointing to `audit2209.md`.
+
+**Bugs found:** none (no behavior changed — installs, formatting and docs only; the two formatted Electron files pass `node --check` and their BYOK blocks are untouched beyond wrapping).
+
+**Issues found:**
+- The electron-app's `check-format` has 2 pre-existing **upstream** diffs (`CliCommandHandoff.js`, `OpenProjectsRegistry.js`) — never gates our files, but the script exits non-zero until someone accepts a format-only upstream commit (audit2209 E2).
+- The electron-app `postinstall` (zipped-extension import + nested install + electron-remote copy) was skipped by design; if the desktop dev app misbehaves in Task 1, re-run a full install first.
+- Open findings used to live in five places (audit reports, worklog entries, usertasks, memory, phase docs); they are now consolidated in `REVIEW/audit2209.md` — future sessions should update that file instead of scattering new deferrals.
+
+**Files worked on:**
+- Created: `REVIEW/audit2209.md`.
+- Modified: `newIDE/electron-app/app/main.js` + `app/ByokSafeStorage.js` (prettier, formatting only), `REVIEW/usertasks.md` (renumber + status + note), `REVIEW/worklog.md` (this entry), agent memory (`byok-project-environment.md`, `gdevelop-flow-jest-quirks.md` — deferred lists replaced by a pointer to audit2209.md).
+- Environment: `newIDE/electron-app/node_modules` + `newIDE/electron-app/app/node_modules` installed (`--ignore-scripts`); lockfiles restored clean.
+
+---
+
+## 2026-09-22 — audit2109 fixes implemented: %-key corruption, dispatch whitelist, abort-on-stop, per-model context windows, reachable BYOK history, protocol-valid transcripts
+
+**Agent:** ZCode main orchestrator (audit report at `audit2109*.md`; all fixes and tests written by the orchestrator, no subagents).
+
+**Actions:**
+- Implemented the deduplicated findings of the 5-agent audit, priority BYOK robustness with the hosted (server-side AI) workflow untouched — every shared-file change is BYOK-gated (branch/prop) with the server path byte-identical:
+  - **B fixes:** `%`-byte escaping in `ByokKeyStorage`'s obfuscation decoder (keys containing `%` were silently corrupted or read as "not stored"; old stored values decode correctly with the fix); tool whitelist enforced at dispatch in `executeToolCalls` (hallucinated non-whitelisted names, incl. `run_script`, get a refusal output instead of executing); abort propagation (`createByokCancellation` in the client, cancelled per loop-run, `suspend()` aborts the in-flight request, `cancelled` error kind keeps the suspended status instead of showing an endpoint error, late plain-text answers no longer flip suspended→ready); stop-during-approval race closed (re-check after the approval await); per-model/server context windows wired through `resolveContextWindowTokens` (re-resolved every turn); `byok-context-full` closes the pending batch with not-executed outputs and `retryAfterError` refuses it (no more phantom working state or paid re-send of the oversized history); plan rendering fixed via `mode: 'orchestrator'` on the BYOK shell; missing-key chats recoverable (`attachByokOrchestrator` — messages and Retry re-attach instead of silently no-op'ing); BYOK chats listed in `AskAiHistory` (own section, Archive = suspend + remove) so a backgrounded chat is watchable/stoppable.
+  - **C/D fixes:** aborted/unfinished executor results get failure outputs (no dangling `tool_calls`); executor crash contained as failure outputs; empty model answers → `byok-empty-answer`; `Retry-After` parsed and long-wait 429s are not retried; test-connection ping gets a 15s timeout; base-URL whitespace trimmed; chat-completions response validation deepened (message object + tool-call id/function.name); plan tasks map `depends_on`→`dependsOn`; `ByokSeam` OR-accumulates `isNewObjectTypeUsed`; storage writes serialized through a promise chain (migration cannot resurrect an old key over a newer save); `saveByokKey`/`clearByokKey` return success booleans; `getByokKeyStorageInfo` reports the actually stored format (honest v2 downgrade); settings tab: translated error display (`renderByokErrorMessage`, generic fallbacks via `<Trans>`), blur-committed context-window fields (no keystroke clamping), "Clear the stored key" button, `autoComplete="off"`, unmount guards, blur-save/click-load race fixed via `pendingKeySaveRef`; models cache: normalized keys, defensive copies, `clearByokModels` on key change; `getByokSettings` returns fresh defaults; `i18n._(t…)` for the missing-key message; `brush_position`/`new_instances_count` schema descriptions match the implementation; validator made injectable + negative-path tests + spot checks pinning `put_2d_instances`/`create_or_replace_object`/`add_or_edit_variable`/plan; `main.js`/`ByokSafeStorage.js` line-width fixes; `fetchByokModels` dead code removed.
+- **Tests:** every fix pinned (293 BYOK tests at the end of this session: whitelist refusals, mixed batches, abort + cancelled-kind, stop-during-approval, per-model + server-reported windows, context-full batch-closing + retry refusal, aborted results, executor crash, empty answer, plan mapping, `%`-keys, write-failure booleans, honest storage info, migration race, IPC rejections, v3-on-web, cache copy/normalize/clear, fresh defaults, transcript replay cases, OR-accumulation, archive-ignores-updates, validator failure branches, drafts/clear-button/ping-timeout/error rendering).
+- **Gates at the end of the session:** `npm test -- --watchAll=false` 157 suites / 1615 passed / 1 skipped / 0 failed; `npm run lint` 0 warnings; `flow.exe check` 0 errors; `npm run check-format` clean. (This work was committed by the user as part of `0802d2d21e` "phase5-9 planned", together with the later Phases 5–6 session; the combined tree was re-verified on 2026-09-22: 164 suites / 1740 passed / 1 skipped / 0 failed, lint 0, flow 0, format clean.)
+
+**Bugs found:**
+- The `%`-corruption, whitelist bypass, missing abort, approval race, dead context-window resolution, unreachable BYOK chats, silent message loss and phantom context-full state were the audit's findings — all reproduced by a failing test before/at the fix (see the audit reports for the details).
+- Migration-race guard alone was insufficient: the identity check still raced the async write; the final fix serializes all storage writes through a promise chain with the check inside the queued task.
+
+**Issues found:**
+- **Files touched outside the documented budgets (each minimal, flagged per agents.md §3):** `AskAiHistory.js` — additive optional props (`byokChatSummaries`, `onArchiveByokChat`) + a BYOK section + a byok branch in the chat context menu; without it the audit's top UI finding (backgrounded paid chats unreachable) has no fix surface. `AiRequestErrorRow.js` — 3 lines mapping `byok-context-full`/`byok-too-many-tool-rounds`/`byok-repeated-tool-call-loop` to the existing UI kinds. `electron-app/app/main.js` + `ByokSafeStorage.js` — line wraps only.
+- The jest preset resets every mock implementation before each test (`resetMocks`): implementations given inside `jest.mock` factories vanish — they must be re-set in `beforeEach` (cost a debugging detour; documented in memory).
+- Prettier's flow parser rejects chained indexed-access types (`T['content'][number]`) — typed the transcript content via a documented alternative instead.
+- This Flow version deprecates `$Shape` → `updateByokSetting` keeps `Partial<>` (the audit had recommended the opposite; the toolchain wins).
+- jsdom storage spies must target `Storage.prototype`, not the `localStorage` instance.
+- `electron-app` has no installed prettier in this environment: its files' line widths were verified manually (`awk`), not via its `check-format` script.
+- **Deferred (with rationale):** hiding the like/dislike buttons for BYOK chats entirely needs `onSendFeedback` to become an optional prop in `AiRequestChat`/`ChatMessages` (upstream, out of budget) — an inert no-op handler is passed for BYOK chats meanwhile; the context guard still silently disappears when an endpoint omits `usage` (documented; the round cap is the remaining protection and is now pinned by the no-usage runaway test); executor/`ensureExtensionInstalled` staleness beyond the live `hasOpenedProject`/`getProject` getters is left to the later phase that made the executor a getter.
+
+**Files worked on:**
+- Modified (renderer): `Byok/ByokKeyStorage.js` + `.spec.js`, `Byok/ByokClient.js` + `.spec.js`, `Byok/ByokErrors.js` + `.spec.js`, `Byok/ByokModelsCache.js` + `.spec.js`, `Byok/ByokTypes.js` + `.spec.js`, `Byok/ByokTranscript.js` + `.spec.js`, `Byok/ByokChatStore.spec.js`, `Byok/ByokSeam.js` + `.spec.js`, `Byok/ByokToolSchema.js` + `.spec.js`, `Byok/ByokOrchestrator.js` + `.spec.js`, `Byok/ByokSettingsTab.js` + `.spec.js`, `AskAiEditorContainer.js`, `AskAiHistory.js`, `AiRequestChat/AiRequestErrorRow.js`.
+- Modified (electron, formatting only): `electron-app/app/main.js`, `electron-app/app/ByokSafeStorage.js`.
+- Read (fix design): `audit2109storage/client/loop/schema/ui.md`, `AiRequestUtils.js`, `AiRequestChat/AiRequestErrorRow.js`/`ChatMessages.js`/`index.js`, `Generation.js`, `RetryIfFailed.js`, `EditorFunctions/index.js` (schema cross-checks), `UI/TextField.js`, `REVIEW/Phase1-4.md`, `styleguide.md`.
+
+---
+
 ## 2026-09-22 — Phases 5 and 6 implemented: local EventScript event writing, full tool parity, script agent, project creation, loop guard, vision + perception + gameplay tests (byok-v4)
 
 **Agent:** ZCode main orchestrator (all code and tests written by the orchestrator per the house rule) + 4 read-only Explore subagents in one wave (arg-extraction mapping of the inspect/change/run_script/initialize_project/add_scene_events+ApplyEventsChanges/gameplay-test+perception surfaces of `EditorFunctions/index.js` and the preview/debugger plumbing).

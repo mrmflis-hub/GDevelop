@@ -91,9 +91,12 @@ import {
   type ByokOrchestrator,
 } from './Byok/ByokOrchestrator';
 import { createByokUsageTracker } from './Byok/ByokUsageTracker';
-import { loadByokKey } from './Byok/ByokKeyStorage';
+import { loadByokKey, type ByokKeyLoadResult } from './Byok/ByokKeyStorage';
+import { getByokImage } from './Byok/ByokImageContent';
+import { makeByokProjectNotesIdentifierFromProjectName } from './Byok/ByokProjectNotes';
 import { getByokSettings, type ByokSettings } from './Byok/ByokTypes';
 import {
+  APPROVED_CALL_IDS_CAPACITY,
   buildByokChatProps,
   byokCallRequiresApproval,
   createByokEditorFunctionCallExecutor,
@@ -166,6 +169,12 @@ const styles = {
 // action type for Flow).
 const byokChatsForceUpdateReducer = (count: number, action: void): number =>
   count + 1;
+
+// BYOK chats have no server-side messages to give feedback on. The render
+// gates now hide the feedback buttons entirely on those chats (the callback
+// is simply not passed), but this inert handler is kept: a future upstream
+// change that wants the buttons on local chats can reuse it as-is.
+export const onSendByokNoopFeedback = async (): Promise<void> => {};
 
 type Props = {|
   isActive: boolean,
@@ -678,13 +687,28 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         [suspendAiRequest, suspendByokChat]
       );
 
+      // The chat-facing guidance for a chat that cannot find its API key.
+      // The two storage statuses need different lines: 'none' means the user
+      // never saved a key, 'unreadable' means one is stored but this
+      // computer can no longer decrypt it (e.g. DPAPI after a Windows
+      // account change) — telling them to "add a key" would be misleading.
       const getByokMissingKeyError = React.useCallback(
-        () => ({
-          code: 'byok-missing-key',
-          message: i18n._(
-            t`No API key is stored for BYOK. Add one in Preferences > BYOK, then send your message again.`
-          ),
-        }),
+        (storedKey: ByokKeyLoadResult) => {
+          if (storedKey.status === 'unreadable') {
+            return {
+              code: 'byok-unreadable-key',
+              message: i18n._(
+                t`A BYOK API key is stored, but it cannot be decrypted on this computer anymore. Open Preferences > BYOK, clear the stored key and enter it again, then send your message again.`
+              ),
+            };
+          }
+          return {
+            code: 'byok-missing-key',
+            message: i18n._(
+              t`No API key is stored for BYOK. Add one in Preferences > BYOK, then send your message again.`
+            ),
+          };
+        },
         [i18n]
       );
 
@@ -713,6 +737,19 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
               );
             },
             onAiRequestUpdated: updatedChat => updateByokChat(updatedChat),
+            // The per-project notes (Phase 7) are keyed on the project's
+            // file identifier, with a project-name hash as the fallback for
+            // projects not saved yet.
+            getProjectNotesIdentifier: () => {
+              const liveProject = getByokLiveProject();
+              if (!liveProject) return null;
+              if (fileMetadata && fileMetadata.fileIdentifier) {
+                return fileMetadata.fileIdentifier;
+              }
+              return makeByokProjectNotesIdentifierFromProjectName(
+                liveProject.getName()
+              );
+            },
             doesCallRequireApproval: functionCall => {
               const editorFunction =
                 editorFunctions[functionCall.name] ||
@@ -740,7 +777,10 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 label: unapprovedCalls.map(call => call.name).join(', '),
               });
               if (accepted) {
-                if (approvedByokEditCallIdsRef.current.size > 500) {
+                if (
+                  approvedByokEditCallIdsRef.current.size >=
+                  APPROVED_CALL_IDS_CAPACITY
+                ) {
                   approvedByokEditCallIdsRef.current.clear();
                 }
                 unapprovedCalls.forEach(call =>
@@ -803,6 +843,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           triggerUnsavedChanges,
           onOpenLayout,
           onSceneEventsModifiedOutsideEditor,
+          fileMetadata,
         ]
       );
 
@@ -824,15 +865,19 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           if (chat.status === 'working') return null;
 
           const byokSettings = getByokSettings(preferencesValues);
-          const apiKey = await loadByokKey();
-          if (!apiKey) {
+          const storedKey = await loadByokKey();
+          if (storedKey.status !== 'ok') {
             chat.status = 'error';
-            chat.error = getByokMissingKeyError();
+            chat.error = getByokMissingKeyError(storedKey);
             updateByokChat(chat);
             return null;
           }
 
-          return createByokOrchestratorForChat(chat, byokSettings, apiKey);
+          return createByokOrchestratorForChat(
+            chat,
+            byokSettings,
+            storedKey.key
+          );
         },
         [
           preferencesValues,
@@ -853,10 +898,10 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
             aiRequestChatRefCurrent.resetUserInput(chat.id);
           }
 
-          const apiKey = await loadByokKey();
-          if (!apiKey) {
+          const storedKey = await loadByokKey();
+          if (storedKey.status !== 'ok') {
             chat.status = 'error';
-            chat.error = getByokMissingKeyError();
+            chat.error = getByokMissingKeyError(storedKey);
             updateByokChat(chat);
             return;
           }
@@ -864,7 +909,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           const orchestrator = createByokOrchestratorForChat(
             chat,
             byokSettings,
-            apiKey
+            storedKey.key
           );
           await orchestrator.startNewChat(userRequest);
         },
@@ -1612,13 +1657,9 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         [getAuthorizationHeader, profile]
       );
 
-      // BYOK chats have no server-side messages to give feedback on: an
-      // inert handler keeps the (required) prop satisfied without posting
-      // local ids to GDevelop's backend.
-      const onSendByokNoopFeedback = React.useCallback(
-        async (): Promise<void> => {},
-        []
-      );
+      // (The exported module-scope `onSendByokNoopFeedback` replaces the
+      // old per-render no-op handler: BYOK chats no longer receive a
+      // feedback callback at all — the buttons are hidden instead.)
 
       const getHasWorkInProgress = React.useCallback(
         () => {
@@ -2152,7 +2193,6 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                     ? 'upgrade'
                     : 'none'
                 }
-                onProcessFunctionCalls={onProcessSelectedAiRequestFunctionCalls}
                 editorFunctionCallResults={
                   selectedByokChat
                     ? // BYOK tool executions are driven by the orchestrator;
@@ -2165,13 +2205,26 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 price={aiRequestPrice}
                 availableCredits={availableCredits}
                 isRefreshingLimits={isRefreshingLimits}
-                {...(selectedByokChat ? buildByokChatProps() : {})}
-                // Feedback on a BYOK chat has no server message to attach
-                // to (the ids are local): the buttons are inert rather than
-                // posting invalid ids to GDevelop's backend.
-                onSendFeedback={
-                  selectedByokChat ? onSendByokNoopFeedback : onSendFeedback
-                }
+                {...(selectedByokChat
+                  ? {
+                      ...buildByokChatProps(),
+                      // Tool outputs reference their captured screenshots by
+                      // id: the chat renders them inline, so the user sees
+                      // what the model was shown.
+                      getToolResultImage: (imageId: string) => {
+                        const image = getByokImage(imageId);
+                        return image ? { dataUrl: image.dataUrl } : null;
+                      },
+                    }
+                  : {
+                      // Feedback needs a server-side message to attach to,
+                      // and manual tool-call processing is a no-op when the
+                      // chat drives its own tools: both props are only
+                      // passed for hosted chats, and the chat UI hides the
+                      // corresponding affordances when they are absent.
+                      onSendFeedback,
+                      onProcessFunctionCalls: onProcessSelectedAiRequestFunctionCalls,
+                    })}
                 hasOpenedProject={!!project}
                 onStop={onStop}
                 i18n={i18n}

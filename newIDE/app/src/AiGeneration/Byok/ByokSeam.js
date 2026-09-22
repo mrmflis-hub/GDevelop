@@ -31,6 +31,16 @@ export const shouldUseByokForNewRequest = (values: {
 }): boolean => isByokFullyConfigured(getByokSettings(values));
 
 /**
+ * How many approved-edit call ids the blanket-approval memory of a chat may
+ * hold before it is emptied. Bounded memory on purpose: the set only exists
+ * so the user does not re-approve the same batch within one chat, and a
+ * long-lived chat must not accumulate ids forever. Clearing it whole (rather
+ * than evicting oldest-first) is fine: worst case, the user is asked to
+ * approve an edit again.
+ */
+export const APPROVED_CALL_IDS_CAPACITY = 500;
+
+/**
  * The prop bundle that makes the chat UI's credits machinery idle for a
  * BYOK chat: a null quota short-circuits `canPayForAiRequest` to `true` and
  * `AiUsageIndicator` to its context-bar-only rendering. Every prop is named

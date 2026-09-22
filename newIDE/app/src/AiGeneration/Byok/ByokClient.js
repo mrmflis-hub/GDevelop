@@ -5,7 +5,7 @@ import {
   classifyByokError,
   makeByokError,
   redactSecretFromByokError,
-  describeInvalidRequestForReasoningEffort,
+  isInvalidRequestForReasoningEffort,
   isRetryableByokError,
   type ByokError,
 } from './ByokErrors';
@@ -288,10 +288,7 @@ export const sendByokChatCompletionWithRetries = async ({
   } catch (rawError) {
     const error = makeThrownByokError(rawError, apiKey);
 
-    if (
-      describeInvalidRequestForReasoningEffort(error) &&
-      options.reasoningEffort
-    ) {
+    if (isInvalidRequestForReasoningEffort(error) && options.reasoningEffort) {
       // Retry once without the reasoning effort: the endpoint does not
       // support the parameter.
       return await sendByokChatCompletion({

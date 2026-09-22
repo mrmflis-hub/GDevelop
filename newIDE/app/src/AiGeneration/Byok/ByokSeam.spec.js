@@ -1,21 +1,36 @@
 // @flow
-const ByokSeam = require('./ByokSeam');
-const { DEFAULT_BYOK_SETTINGS } = require('./ByokTypes');
+import {
+  APPROVED_CALL_IDS_CAPACITY,
+  buildByokChatProps,
+  byokCallRequiresApproval,
+  createByokEditorFunctionCallExecutor,
+  isByokAiRequestId,
+  shouldUseByokForNewRequest,
+} from './ByokSeam';
+import { DEFAULT_BYOK_SETTINGS } from './ByokTypes';
+
+describe('APPROVED_CALL_IDS_CAPACITY', () => {
+  it('pins the blanket-approval memory cap', () => {
+    // The cap is a memory bound, not a security rule: pinned so a change is
+    // a deliberate decision, not an accident.
+    expect(APPROVED_CALL_IDS_CAPACITY).toBe(500);
+  });
+});
 
 describe('isByokAiRequestId', () => {
   it('recognizes ids prefixed by "byok-"', () => {
-    expect(ByokSeam.isByokAiRequestId('byok-abc123')).toBe(true);
-    expect(ByokSeam.isByokAiRequestId('regular-server-id')).toBe(false);
-    expect(ByokSeam.isByokAiRequestId('')).toBe(false);
-    expect(ByokSeam.isByokAiRequestId(null)).toBe(false);
-    expect(ByokSeam.isByokAiRequestId(undefined)).toBe(false);
+    expect(isByokAiRequestId('byok-abc123')).toBe(true);
+    expect(isByokAiRequestId('regular-server-id')).toBe(false);
+    expect(isByokAiRequestId('')).toBe(false);
+    expect(isByokAiRequestId(null)).toBe(false);
+    expect(isByokAiRequestId(undefined)).toBe(false);
   });
 });
 
 describe('shouldUseByokForNewRequest', () => {
   it('is false for the default (disabled) settings', () => {
     expect(
-      ByokSeam.shouldUseByokForNewRequest({
+      shouldUseByokForNewRequest({
         byok: DEFAULT_BYOK_SETTINGS,
       })
     ).toBe(false);
@@ -23,7 +38,7 @@ describe('shouldUseByokForNewRequest', () => {
 
   it('is false when enabled but not fully configured', () => {
     expect(
-      ByokSeam.shouldUseByokForNewRequest({
+      shouldUseByokForNewRequest({
         byok: {
           ...DEFAULT_BYOK_SETTINGS,
           enabled: true,
@@ -36,7 +51,7 @@ describe('shouldUseByokForNewRequest', () => {
 
   it('is true when enabled and fully configured', () => {
     expect(
-      ByokSeam.shouldUseByokForNewRequest({
+      shouldUseByokForNewRequest({
         byok: {
           ...DEFAULT_BYOK_SETTINGS,
           enabled: true,
@@ -48,16 +63,14 @@ describe('shouldUseByokForNewRequest', () => {
   });
 
   it('is false for a missing or corrupt byok preference', () => {
-    expect(ByokSeam.shouldUseByokForNewRequest({ byok: null })).toBe(false);
-    expect(
-      ByokSeam.shouldUseByokForNewRequest(({ byok: 'corrupt' }: any))
-    ).toBe(false);
+    expect(shouldUseByokForNewRequest({ byok: null })).toBe(false);
+    expect(shouldUseByokForNewRequest(({ byok: 'corrupt' }: any))).toBe(false);
   });
 });
 
 describe('buildByokChatProps', () => {
   it('returns the exact idle-credits prop bundle', () => {
-    expect(ByokSeam.buildByokChatProps()).toEqual({
+    expect(buildByokChatProps()).toEqual({
       quota: null,
       price: null,
       availableCredits: 0,
@@ -69,19 +82,17 @@ describe('buildByokChatProps', () => {
 
 describe('byokCallRequiresApproval', () => {
   it('requires approval when the registry function is missing (safe default)', () => {
-    expect(ByokSeam.byokCallRequiresApproval(null, {})).toBe(true);
+    expect(byokCallRequiresApproval(null, {})).toBe(true);
   });
 
   it('does not require approval for a non-modifying function', () => {
-    expect(
-      ByokSeam.byokCallRequiresApproval({ modifiesProject: false }, {})
-    ).toBe(false);
+    expect(byokCallRequiresApproval({ modifiesProject: false }, {})).toBe(
+      false
+    );
   });
 
   it('requires approval for a modifying function', () => {
-    expect(
-      ByokSeam.byokCallRequiresApproval({ modifiesProject: true }, {})
-    ).toBe(true);
+    expect(byokCallRequiresApproval({ modifiesProject: true }, {})).toBe(true);
   });
 
   it('respects a getModifiesProject override over modifiesProject', () => {
@@ -91,12 +102,12 @@ describe('byokCallRequiresApproval', () => {
     };
 
     expect(
-      ByokSeam.byokCallRequiresApproval(editorFunction, {
+      byokCallRequiresApproval(editorFunction, {
         shouldModify: true,
       })
     ).toBe(true);
     expect(
-      ByokSeam.byokCallRequiresApproval(editorFunction, {
+      byokCallRequiresApproval(editorFunction, {
         shouldModify: false,
       })
     ).toBe(false);
@@ -130,7 +141,7 @@ describe('createByokEditorFunctionCallExecutor', () => {
       createdSceneNames: ['NewScene'],
       createdProject: null,
     });
-    const executor = ByokSeam.createByokEditorFunctionCallExecutor(deps);
+    const executor = createByokEditorFunctionCallExecutor(deps);
     const getRelatedAiRequestLastMessages = () => ({ lastUserMessage: null });
 
     const outcome = await executor(
@@ -173,7 +184,7 @@ describe('createByokEditorFunctionCallExecutor', () => {
       });
       return { results: [], createdSceneNames: [], createdProject: null };
     });
-    const executor = ByokSeam.createByokEditorFunctionCallExecutor(deps);
+    const executor = createByokEditorFunctionCallExecutor(deps);
 
     await executor([], {
       aiRequestId: 'byok-chat-1',
@@ -203,7 +214,7 @@ describe('createByokEditorFunctionCallExecutor', () => {
       });
       return { results: [], createdSceneNames: [], createdProject: null };
     });
-    const executor = ByokSeam.createByokEditorFunctionCallExecutor(deps);
+    const executor = createByokEditorFunctionCallExecutor(deps);
 
     await executor([], {
       aiRequestId: 'byok-chat-1',
@@ -226,7 +237,7 @@ describe('createByokEditorFunctionCallExecutor', () => {
       options.onInstancesModifiedOutsideEditor({ scene: 'scene-1' });
       throw new Error('runner exploded');
     });
-    const executor = ByokSeam.createByokEditorFunctionCallExecutor(deps);
+    const executor = createByokEditorFunctionCallExecutor(deps);
 
     await expect(
       executor([], {
@@ -251,7 +262,7 @@ describe('createByokEditorFunctionCallExecutor', () => {
       expect(options.getAssetStoreTagForNewObject('Sprite::Object')).toBe(null);
       return { results: [], createdSceneNames: [], createdProject: null };
     });
-    const executor = ByokSeam.createByokEditorFunctionCallExecutor(deps);
+    const executor = createByokEditorFunctionCallExecutor(deps);
 
     await executor([], {
       aiRequestId: 'byok-chat-1',
@@ -268,7 +279,7 @@ describe('createByokEditorFunctionCallExecutor', () => {
       createdSceneNames: [],
       createdProject: null,
     });
-    const executor = ByokSeam.createByokEditorFunctionCallExecutor(deps);
+    const executor = createByokEditorFunctionCallExecutor(deps);
 
     await executor([], {
       aiRequestId: 'byok-chat-1',

@@ -26,7 +26,9 @@ type Props = {|
   feedbackButtons?: React.Node,
   functionCallItemsByTaskId: Map<string, Array<FunctionCallItem>>,
   project: ?gdProject,
-  onProcessFunctionCalls: (
+  // Absent when tool calls are driven by the chat itself (BYOK): no manual
+  // processing affordance is rendered.
+  onProcessFunctionCalls?: (
     functionCalls: Array<AiRequestMessageAssistantFunctionCall>,
     options: ?{| ignore?: boolean |}
   ) => Promise<void>,
@@ -83,17 +85,12 @@ const TaskRow = ({
   isLast,
   functionCallItems,
   project,
-  onProcessFunctionCalls,
   editorCallbacks,
 }: {|
   task: AiRequestPlanTask,
   isLast: boolean,
   functionCallItems: Array<FunctionCallItem>,
   project: ?gdProject,
-  onProcessFunctionCalls: (
-    functionCalls: Array<AiRequestMessageAssistantFunctionCall>,
-    options: ?{| ignore?: boolean |}
-  ) => Promise<void>,
   editorCallbacks: EditorCallbacks,
 |}) => {
   const [isExpanded, setIsExpanded] = React.useState(false);
@@ -212,7 +209,6 @@ export const OrchestratorPlan = ({
   feedbackButtons,
   functionCallItemsByTaskId,
   project,
-  onProcessFunctionCalls,
   editorCallbacks,
 }: Props): React.Node => {
   // Filter out voided tasks
@@ -264,7 +260,6 @@ export const OrchestratorPlan = ({
                     functionCallItemsByTaskId.get(task.id) || []
                   }
                   project={project}
-                  onProcessFunctionCalls={onProcessFunctionCalls}
                   editorCallbacks={editorCallbacks}
                 />
               ))}

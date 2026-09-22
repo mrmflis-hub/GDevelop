@@ -73,13 +73,25 @@ export type OrchestratorPlanRenderItem = {|
   messageId: string,
 |};
 
+/**
+ * The images referenced by a tool result (screenshots taken by the AI), to
+ * render inline under the tool call they came from. Only transcripts whose
+ * tool outputs carry an `images` field (BYOK perception) produce these.
+ */
+export type ToolResultImagesRenderItem = {|
+  type: 'tool_result_images',
+  messageIndex: number,
+  imageIds: Array<string>,
+|};
+
 export type RenderItem =
   | UserMessageRenderItem
   | MessageContentRenderItem
   | FunctionCallGroupRenderItem
   | SaveRenderItem
   | SuggestionsRenderItem
-  | OrchestratorPlanRenderItem;
+  | OrchestratorPlanRenderItem
+  | ToolResultImagesRenderItem;
 
 /**
  * Whether the user can pay for one more AI request right now: either their AI

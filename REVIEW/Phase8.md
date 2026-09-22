@@ -5,6 +5,11 @@ Phase 6 (perception + gameplay tests), Phase 7 (knowledge + skills);
 **9.2 (compaction) strongly recommended first** for the longest recipes ·
 **Read first:** [Phase5.md](Phase5.md) §0 · [styleguide.md](styleguide.md)
 
+> **Replan note (2026-09-22, post-decisions):** this phase gains a prep
+> step — **step 8.0**: the D8 hook extraction (deliberately deferred to
+> this, the file's next churn point) and the O3 `ensureExtensionInstalled`
+> memo fix. All other step numbers are unchanged.
+
 ---
 
 ## 1. Introduction — what this phase delivers
@@ -53,6 +58,12 @@ Concretely:
 7. **Prompt bump to `byok-v6`** (agents policy section replaces the
    single-agent section; workflow skill referenced).
 
+Two triage items also land here as **step 8.0 (prep)**, worked first: the
+**D8** refactor (shrink the container's BYOK additions into a hook —
+deferred here on purpose, because the file churns in this phase anyway)
+and the **O3** fix (the `ensureExtensionInstalled` memo staleness — needs
+the getter refactor this phase's extension work motivates).
+
 ### Existing machinery this phase builds on
 
 | Existing piece | File | Use |
@@ -68,6 +79,7 @@ Concretely:
 ### New files created in this phase
 
 ```
+Byok\useByokChatSeam.js / .spec.js          the container's BYOK seam, extracted (step 8.0 / D8)
 Byok\ByokSubAgents.js / .spec.js            scout/reviewer sub-agent runner (nested orchestrators)
 Byok\ByokCompletionGate.js / .spec.js       done-claim verification + nudge
 Byok\ByokExtensionTools.js / .spec.js       extension/custom-object/behavior/function authoring (libGD-driven)
@@ -87,6 +99,38 @@ surgical, each behind the existing prefill mechanism).
 ---
 
 ## 2. Steps
+
+### Step 8.0 — Prep: container hook extraction (D8) + extension-install memo fix (O3)
+
+**Goal:** pay the two known refactors while the file is already being
+churned by this phase, on green tests.
+
+**How to implement:**
+
+1. **D8 — extract the BYOK seam from `AskAiEditorContainer.js` into a
+   dedicated hook** (e.g. `Byok\useByokChatSeam.js`): the BYOK
+   branch/chat-store wiring and orchestrator callbacks move verbatim;
+   the container keeps a single hook call. Behavior-preserving — the
+   existing container specs must pass unchanged (specs covering moved
+   logic move alongside the hook). This is the deferred C1/D8 refactor,
+   scheduled here deliberately (`deferred.md`).
+2. **O3 — fix the `ensureExtensionInstalled` memo staleness:** the memo
+   keys on the React `project` prop, so an extension install in the same
+   second a project is created mid-chat can use a stale project for ~1s
+   (until the next render). Refactor to key on a stable project getter
+   (the Phase 5 getters pattern) instead of the render prop — an
+   upstream-adjacent touchpoint covered by the owner's standing decision
+   #13; record it in the worklog. Test: project created mid-chat +
+   immediate extension install uses the fresh project (controlled
+   renders / fake timers).
+
+**Files:** `Byok\useByokChatSeam.js` + spec; `AskAiEditorContainer.js`
+(smaller); the getter the O3 refactor introduces.
+**Tests:** behavior-preserving extraction (existing specs green); the O3
+staleness test.
+**Depends on:** Phase 6.
+
+---
 
 ### Step 8.1 — Sub-agents: scout and reviewer
 
@@ -323,6 +367,7 @@ snapshot cap (6th evicts 1st); restore requires approval.
 
 ## 3. Phase 8 acceptance criteria (phase gate)
 
+- [ ] Step 8.0 prep done: the container's BYOK additions live in a hook (behavior identical, existing specs green) and the O3 memo staleness is fixed + unit-tested (entry then leaves `outofscoped.md`).
 - [ ] Scout/reviewer sub-agents run with fresh contexts and capped summaries; nesting refused; read-only scout enforced (all unit-tested).
 - [ ] Completion gate: unverified done-claims get exactly one nudge; verified completions carry the `verified` block (unit + QA).
 - [ ] The build-workflow skill parses, names its required tools (spec-guarded), and drives the flagship QA end-to-end from the homepage form with BYOK.

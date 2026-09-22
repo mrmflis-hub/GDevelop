@@ -107,6 +107,16 @@ const makeOrchestrator = (overrides: any = {}) => {
   return { orchestrator, aiRequest, onAiRequestUpdated, usageTracker };
 };
 
+// Phase 7: building the system prompt now goes through async storages
+// (skills metadata, project notes), so reaching the model call takes a few
+// extra microtasks. This flushes them deterministically.
+const flushMicrotasks = async () => {
+  for (let index = 0; index < 20; index++) {
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.resolve();
+  }
+};
+
 describe('ByokOrchestrator', () => {
   beforeEach(() => {
     mockSendByokChatCompletion.mockReset();
@@ -170,6 +180,63 @@ describe('ByokOrchestrator', () => {
     expect(
       secondCallMessages.filter((message: any) => message.role === 'tool')
     ).toHaveLength(1);
+  });
+
+  it('persists the turn start exactly once while the first model call is pending', async () => {
+    // The model call never resolves until the test allows it: the persists
+    // counted below are exactly the turn-start ones.
+    let resolveModelCall = (null: ?(response: any) => void);
+    mockSendByokChatCompletion.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveModelCall = resolve;
+      })
+    );
+    const { orchestrator, aiRequest, onAiRequestUpdated } = makeOrchestrator();
+
+    const chatPromise = orchestrator.startNewChat('Hello');
+    for (let i = 0; i < 10; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.resolve();
+    }
+
+    // Once by appendUserMessage — not twice (the loop no longer re-persists
+    // the same 'working' status).
+    expect(onAiRequestUpdated).toHaveBeenCalledTimes(1);
+
+    if (!resolveModelCall) throw new Error('The model call never started');
+    resolveModelCall(makeResponse({ text: 'Done.' }));
+    await chatPromise;
+    expect(aiRequest.status).toBe('ready');
+  });
+
+  it('persists the turn start exactly once on a retry', async () => {
+    const serverError = (new Error('boom'): any);
+    serverError.response = { status: 500, data: null };
+    mockSendByokChatCompletion.mockRejectedValueOnce(serverError);
+    const { orchestrator, aiRequest, onAiRequestUpdated } = makeOrchestrator();
+
+    await orchestrator.startNewChat('Hello');
+    expect(aiRequest.status).toBe('error');
+    onAiRequestUpdated.mockClear();
+
+    let resolveModelCall = (null: ?(response: any) => void);
+    mockSendByokChatCompletion.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveModelCall = resolve;
+      })
+    );
+    const retryPromise = orchestrator.retryAfterError();
+    for (let i = 0; i < 10; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.resolve();
+    }
+
+    expect(onAiRequestUpdated).toHaveBeenCalledTimes(1);
+
+    if (!resolveModelCall) throw new Error('The model call never started');
+    resolveModelCall(makeResponse({ text: 'Recovered.' }));
+    await retryPromise;
+    expect(aiRequest.status).toBe('ready');
   });
 
   it('chains two rounds of tool calls before answering', async () => {
@@ -356,8 +423,7 @@ describe('ByokOrchestrator', () => {
     const startPromise = orchestrator.startNewChat('Slow round');
     // Let the user message append and the project content resolve, so the
     // loop is now awaiting the model call.
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
     orchestrator.suspend();
     resolveModelCall(
       makeResponse({
@@ -645,9 +711,7 @@ describe('ByokOrchestrator', () => {
     mockSendByokChatCompletion
       .mockResolvedValueOnce(
         makeResponse({
-          toolCalls: [
-            makeToolCall('call-x', 'search_docs', '{"query":"evil"}'),
-          ],
+          toolCalls: [makeToolCall('call-x', 'run_tests', '{"query":"evil"}')],
         })
       )
       .mockResolvedValueOnce(makeResponse({ text: 'Recovered.' }));
@@ -658,7 +722,7 @@ describe('ByokOrchestrator', () => {
     await orchestrator.startNewChat('Do something');
 
     // The whitelist is enforced at dispatch, not only in the advertisement:
-    // search_docs (a server-side stub) must never reach the executor.
+    // run_tests (a server-side stub) must never reach the executor.
     expect(executeFunctionCalls).not.toHaveBeenCalled();
     const outputs = (aiRequest.output || []).filter(
       message => message.type === 'function_call_output'
@@ -680,7 +744,7 @@ describe('ByokOrchestrator', () => {
       .mockResolvedValueOnce(
         makeResponse({
           toolCalls: [
-            makeToolCall('call-1', 'search_docs', '{}'),
+            makeToolCall('call-1', 'run_tests', '{}'),
             makeToolCall('call-2', 'describe_instances', '{}'),
           ],
         })
@@ -718,8 +782,7 @@ describe('ByokOrchestrator', () => {
     const { orchestrator, aiRequest } = makeOrchestrator();
 
     const startPromise = orchestrator.startNewChat('Slow round');
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
     // The model call carries a cancellation handle, so suspend() can abort
     // it instead of letting it run (and bill) to its timeout.
     expect(
@@ -752,8 +815,7 @@ describe('ByokOrchestrator', () => {
     const { orchestrator, aiRequest } = makeOrchestrator();
 
     const startPromise = orchestrator.startNewChat('Slow answer');
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
     orchestrator.suspend();
     resolveModelCall(makeResponse({ text: 'Late answer' }));
     await startPromise;
@@ -789,8 +851,7 @@ describe('ByokOrchestrator', () => {
     });
 
     const startPromise = orchestrator.startNewChat('Edit something');
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
     await Promise.resolve();
     orchestrator.suspend();
     resolveApproval(true);

@@ -119,22 +119,24 @@ const flushPromises = async () => {
   }
 };
 
-describe('ByokSettingsTab', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    mockRefreshByokModels.mockReset();
-    mockGetCachedByokModels.mockReset();
-    mockGetCachedByokModels.mockReturnValue(null);
-    mockSendForTestConnection.mockReset();
-    // By default the tab is tested as on the web build (obfuscated storage);
-    // desktop-specific tests override this with mockResolvedValueOnce.
-    mockGetByokKeyStorageInfo.mockReset();
-    mockGetByokKeyStorageInfo.mockResolvedValue({
-      encrypted: false,
-      obfuscated: true,
-    });
+// One shared reset for every test of the file: each describe below used to
+// repeat this block (O11).
+beforeEach(() => {
+  localStorage.clear();
+  mockRefreshByokModels.mockReset();
+  mockGetCachedByokModels.mockReset();
+  mockGetCachedByokModels.mockReturnValue(null);
+  mockSendForTestConnection.mockReset();
+  // By default the tab is tested as on the web build (obfuscated storage);
+  // desktop-specific tests override this with mockResolvedValueOnce.
+  mockGetByokKeyStorageInfo.mockReset();
+  mockGetByokKeyStorageInfo.mockResolvedValue({
+    encrypted: false,
+    obfuscated: true,
   });
+});
 
+describe('ByokSettingsTab', () => {
   it('mounts and shows the BYOK title', async () => {
     const { component } = renderTab();
     // The title is rendered as the fallback (English) message of the
@@ -145,6 +147,44 @@ describe('ByokSettingsTab', () => {
     expect(JSON.stringify(component.toJSON())).toContain(
       'BYOK — Bring Your Own Key'
     );
+  });
+
+  it('persists custom instructions, capped to 2000 characters', async () => {
+    const { component, setMultipleValues } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const instructionsField = findFieldByName(
+      component,
+      'byok-custom-instructions'
+    );
+    const longText = 'Always answer in French. '.repeat(200);
+    expect(longText.length).toBeGreaterThan(2000);
+
+    act(() => {
+      instructionsField.props.onChange(
+        { target: { value: longText } },
+        longText.slice(0, 2000)
+      );
+    });
+
+    expect(setMultipleValues).toHaveBeenCalled();
+    const lastCall =
+      setMultipleValues.mock.calls[setMultipleValues.mock.calls.length - 1][0];
+    expect(lastCall.byok.customInstructions.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('renders the online docs expansion toggle, off by default', async () => {
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+
+    // The toggle is rendered (its label is the only one mentioning the
+    // bundled docs); it starts unchecked with the default settings.
+    const renderedJson = JSON.stringify(component.toJSON());
+    expect(renderedJson).toContain('Fetch missing documentation pages');
   });
 
   it('persists the endpoint URL through setMultipleValues', () => {
@@ -303,9 +343,106 @@ describe('ByokSettingsTab', () => {
     expect(storedRawValue).not.toContain('sk-very-secret-key');
     expect(JSON.parse(storedRawValue).version).toBe(2);
     const { loadByokKey } = require('./ByokKeyStorage');
-    expect(await loadByokKey()).toBe('sk-very-secret-key');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-very-secret-key',
+    });
     // The preferences blob was never written with the key.
     expect(localStorage.getItem('gd-preferences')).toBe(null);
+  });
+
+  it('never clears the stored key when an untouched empty field is left (D10)', async () => {
+    const { saveByokKey, loadByokKey } = require('./ByokKeyStorage');
+    await saveByokKey('sk-already-stored-key');
+
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const apiKeyField = findFieldByName(component, 'byok-api-key');
+    // The user focuses the field and leaves it without typing anything:
+    // this must never save (an empty save would clear the key).
+    act(() => {
+      apiKeyField.props.onBlur({ currentTarget: { value: '' } });
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-already-stored-key',
+    });
+  });
+
+  it('clears the stored key when the field is emptied after typing and left (D10)', async () => {
+    const { saveByokKey, loadByokKey } = require('./ByokKeyStorage');
+    await saveByokKey('sk-already-stored-key');
+
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const apiKeyField = findFieldByName(component, 'byok-api-key');
+    act(() => {
+      apiKeyField.props.onChange({ target: { value: 'sk-typo' } }, 'sk-typo');
+    });
+    // Erasing everything after typing is an explicit empty: leaving the
+    // field is a deliberate delete.
+    act(() => {
+      apiKeyField.props.onChange({ target: { value: '' } }, '');
+    });
+    act(() => {
+      apiKeyField.props.onBlur({ currentTarget: { value: '' } });
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(await loadByokKey()).toEqual({ status: 'none' });
+    expect(localStorage.getItem('gd-byok-key')).toBe(null);
+  });
+
+  it('does not re-save when the field is left again without a new edit (D10)', async () => {
+    const { loadByokKey } = require('./ByokKeyStorage');
+    const { component } = renderTab();
+    const apiKeyField = findFieldByName(component, 'byok-api-key');
+
+    act(() => {
+      apiKeyField.props.onChange(
+        { target: { value: 'sk-persisted-key' } },
+        'sk-persisted-key'
+      );
+    });
+    act(() => {
+      apiKeyField.props.onBlur({
+        currentTarget: { value: 'sk-persisted-key' },
+      });
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-persisted-key',
+    });
+
+    // Tabbing through the field again (no edit since the save) must neither
+    // re-save nor clear.
+    act(() => {
+      apiKeyField.props.onBlur({
+        currentTarget: { value: 'sk-persisted-key' },
+      });
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-persisted-key',
+    });
   });
 
   it('hides the storage status row when no key is stored', async () => {
@@ -379,21 +516,6 @@ describe('ByokSettingsTab', () => {
 });
 
 describe('ByokSettingsTab: models fetching', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    mockRefreshByokModels.mockReset();
-    mockGetCachedByokModels.mockReset();
-    mockGetCachedByokModels.mockReturnValue(null);
-    mockSendForTestConnection.mockReset();
-    // By default the tab is tested as on the web build (obfuscated storage);
-    // desktop-specific tests override this with mockResolvedValueOnce.
-    mockGetByokKeyStorageInfo.mockReset();
-    mockGetByokKeyStorageInfo.mockResolvedValue({
-      encrypted: false,
-      obfuscated: true,
-    });
-  });
-
   const getRaisedButtons = (component: any) =>
     component.root.findAllByType(RaisedButton);
 
@@ -484,21 +606,6 @@ describe('ByokSettingsTab: models fetching', () => {
 });
 
 describe('ByokSettingsTab: per-model context windows', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    mockRefreshByokModels.mockReset();
-    mockGetCachedByokModels.mockReset();
-    mockGetCachedByokModels.mockReturnValue(null);
-    mockSendForTestConnection.mockReset();
-    // By default the tab is tested as on the web build (obfuscated storage);
-    // desktop-specific tests override this with mockResolvedValueOnce.
-    mockGetByokKeyStorageInfo.mockReset();
-    mockGetByokKeyStorageInfo.mockResolvedValue({
-      encrypted: false,
-      obfuscated: true,
-    });
-  });
-
   it('persists a context window for the selected model via setMultipleValues', () => {
     const settings: ByokSettings = {
       ...DEFAULT_BYOK_SETTINGS,
@@ -579,21 +686,6 @@ describe('ByokSettingsTab: per-model context windows', () => {
 });
 
 describe('ByokSettingsTab: test connection', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    mockRefreshByokModels.mockReset();
-    mockGetCachedByokModels.mockReset();
-    mockGetCachedByokModels.mockReturnValue(null);
-    mockSendForTestConnection.mockReset();
-    // By default the tab is tested as on the web build (obfuscated storage);
-    // desktop-specific tests override this with mockResolvedValueOnce.
-    mockGetByokKeyStorageInfo.mockReset();
-    mockGetByokKeyStorageInfo.mockResolvedValue({
-      encrypted: false,
-      obfuscated: true,
-    });
-  });
-
   const renderTabAndClickTest = async () => {
     const { component, setMultipleValues } = renderTab();
     const raisedButtons = component.root.findAllByType(RaisedButton);
@@ -762,17 +854,6 @@ describe('renderByokErrorMessage', () => {
 });
 
 describe('ByokSettingsTab image support selector (Phase 6)', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    mockGetCachedByokModels.mockReset();
-    mockGetCachedByokModels.mockReturnValue(null);
-    mockGetByokKeyStorageInfo.mockReset();
-    mockGetByokKeyStorageInfo.mockResolvedValue({
-      encrypted: false,
-      obfuscated: true,
-    });
-  });
-
   it('renders the Image support selector with the auto-detect default', async () => {
     const { component } = renderTab();
     await act(async () => {

@@ -85,7 +85,10 @@ describe('ByokKeyStorage (web build: obfuscated storage)', () => {
 
   it('saves then loads the same key', async () => {
     await saveByokKey('sk-test-1234567890');
-    expect(await loadByokKey()).toBe('sk-test-1234567890');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-test-1234567890',
+    });
   });
 
   it('round-trips keys containing percent signs without corrupting them', async () => {
@@ -93,13 +96,16 @@ describe('ByokKeyStorage (web build: obfuscated storage)', () => {
     // percent-escape: silently corrupted, or rejected as "no key stored".
     for (const key of ['a%b', '%', '%25', '%41', 'trailing%', 'key%2z']) {
       await saveByokKey(key);
-      expect(await loadByokKey()).toBe(key);
+      expect(await loadByokKey()).toEqual({ status: 'ok', key });
     }
   });
 
   it('loads and round-trips keys with non-ASCII characters', async () => {
     await saveByokKey('clé-privée-🔑');
-    expect(await loadByokKey()).toBe('clé-privée-🔑');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'clé-privée-🔑',
+    });
   });
 
   it('stores the key obfuscated: the stored value is not the plaintext key', async () => {
@@ -112,22 +118,22 @@ describe('ByokKeyStorage (web build: obfuscated storage)', () => {
     expect(JSON.parse(storedValue).value).not.toContain('sk-test');
   });
 
-  it('loads null when no key is stored', async () => {
-    expect(await loadByokKey()).toBe(null);
+  it("loads a 'none' status when no key is stored", async () => {
+    expect(await loadByokKey()).toEqual({ status: 'none' });
   });
 
-  it('clears the entry, then loads null', async () => {
+  it('clears the entry, then loads none', async () => {
     await saveByokKey('sk-test-1234567890');
     await clearByokKey();
     expect(localStorage.getItem(BYOK_KEY_STORAGE_ITEM)).toBe(null);
-    expect(await loadByokKey()).toBe(null);
+    expect(await loadByokKey()).toEqual({ status: 'none' });
   });
 
   it('treats saving an empty string as clearing the entry', async () => {
     await saveByokKey('sk-test-1234567890');
     await saveByokKey('');
     expect(localStorage.getItem(BYOK_KEY_STORAGE_ITEM)).toBe(null);
-    expect(await loadByokKey()).toBe(null);
+    expect(await loadByokKey()).toEqual({ status: 'none' });
   });
 
   it('reads a version 1 (plaintext) entry and migrates it to version 2', async () => {
@@ -136,45 +142,51 @@ describe('ByokKeyStorage (web build: obfuscated storage)', () => {
       JSON.stringify({ key: 'sk-old-plaintext-key' })
     );
 
-    expect(await loadByokKey()).toBe('sk-old-plaintext-key');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-old-plaintext-key',
+    });
 
     const storedValue = JSON.parse(
       localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || 'null'
     );
     expect(storedValue.version).toBe(2);
     expect(JSON.stringify(storedValue)).not.toContain('sk-old-plaintext-key');
-    expect(await loadByokKey()).toBe('sk-old-plaintext-key');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-old-plaintext-key',
+    });
   });
 
-  it('loads null instead of throwing on a corrupted (non-JSON) stored value', async () => {
+  it("loads an 'unreadable' status instead of throwing on a corrupted (non-JSON) stored value", async () => {
     localStorage.setItem(BYOK_KEY_STORAGE_ITEM, '{not json at all');
-    expect(await loadByokKey()).toBe(null);
+    expect(await loadByokKey()).toEqual({ status: 'unreadable' });
   });
 
-  it('loads null on a stored value that is not the expected object', async () => {
+  it("loads an 'unreadable' status on a stored value that is not the expected object", async () => {
     localStorage.setItem(BYOK_KEY_STORAGE_ITEM, JSON.stringify('a string'));
-    expect(await loadByokKey()).toBe(null);
+    expect(await loadByokKey()).toEqual({ status: 'unreadable' });
   });
 
-  it('loads null on a corrupted v2 value (invalid base64)', async () => {
+  it("loads an 'unreadable' status on a corrupted v2 value (invalid base64)", async () => {
     localStorage.setItem(
       BYOK_KEY_STORAGE_ITEM,
       JSON.stringify({ version: 2, value: 'not base64!!!' })
     );
-    expect(await loadByokKey()).toBe(null);
+    expect(await loadByokKey()).toEqual({ status: 'unreadable' });
   });
 
-  it('loads null on a v2 entry without a value', async () => {
+  it("loads an 'unreadable' status on a v2 entry without a value", async () => {
     localStorage.setItem(BYOK_KEY_STORAGE_ITEM, JSON.stringify({ version: 2 }));
-    expect(await loadByokKey()).toBe(null);
+    expect(await loadByokKey()).toEqual({ status: 'unreadable' });
   });
 
-  it('loads null on a v3 (OS-encrypted) entry: the web build cannot decrypt it', async () => {
+  it("loads an 'unreadable' status on a v3 (OS-encrypted) entry: the web build cannot decrypt it", async () => {
     localStorage.setItem(
       BYOK_KEY_STORAGE_ITEM,
       JSON.stringify({ version: 3, value: FAKE_CIPHER_TEXT })
     );
-    expect(await loadByokKey()).toBe(null);
+    expect(await loadByokKey()).toEqual({ status: 'unreadable' });
   });
 
   it('resolves false when the storage write fails, instead of reporting success', async () => {
@@ -285,14 +297,17 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
 
   it('loads through byok-decrypt and round-trips the key', async () => {
     await saveByokKey('clé-privée-🔑');
-    expect(await loadByokKey()).toBe('clé-privée-🔑');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'clé-privée-🔑',
+    });
     expect(mockIpcRendererInvoke).toHaveBeenCalledWith(
       'byok-decrypt',
       FAKE_CIPHER_TEXT
     );
   });
 
-  it('loads null when the main process cannot decrypt (ok: false), without throwing', async () => {
+  it("loads an 'unreadable' status when the main process cannot decrypt (ok: false), without throwing — distinct from 'none'", async () => {
     const consoleErrorSpy = jest
       .spyOn(console, 'error')
       .mockImplementation(() => {});
@@ -300,7 +315,7 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
 
     // Corrupt the fake main-process state: decryption no longer knows the key.
     fakeDecryptedKey = null;
-    await expect(loadByokKey()).resolves.toBe(null);
+    await expect(loadByokKey()).resolves.toEqual({ status: 'unreadable' });
     expect(consoleErrorSpy).toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
@@ -324,7 +339,10 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
     expect(JSON.parse(storedValue).version).toBe(2);
     expect(storedValue).not.toContain('sk-test-1234567890');
     // The key is still readable through the renderer-side deobfuscation.
-    expect(await loadByokKey()).toBe('sk-test-1234567890');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-test-1234567890',
+    });
     expect(consoleErrorSpy).toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
@@ -371,7 +389,10 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
     expect(
       JSON.parse(localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || 'null').version
     ).toBe(2);
-    expect(await loadByokKey()).toBe('sk-test-1234567890');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-test-1234567890',
+    });
 
     consoleErrorSpy.mockRestore();
   });
@@ -389,7 +410,7 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
       return { ok: true, data: 'never-used' };
     });
 
-    await expect(loadByokKey()).resolves.toBe(null);
+    await expect(loadByokKey()).resolves.toEqual({ status: 'unreadable' });
 
     consoleErrorSpy.mockRestore();
   });
@@ -416,7 +437,7 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
       JSON.stringify({ version: 2, value: obfuscate('sk-older-key') })
     );
 
-    expect(await loadByokKey()).toBe('sk-older-key');
+    expect(await loadByokKey()).toEqual({ status: 'ok', key: 'sk-older-key' });
 
     const storedValue = JSON.parse(
       localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || 'null'
@@ -434,7 +455,10 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
       JSON.stringify({ key: 'sk-old-plaintext-key' })
     );
 
-    expect(await loadByokKey()).toBe('sk-old-plaintext-key');
+    expect(await loadByokKey()).toEqual({
+      status: 'ok',
+      key: 'sk-old-plaintext-key',
+    });
 
     const storedValue = localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || '';
     expect(JSON.parse(storedValue)).toEqual({
@@ -442,6 +466,48 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
       value: FAKE_CIPHER_TEXT,
     });
     expect(storedValue).not.toContain('sk-old-plaintext-key');
+  });
+
+  it('keeps the plaintext entry when the migration write fails, and migrates it on a later load', async () => {
+    localStorage.setItem(
+      BYOK_KEY_STORAGE_ITEM,
+      JSON.stringify({ key: 'sk-old-plaintext-key' })
+    );
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    // Fail the write that would replace the plaintext entry (quota exceeded,
+    // private mode…): the migration must not drop the entry before the
+    // replacement is confirmed written.
+    const setItemSpy = jest
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('QuotaExceededError');
+      });
+
+    // The key is still handed back (it was readable), but the entry stays.
+    await expect(loadByokKey()).resolves.toEqual({
+      status: 'ok',
+      key: 'sk-old-plaintext-key',
+    });
+    expect(
+      JSON.parse(localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || 'null').key
+    ).toBe('sk-old-plaintext-key');
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    // The write works again: the next load retries the migration, and the
+    // plaintext disappears only now that the new entry is confirmed.
+    setItemSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    await expect(loadByokKey()).resolves.toEqual({
+      status: 'ok',
+      key: 'sk-old-plaintext-key',
+    });
+    const storedValue = JSON.parse(
+      localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || 'null'
+    );
+    expect(storedValue).toEqual({ version: 3, value: FAKE_CIPHER_TEXT });
+    expect(JSON.stringify(storedValue)).not.toContain('sk-old-plaintext-key');
   });
 
   it('does not let a concurrent user save be overwritten by the v2→v3 migration', async () => {
@@ -456,7 +522,7 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
     await saveByokKey('sk-new-key');
     await loadPromise;
 
-    expect(await loadByokKey()).toBe('sk-new-key');
+    expect(await loadByokKey()).toEqual({ status: 'ok', key: 'sk-new-key' });
   });
 
   it('clears the entry without calling the main process', async () => {

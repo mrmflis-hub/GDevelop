@@ -150,13 +150,19 @@ type Props = {|
   // container can gate project-modifying tool calls behind a confirmation when
   // it is off. Auto edit is a frontend-only concern and is not sent to the API.
   onIsAutoEditEnabledChange?: (isAutoEditEnabled: boolean) => void,
-  onSendFeedback: (
+  // Absent on chats whose messages have no server-side counterpart to give
+  // feedback on (BYOK): the like/dislike buttons are then not rendered.
+  onSendFeedback?: (
     aiRequestId: string,
     messageIndex: number,
     feedback: 'like' | 'dislike',
     reason?: string,
     freeFormDetails?: string
   ) => Promise<void>,
+  // Looks up the images referenced by a tool output (screenshots), so they
+  // are rendered inline to the user. Absent outside the chats that store
+  // images (BYOK perception).
+  getToolResultImage?: (imageId: string) => ?{| dataUrl: string |},
   hasOpenedProject: boolean,
   onStop: () => Promise<void>,
   onStartOrOpenChat: (
@@ -166,7 +172,10 @@ type Props = {|
   ) => void,
   aiConfigurationPresetsWithAvailability: Array<AiConfigurationPresetWithAvailability>,
 
-  onProcessFunctionCalls: (
+  // Absent when the tool calls of the chat are driven by the chat itself
+  // (BYOK): the manual "process function calls" affordances are then not
+  // rendered.
+  onProcessFunctionCalls?: (
     functionCalls: Array<AiRequestMessageAssistantFunctionCall>,
     options: ?{| ignore?: boolean |}
   ) => Promise<void>,
@@ -223,6 +232,7 @@ export const AiRequestChat: React.ComponentType<{
       onStartNewAiRequest,
       onSendUserMessage,
       onSendFeedback,
+      getToolResultImage,
       onStartOrOpenChat,
       quota,
       increaseQuotaOffering,
@@ -1005,6 +1015,7 @@ export const AiRequestChat: React.ComponentType<{
           <ChatMessages
             aiRequest={aiRequest}
             onSendFeedback={onSendFeedback}
+            getToolResultImage={getToolResultImage}
             editorFunctionCallResults={editorFunctionCallResults}
             editorCallbacks={editorCallbacks}
             project={project}

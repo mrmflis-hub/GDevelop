@@ -2,7 +2,7 @@
 import {
   classifyByokError,
   describeInvalidRequestForImageContent,
-  describeInvalidRequestForReasoningEffort,
+  isInvalidRequestForReasoningEffort,
   isRetryableByokError,
   makeByokError,
   redactSecretFromByokError,
@@ -220,7 +220,7 @@ describe('isRetryableByokError', () => {
   }
 });
 
-describe('describeInvalidRequestForReasoningEffort', () => {
+describe('isInvalidRequestForReasoningEffort', () => {
   it('is true for an invalid-request mentioning reasoning_effort', () => {
     const error = classifyByokError(
       makeAxiosResponseError(400, {
@@ -230,7 +230,21 @@ describe('describeInvalidRequestForReasoningEffort', () => {
         },
       })
     );
-    expect(describeInvalidRequestForReasoningEffort(error)).toBe(true);
+    expect(isInvalidRequestForReasoningEffort(error)).toBe(true);
+  });
+
+  it('is true for a 422 naming reasoning_effort (classified as invalid-request)', () => {
+    const error = classifyByokError(
+      makeAxiosResponseError(422, {
+        error: {
+          message:
+            'Request failed: reasoning_effort is not an accepted parameter.',
+        },
+      })
+    );
+    expect(error.kind).toBe('invalid-request');
+    expect(error.status).toBe(422);
+    expect(isInvalidRequestForReasoningEffort(error)).toBe(true);
   });
 
   it('matches reasoning_effort regardless of case', () => {
@@ -239,7 +253,7 @@ describe('describeInvalidRequestForReasoningEffort', () => {
         error: { message: 'REASONING_EFFORT is not a valid parameter.' },
       })
     );
-    expect(describeInvalidRequestForReasoningEffort(error)).toBe(true);
+    expect(isInvalidRequestForReasoningEffort(error)).toBe(true);
   });
 
   it('is false for an invalid-request about something else', () => {
@@ -248,7 +262,7 @@ describe('describeInvalidRequestForReasoningEffort', () => {
         error: { message: "Model 'nope' does not exist." },
       })
     );
-    expect(describeInvalidRequestForReasoningEffort(error)).toBe(false);
+    expect(isInvalidRequestForReasoningEffort(error)).toBe(false);
   });
 
   it('is false for another kind even when the message mentions reasoning_effort', () => {
@@ -257,7 +271,7 @@ describe('describeInvalidRequestForReasoningEffort', () => {
         error: { message: 'Internal error while applying reasoning_effort.' },
       })
     );
-    expect(describeInvalidRequestForReasoningEffort(error)).toBe(false);
+    expect(isInvalidRequestForReasoningEffort(error)).toBe(false);
   });
 });
 

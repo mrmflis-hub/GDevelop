@@ -71,9 +71,52 @@ describe('ByokPrompts', () => {
   });
 });
 
-describe('ByokPrompts v4 (Phases 5 and 6 sections)', () => {
+describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
   it('pins the prompt version', () => {
-    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v4');
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v5');
+  });
+
+  it('teaches the F2 obligatory to-do list and per-item progress updates', () => {
+    const prompt = buildByokSystemPrompt({
+      toolNames: BYOK_TOOL_NAMES,
+      hasOpenedProject: true,
+    });
+    expect(prompt).toContain('create_or_update_plan');
+    expect(prompt).toContain('one-sentence progress update');
+    expect(prompt).toContain('to-do');
+  });
+
+  it('stays within the token budget with every knowledge flag on', () => {
+    const consoleInfoSpy = jest
+      .spyOn(console, 'info')
+      .mockImplementation(() => {});
+    const prompt = buildByokSystemPrompt({
+      toolNames: BYOK_TOOL_NAMES,
+      hasOpenedProject: true,
+    });
+    consoleInfoSpy.mockRestore();
+
+    // The composed prompt is capped by the composer: ~24k characters for the
+    // 6k-token budget (the estimate is logged for the desktop QA).
+    expect(prompt.length).toBeLessThanOrEqual(26000);
+  });
+
+  it('includes the knowledge packs, or their first-line summary when degraded', () => {
+    const consoleInfoSpy = jest
+      .spyOn(console, 'info')
+      .mockImplementation(() => {});
+    const prompt = buildByokSystemPrompt({
+      toolNames: BYOK_TOOL_NAMES,
+      hasOpenedProject: true,
+    });
+    consoleInfoSpy.mockRestore();
+
+    // Under the budget some degradable packs collapse to their summary —
+    // which keeps their first line. These markers survive both cases.
+    expect(prompt).toContain('Design first'); // game-design pack
+    expect(prompt).toContain('Never compute geometry'); // math/physics pack
+    expect(prompt).toContain('Prefer events'); // JS API pack
+    expect(prompt).toContain('search_reference'); // engine cheat-sheet
   });
 
   it('teaches the EventScript operational core', () => {

@@ -34,6 +34,10 @@ import {
   BYOK_LOOP_GUARD_CORRECTIVE_MESSAGE,
   createByokLoopGuard,
 } from './ByokLoopGuards';
+import { listByokSkillMetadata } from './ByokSkills';
+import { isByokEngineReferenceAvailable } from './ByokEngineReference';
+import { loadByokProjectNotes } from './ByokProjectNotes';
+import { makeByokPromptContext } from './Knowledge/ByokKnowledgeSections';
 import {
   byokMessagesForTranscriptItem,
   byokResponseToAssistantMessage,
@@ -202,6 +206,10 @@ export type ByokOrchestratorOptions = {|
     getPreviewLauncher: () => ?any,
     storeImage?: (dataUrl: string) => Promise<any>,
   |},
+  // The storage identifier of the open project's notes (Phase 7.8): null
+  // while no project is open. Used both by the update_project_notes tool
+  // and to inject the notes into the system prompt.
+  getProjectNotesIdentifier?: () => string | null,
 |};
 
 export type ByokOrchestrator = {|
@@ -323,6 +331,36 @@ export const createByokOrchestrator = (
     settings.imageSupport !== 'no' && !imagesDisabledForChat;
 
   /**
+   * The system prompt of this turn: the composed knowledge sections with
+   * the live context (advertised tools, project notes, skills metadata,
+   * custom instructions). Async: the notes and the skills metadata come
+   * from async storages (localStorage reads + a possible IPC round-trip for
+   * the user skills).
+   */
+  const buildSystemPrompt = async (): Promise<string> => {
+    const notesIdentifier = options.getProjectNotesIdentifier
+      ? options.getProjectNotesIdentifier()
+      : null;
+    const projectNotes = notesIdentifier
+      ? await loadByokProjectNotes(notesIdentifier)
+      : null;
+    const skills = await listByokSkillMetadata();
+    return buildByokSystemPrompt({
+      toolNames: getAdvertisedToolNames(),
+      hasOpenedProject: hasOpenedProject(),
+      context: makeByokPromptContext({
+        toolNames: getAdvertisedToolNames(),
+        hasOpenedProject: hasOpenedProject(),
+        skills,
+        engineReferenceAvailable: isByokEngineReferenceAvailable(),
+        docsAvailable: true,
+        projectNotes,
+        customInstructions: settings.customInstructions,
+      }),
+    });
+  };
+
+  /**
    * The system prompt + the transcript replayed as OpenAI messages. Tool
    * outputs referencing images emit a following user message with the
    * surviving image parts (the latest `imagesToKeep` of the chat); the
@@ -331,7 +369,7 @@ export const createByokOrchestrator = (
    * renders a JSON blob) — the same "fresh state with every message"
    * behavior as the server flow.
    */
-  const buildMessagesForModel = (): Array<any> => {
+  const buildMessagesForModel = async (): Promise<Array<any>> => {
     const transcript = getOutput();
     const transcriptMessages: Array<any> = [];
     for (const item of transcript) {
@@ -346,10 +384,7 @@ export const createByokOrchestrator = (
     const messages: Array<any> = [
       {
         role: 'system',
-        content: buildByokSystemPrompt({
-          toolNames: getAdvertisedToolNames(),
-          hasOpenedProject: hasOpenedProject(),
-        }),
+        content: await buildSystemPrompt(),
       },
       ...transcriptMessages,
     ];
@@ -387,7 +422,7 @@ export const createByokOrchestrator = (
   };
 
   const callModel = async (): Promise<any> => {
-    const messages = buildMessagesForModel();
+    const messages = await buildMessagesForModel();
     const chatOptions: any = {
       model: settings.modelName,
       messages,
@@ -426,7 +461,7 @@ export const createByokOrchestrator = (
       );
       const degradedOptions: any = {
         ...chatOptions,
-        messages: buildMessagesForModel(),
+        messages: await buildMessagesForModel(),
       };
       return await sendByokChatCompletionWithRetries({
         baseUrl: connection.baseUrl,
@@ -598,6 +633,13 @@ export const createByokOrchestrator = (
         }
       },
       runtimeDeps: getExtraToolRuntimeDeps() || undefined,
+      // The docs tools may fetch missing pages online only if the user
+      // opted in (offline-first, see ByokDocs.js).
+      onlineDocsEnabled: settings.onlineDocsEnabled,
+      getProjectNotesIdentifier: () =>
+        options.getProjectNotesIdentifier
+          ? options.getProjectNotesIdentifier()
+          : null,
     };
     const parsedArguments = parseCallArguments(functionCall);
     try {
@@ -920,9 +962,10 @@ export const createByokOrchestrator = (
   };
 
   const runLoop = async (): Promise<void> => {
-    aiRequest.status = 'working';
-    persistUpdate();
-
+    // The 'working' status is persisted once per turn start by the caller
+    // (appendUserMessage, or retryAfterError which has no user message to
+    // append) — persisting it here as well wrote the same state twice on
+    // every message.
     // Cancelling this handle aborts the in-flight model request (see
     // suspend): without it, a stopped chat keeps spending the user's tokens
     // until the request times out.
@@ -1035,6 +1078,10 @@ export const createByokOrchestrator = (
     isRunning = true;
     isSuspended = false;
     try {
+      // Same single 'working' persist per turn start as a user message: the
+      // status was 'error', the transcript is unchanged.
+      aiRequest.status = 'working';
+      persistUpdate();
       await runLoop();
     } catch (error) {
       handleLoopError(error);

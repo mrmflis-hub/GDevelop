@@ -125,3 +125,186 @@ describe('BYOK-only tools are all intercepted', () => {
     }
   });
 });
+
+describe('load_skill interception tool', () => {
+  const runLoad = async (args: Object) => {
+    const tool = findByNameokExtraTool('load_skill');
+    if (!tool) throw new Error('load_skill tool not found');
+    return tool.run(args, makeCollaborators(null));
+  };
+
+  it('returns the body of a shipped skill', async () => {
+    const result = await runLoad({ name: 'platformer-game' });
+
+    expect(result.output.success).toBe(true);
+    expect(result.output.skill.name).toBe('platformer-game');
+    expect(result.output.skill.body).toContain('Platformer');
+    expect(result.didModifyProject).toBe(false);
+  });
+
+  it('lists the available skills on an unknown name', async () => {
+    const result = await runLoad({ name: 'no-such-skill' });
+
+    expect(result.output.success).toBe(false);
+    expect(result.output.message).toContain('no-such-skill');
+    expect(result.output.message).toContain('platformer-game');
+  });
+
+  it('rejects a missing name without crashing', async () => {
+    const result = await runLoad({});
+
+    expect(result.output.success).toBe(false);
+    expect(result.output.message).toContain('"name"');
+  });
+});
+
+describe('search_docs / read_doc interception tools', () => {
+  const runDocsTool = async (name: string, args: Object) => {
+    const tool = findByNameokExtraTool(name);
+    if (!tool) throw new Error(`${name} tool not found`);
+    return tool.run(args, makeCollaborators(null));
+  };
+
+  it('search_docs finds the object-picking page', async () => {
+    const result = await runDocsTool('search_docs', {
+      query: 'object picking',
+    });
+
+    expect(result.output.success).toBe(true);
+    expect(result.output.pages.join('\n')).toContain(
+      'events/object-picking/index.md'
+    );
+  });
+
+  it('read_doc returns a bundled page, capped', async () => {
+    const result = await runDocsTool('read_doc', {
+      page: 'events/object-picking/index.md',
+    });
+
+    expect(result.output.success).toBe(true);
+    expect(result.output.page).toBe('events/object-picking/index.md');
+    expect(result.output.content.length).toBeGreaterThan(0);
+  });
+
+  it('read_doc refuses a missing page without the online toggle', async () => {
+    const result = await runDocsTool('read_doc', {
+      page: 'events/never-bundled.md',
+    });
+
+    expect(result.output.success).toBe(false);
+    expect(result.output.content).toContain('online docs expansion');
+  });
+
+  it('read_doc stays offline-first even when the online toggle is on', async () => {
+    const tool = findByNameokExtraTool('read_doc');
+    if (!tool) throw new Error('read_doc tool not found');
+    // A bundled page is served directly: no fetch is attempted, whatever
+    // the collaborators allow (the online fetch itself is covered by
+    // ByokDocs.spec.js with an injected fetcher).
+    const result = await tool.run(
+      { page: 'events/index.md' },
+      { ...makeCollaborators(null), onlineDocsEnabled: true }
+    );
+    expect(result.output.success).toBe(true);
+    expect(result.output.page).toBe('events/index.md');
+  });
+});
+
+describe('update_project_notes interception tool', () => {
+  // The node test environment has no localStorage: give the notes a
+  // minimal in-memory one (the real storage paths are exercised in
+  // ByokProjectNotes.spec.js, which runs under jsdom).
+  if (typeof (global: any).localStorage === 'undefined') {
+    const backing: Map<string, string> = new Map();
+    (global: any).localStorage = {
+      getItem: (key: string) => (backing.has(key) ? backing.get(key) : null),
+      setItem: (key: string, value: string) => {
+        backing.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        backing.delete(key);
+      },
+      clear: () => {
+        backing.clear();
+      },
+    };
+  }
+  const runNotesTool = async (args: Object, identifier: string | null) => {
+    const tool = findByNameokExtraTool('update_project_notes');
+    if (!tool) throw new Error('update_project_notes tool not found');
+    return tool.run(args, {
+      ...makeCollaborators(null),
+      getProjectNotesIdentifier: () => identifier,
+    });
+  };
+
+  beforeEach(() => {
+    (global: any).localStorage.clear();
+  });
+
+  it('merges the provided fields into the persisted notes', async () => {
+    const first = await runNotesTool(
+      { conventions: 'Use "mob_" prefixes.' },
+      'file-id-notes'
+    );
+    expect(first.output.success).toBe(true);
+    expect(first.didModifyProject).toBe(false);
+
+    const second = await runNotesTool(
+      { inProgress: 'Level 3 boss.' },
+      'file-id-notes'
+    );
+    expect(second.output.success).toBe(true);
+    expect(second.output.notes.conventions).toBe('Use "mob_" prefixes.');
+    expect(second.output.notes.inProgress).toBe('Level 3 boss.');
+
+    // The notes are persisted: a fresh call reads them back.
+    const third = await runNotesTool({}, 'file-id-notes');
+    expect(third.output.notes.conventions).toBe('Use "mob_" prefixes.');
+    expect(third.output.notes.inProgress).toBe('Level 3 boss.');
+  });
+
+  it('answers with a failure while no project is open', async () => {
+    const result = await runNotesTool({ conventions: 'x' }, null);
+    expect(result.output.success).toBe(false);
+    expect(result.output.message).toContain('No project is open');
+  });
+});
+
+describe('search_reference interception tool', () => {
+  const runSearch = async (args: Object) => {
+    const tool = findByNameokExtraTool('search_reference');
+    if (!tool) throw new Error('search_reference tool not found');
+    return tool.run(args, makeCollaborators(null));
+  };
+
+  it('answers a query with compacted entries against the real catalog', async () => {
+    const result = await runSearch({ query: 'lerp', kind: 'expression' });
+
+    expect(result.output.success).toBe(true);
+    expect(result.didModifyProject).toBe(false);
+    expect(result.output.entries.length).toBeGreaterThan(0);
+    expect(result.output.entries[0].name).toBe('lerp');
+    // Compacted: an entry never carries a huge description.
+    for (const entry of result.output.entries) {
+      expect(entry.description.length).toBeLessThanOrEqual(201);
+    }
+  });
+
+  it('reports an empty match set as a success with guidance', async () => {
+    const result = await runSearch({
+      query: 'zzz-no-such-instruction-zzz',
+    });
+
+    expect(result.output.success).toBe(true);
+    expect(result.output.entries).toEqual([]);
+    expect(result.output.message).toContain('No entry matched');
+  });
+
+  it('degrades a wrong argument shape into a search, never a crash', async () => {
+    const result = await runSearch({ query: 42, kind: { nested: true } });
+
+    expect(result.output.success).toBe(true);
+    expect(Array.isArray(result.output.entries)).toBe(true);
+  });
+});

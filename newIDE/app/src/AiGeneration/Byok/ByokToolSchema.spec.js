@@ -80,11 +80,12 @@ describe('validateByokToolSchemas', () => {
   });
 
   it('enforces the tool-count cap on the default set', () => {
-    // The cap is the Phase 6 budget (22 Phase 5 tools + 9 Phase 6 tools,
-    // with headroom): every advertised schema is billed as input tokens on
+    // The cap is the Phase 6 budget (22 Phase 5 tools + 9 Phase 6 tools)
+    // grown by the two Phase 7 knowledge tools (search_reference,
+    // load_skill): every advertised schema is billed as input tokens on
     // every turn, so the guard exists to force a conscious decision when
     // the surface grows again.
-    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(32);
+    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(36);
     expect(BYOK_TOOL_NAMES.length).toBeGreaterThanOrEqual(30);
     expect(validateByokToolSchemas()).toEqual([]);
   });
@@ -138,8 +139,9 @@ describe('BYOK_TOOL_NAMES (the v4 whitelist)', () => {
       'run_explorer_agent',
       'search_object_asset_store',
       'search_resource_store',
+      // Still excluded: the raw "read the whole docs" server tool — Phase 7
+      // exposes search_docs + read_doc (the bundled subset) instead.
       'read_full_docs',
-      'search_docs',
       'run_tests',
       'report_fulfilment_problem',
       'get_game_starter_summary',

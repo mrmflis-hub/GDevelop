@@ -13,6 +13,7 @@ import SelectOption from '../../UI/SelectOption';
 import Text from '../../UI/Text';
 import TextField from '../../UI/TextField';
 import {
+  BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS,
   BYOK_IMAGE_SUPPORTS,
   BYOK_REASONING_EFFORTS,
   DEFAULT_BYOK_SETTINGS,
@@ -185,6 +186,13 @@ const ByokSettingsTab = (): React.Node => {
   // The API key lives in its own storage (see `saveByokKey`), never in the
   // preferences: it is held here in local state until the field is left.
   const [apiKey, setApiKey] = React.useState<string>('');
+  // Whether the user actually edited the key field since it was last
+  // committed: leaving an untouched field must save nothing — in particular,
+  // an *empty untouched* field must never clear the stored key on a mere
+  // click-through (D10).
+  const [isKeyFieldEdited, setIsKeyFieldEdited] = React.useState<boolean>(
+    false
+  );
   const [
     isKeyStorageEncrypted,
     setIsKeyStorageEncrypted,
@@ -245,7 +253,10 @@ const ByokSettingsTab = (): React.Node => {
     if (!isSubscribedRef.current) return;
 
     setIsKeyStorageEncrypted(storageInfo.encrypted);
-    setHasStoredKey(!!storedKey);
+    // An unreadable entry still exists (e.g. a key that can no longer be
+    // decrypted after an OS account change): the "Clear the stored key"
+    // button must stay available to remove it.
+    setHasStoredKey(storedKey.status !== 'none');
   }, []);
 
   React.useEffect(
@@ -283,7 +294,8 @@ const ByokSettingsTab = (): React.Node => {
 
     try {
       if (pendingKeySaveRef.current) await pendingKeySaveRef.current;
-      const storedApiKey = (await loadByokKey()) || '';
+      const storedKey = await loadByokKey();
+      const storedApiKey = storedKey.status === 'ok' ? storedKey.key : '';
       const models = await refreshByokModels({
         baseUrl: byokSettings.endpointUrl,
         apiKey: storedApiKey,
@@ -324,7 +336,8 @@ const ByokSettingsTab = (): React.Node => {
 
     try {
       if (pendingKeySaveRef.current) await pendingKeySaveRef.current;
-      const storedApiKey = (await loadByokKey()) || '';
+      const storedKey = await loadByokKey();
+      const storedApiKey = storedKey.status === 'ok' ? storedKey.key : '';
       await sendByokChatCompletionWithRetries({
         baseUrl: byokSettings.endpointUrl,
         apiKey: storedApiKey,
@@ -366,8 +379,22 @@ const ByokSettingsTab = (): React.Node => {
     });
   };
 
+  /**
+   * Leaving the key field commits it — but only when the user actually
+   * edited it (D10): an untouched field (even focused and left empty) never
+   * saves, so a low-skill user cannot lose their stored key to a
+   * non-obvious gesture. Typing is an explicit edit — including typing and
+   * erasing everything, which therefore stays a deliberate delete.
+   */
+  const commitApiKeyField = () => {
+    if (!isKeyFieldEdited) return;
+    setIsKeyFieldEdited(false);
+    saveApiKey();
+  };
+
   const onClearStoredKey = async () => {
     setApiKey('');
+    setIsKeyFieldEdited(false);
     await clearByokKey();
     clearByokModels();
     if (isSubscribedRef.current) {
@@ -493,8 +520,11 @@ const ByokSettingsTab = (): React.Node => {
         autoComplete="off"
         floatingLabelText={<Trans>API key</Trans>}
         value={apiKey}
-        onChange={(event, text) => setApiKey(text)}
-        onBlur={saveApiKey}
+        onChange={(event, text) => {
+          setApiKey(text);
+          setIsKeyFieldEdited(true);
+        }}
+        onBlur={commitApiKeyField}
       />
       {keyStorageStatusText && (
         <Line noMargin>
@@ -504,14 +534,55 @@ const ByokSettingsTab = (): React.Node => {
         </Line>
       )}
       <Line noMargin>
-        {/* The discoverable way to remove a stored key (emptying the field
-            and blurring also clears it, but nothing says so). */}
+        {/* The discoverable way to remove a stored key: an untouched empty
+            field never clears anything (D10), so this button is the only
+            obvious delete gesture. */}
         <FlatButton
           label={<Trans>Clear the stored key</Trans>}
           onClick={onClearStoredKey}
           disabled={!hasStoredKey}
         />
       </Line>
+      <Checkbox
+        checked={byokSettings.onlineDocsEnabled}
+        onCheck={(event, checked) =>
+          updateByokSetting({ onlineDocsEnabled: checked })
+        }
+        label={
+          <Trans>
+            Fetch missing documentation pages online (the bundled docs work
+            offline; fetched pages are cached for a day)
+          </Trans>
+        }
+      />
+      <Line noMargin>
+        <Text size="body2" color="secondary">
+          <Trans>
+            Skills (desktop): drop your own .md skill files in the "byok-skills"
+            folder of your user data — the AI can load them with its load_skill
+            tool.
+          </Trans>
+        </Text>
+      </Line>
+      <TextField
+        name="byok-custom-instructions"
+        multiline
+        rows={4}
+        maxLength={BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS}
+        floatingLabelText={
+          <Trans>Custom instructions (applied to every chat)</Trans>
+        }
+        translatableHintText={t`e.g. Always answer in French, use 2-space indents…`}
+        value={byokSettings.customInstructions}
+        onChange={(event, text) =>
+          updateByokSetting({
+            customInstructions: text.slice(
+              0,
+              BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS
+            ),
+          })
+        }
+      />
       <LineStackLayout noMargin alignItems="center">
         <Column noMargin expand>
           <Text noMargin>

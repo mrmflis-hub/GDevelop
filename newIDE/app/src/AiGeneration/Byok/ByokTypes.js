@@ -39,7 +39,16 @@ export type ByokSettings = {|
   imageSupport: ByokImageSupport,
   contextWindowTokens: number,
   contextWindowByModel: { [string]: number },
+  // When true, docs pages that are not bundled can be fetched from the
+  // upstream documentation repository (cached for a day). Off by default:
+  // offline-first.
+  onlineDocsEnabled: boolean,
+  // The user's global custom instructions, injected verbatim as the last
+  // section of the system prompt (persona, house rules). 2 KB cap.
+  customInstructions: string,
 |};
+
+export const BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS = 2000;
 
 export const MIN_CONTEXT_WINDOW_TOKENS = 512;
 export const MAX_CONTEXT_WINDOW_TOKENS = 1000000;
@@ -59,6 +68,8 @@ export const DEFAULT_BYOK_SETTINGS: ByokSettings = {
   imageSupport: 'auto',
   contextWindowTokens: 8192,
   contextWindowByModel: {},
+  onlineDocsEnabled: false,
+  customInstructions: '',
 };
 
 /**
@@ -270,6 +281,14 @@ export const getByokSettings = (values: {
     contextWindowByModel: getContextWindowByModelOrDefault(
       byok.contextWindowByModel
     ),
+    onlineDocsEnabled: getBooleanOrDefault(
+      byok.onlineDocsEnabled,
+      DEFAULT_BYOK_SETTINGS.onlineDocsEnabled
+    ),
+    customInstructions: getStringOrDefault(
+      byok.customInstructions,
+      DEFAULT_BYOK_SETTINGS.customInstructions
+    ).slice(0, BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS),
   };
 };
 

@@ -32,7 +32,8 @@ type Props = {|
   onlyShowExplanationMessage?: boolean,
   functionCallItems?: Array<FunctionCallItem>,
   project: ?gdProject,
-  onProcessFunctionCalls: (
+  // Absent when tool calls are driven by the chat itself (BYOK).
+  onProcessFunctionCalls?: (
     functionCalls: Array<AiRequestMessageAssistantFunctionCall>,
     options: ?{|
       ignore?: boolean,
@@ -50,7 +51,6 @@ export const SuggestionLines = ({
   onlyShowExplanationMessage,
   functionCallItems,
   project,
-  onProcessFunctionCalls,
   editorCallbacks,
 }: Props): React.Node => {
   const { isMobile } = useResponsiveWindowSize();

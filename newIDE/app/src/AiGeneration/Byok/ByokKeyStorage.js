@@ -254,17 +254,33 @@ const getStoredSerializedKey = (): ?string => {
 };
 
 /**
- * Load the BYOK API key, or null when no key is stored. A corrupted value is
- * reported as "no key stored", never thrown to the caller. Older formats are
- * migrated on read, so they disappear as soon as the key is read once.
+ * The outcome of reading the stored key. The three cases need different
+ * guidance: 'none' means "add a key", 'unreadable' means "the stored entry
+ * could not be decrypted (or is corrupted) — clear it and add the key
+ * again", 'ok' carries the key. Before this shape, an OS-decryption failure
+ * (e.g. DPAPI after a Windows user-account change) was reported as "no key
+ * stored", sending the user looking for a setting they never touched.
  */
-export const loadByokKey = async (): Promise<?string> => {
+export type ByokKeyLoadResult =
+  | {| status: 'none' |}
+  | {| status: 'unreadable' |}
+  | {| status: 'ok', key: string |};
+
+/**
+ * Load the BYOK API key as a `ByokKeyLoadResult` (see above). A corrupted
+ * value is reported as 'unreadable', never thrown to the caller. Older
+ * formats are migrated on read, so they disappear as soon as the key is read
+ * once.
+ */
+export const loadByokKey = async (): Promise<ByokKeyLoadResult> => {
   try {
     const serializedKey = localStorage.getItem(BYOK_KEY_STORAGE_ITEM);
-    if (!serializedKey) return null;
+    if (!serializedKey) return { status: 'none' };
 
     const parsedKey = JSON.parse(serializedKey);
-    if (!parsedKey || typeof parsedKey !== 'object') return null;
+    if (!parsedKey || typeof parsedKey !== 'object') {
+      return { status: 'unreadable' };
+    }
 
     // Version 1 (Phase 1): the key was stored in plaintext under `key`.
     // Migrate it to the current format right away, replacing the plaintext —
@@ -272,15 +288,30 @@ export const loadByokKey = async (): Promise<?string> => {
     // (async) read was in flight, or the migration would resurrect the old
     // key over the new one.
     if (typeof parsedKey.key === 'string' && parsedKey.key) {
+      let isMigrationWritten = false;
       await enqueueStorageWrite(async () => {
-        if (getStoredSerializedKey() !== serializedKey) return;
-        await performSaveByokKey(parsedKey.key);
+        if (getStoredSerializedKey() !== serializedKey) {
+          // A newer save replaced the entry while the read was in flight:
+          // there is nothing left to migrate.
+          isMigrationWritten = true;
+          return;
+        }
+        // The plaintext entry is replaced by the write itself, so it only
+        // disappears once the write is confirmed. On a failed write the
+        // entry is kept (the key is not lost) and the migration is simply
+        // retried by the next load.
+        isMigrationWritten = await performSaveByokKey(parsedKey.key);
       });
-      return parsedKey.key;
+      if (!isMigrationWritten) {
+        console.error(
+          'The migration of the plaintext API key to the safer storage failed; the entry is kept as-is and the migration will be retried on the next load.'
+        );
+      }
+      return { status: 'ok', key: parsedKey.key };
     }
 
     const key = await decryptSecret(parsedKey);
-    if (!key) return null;
+    if (!key) return { status: 'unreadable' };
 
     // A version 2 (obfuscated) entry read on the desktop app is re-saved as
     // version 3, so the OS encryption replaces the weaker form; on the web
@@ -292,10 +323,10 @@ export const loadByokKey = async (): Promise<?string> => {
       });
     }
 
-    return key;
+    return { status: 'ok', key };
   } catch (error) {
     console.error('Unable to read the BYOK API key:', error);
-    return null;
+    return { status: 'unreadable' };
   }
 };
 

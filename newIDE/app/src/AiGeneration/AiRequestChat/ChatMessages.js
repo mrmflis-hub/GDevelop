@@ -75,20 +75,29 @@ const thinkingPhrases: Array<React.Node> = [
 
 type Props = {|
   aiRequest: AiRequest,
-  onSendFeedback: (
+  // Absent on chats whose messages have no server-side counterpart to give
+  // feedback on (BYOK): the like/dislike buttons are not rendered at all.
+  onSendFeedback?: (
     aiRequestId: string,
     messageIndex: number,
     feedback: 'like' | 'dislike',
     reason?: string,
     freeFormDetails?: string
   ) => Promise<void>,
-  editorFunctionCallResults: Array<EditorFunctionCallResult> | null,
-  onProcessFunctionCalls: (
+  // Absent when the tool calls of the chat are driven by the chat itself
+  // (BYOK): the manual "process function calls" affordances are not
+  // rendered.
+  onProcessFunctionCalls?: (
     functionCalls: Array<AiRequestMessageAssistantFunctionCall>,
     options: ?{|
       ignore?: boolean,
     |}
   ) => Promise<void>,
+  // Looks up the images referenced by a tool output (screenshots), so they
+  // are rendered inline to the user. Absent outside the chats that store
+  // images (BYOK perception).
+  getToolResultImage?: (imageId: string) => ?{| dataUrl: string |},
+  editorFunctionCallResults: Array<EditorFunctionCallResult> | null,
   editorCallbacks: EditorCallbacks,
   project: ?gdProject,
   fileMetadata: ?FileMetadata,
@@ -178,6 +187,7 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
     onSendFeedback,
     editorFunctionCallResults,
     onProcessFunctionCalls,
+    getToolResultImage,
     editorCallbacks,
 
     project: nullableProject,
@@ -342,6 +352,29 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
         const output = aiRequest.output || [];
         output.forEach((message, messageIndex) => {
           const isLastMessage = messageIndex === output.length - 1;
+
+          // Render the images a tool result references (screenshots) right
+          // after the tool calls they answer: the user sees what the model
+          // was shown. Only chats whose tool outputs carry an `images` field
+          // (BYOK perception) and that provide the image lookup produce
+          // these items.
+          if (message.type === 'function_call_output') {
+            const outputImageIds = (message: any).images;
+            if (
+              Array.isArray(outputImageIds) &&
+              outputImageIds.length > 0 &&
+              !!getToolResultImage
+            ) {
+              flushFunctionCallGroup();
+              items.push({
+                type: 'tool_result_images',
+                messageIndex,
+                imageIds: outputImageIds.filter(
+                  (imageId: any) => typeof imageId === 'string'
+                ),
+              });
+            }
+          }
 
           if (message.type === 'message' && message.role === 'user') {
             flushFunctionCallGroup();
@@ -544,6 +577,7 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
         aiRequest,
         editorFunctionCallResults,
         functionCallToFunctionCallOutput,
+        getToolResultImage,
         savingProjectForMessageId,
       ]
     );
@@ -835,7 +869,11 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
                 : 0;
               const planFeedbackKey = `${feedbackMessageIndex}-${feedbackMessageContentIndex}`;
               const planFeedbackButtons =
-                isLastVisiblePlanItem && shouldDisplayFeedbackBanner ? (
+                isLastVisiblePlanItem &&
+                shouldDisplayFeedbackBanner &&
+                // No server-side feedback without the callback (BYOK): the
+                // buttons are not rendered at all.
+                !!onSendFeedback ? (
                   <MessageFeedbackButtons
                     currentFeedback={messageFeedbacks[planFeedbackKey]}
                     onLike={() => {
@@ -886,6 +924,44 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
 
             if (absorbedMessageContentIndices.has(itemIndex)) {
               return ([]: Array<React.Node>);
+            }
+
+            if (item.type === 'tool_result_images') {
+              const renderedImages: Array<{|
+                imageId: string,
+                dataUrl: string,
+              |}> = [];
+              for (const imageId of item.imageIds) {
+                const image = getToolResultImage
+                  ? getToolResultImage(imageId)
+                  : null;
+                if (image) {
+                  renderedImages.push({ imageId, dataUrl: image.dataUrl });
+                }
+              }
+              if (renderedImages.length === 0) return ([]: Array<React.Node>);
+              return [
+                <Line
+                  key={`tool-result-images-${item.messageIndex}`}
+                  justifyContent="flex-start"
+                >
+                  <ChatBubble role="assistant">
+                    <ColumnStackLayout noMargin>
+                      {renderedImages.map(renderedImage => (
+                        <img
+                          key={renderedImage.imageId}
+                          src={renderedImage.dataUrl}
+                          alt="Screenshot returned by a tool call"
+                          style={{
+                            maxWidth: '100%',
+                            borderRadius: 8,
+                          }}
+                        />
+                      ))}
+                    </ColumnStackLayout>
+                  </ChatBubble>
+                </Line>,
+              ];
             }
 
             if (item.type === 'user_message') {
@@ -1031,7 +1107,11 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
                     <ChatBubble
                       role="assistant"
                       feedbackButtons={
-                        isLastMessage && shouldDisplayFeedbackBanner ? (
+                        isLastMessage &&
+                        shouldDisplayFeedbackBanner &&
+                        // No server-side feedback without the callback
+                        // (BYOK): the buttons are not rendered at all.
+                        !!onSendFeedback ? (
                           <MessageFeedbackButtons
                             currentFeedback={currentFeedback}
                             // $FlowFixMe[incompatible-use]
@@ -1369,6 +1449,7 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
             open
             onClose={() => setDislikeFeedbackDialogOpenedFor(null)}
             onSendFeedback={(reason: string, freeFormDetails: string) => {
+              if (!onSendFeedback) return;
               onSendFeedback(
                 dislikeFeedbackDialogOpenedFor.aiRequestId,
                 dislikeFeedbackDialogOpenedFor.messageIndex,
