@@ -51,7 +51,11 @@ type AiRequestErrorKind =
 const getAiRequestErrorKind = (error: ?AiRequestError): AiRequestErrorKind => {
   if (!error) return 'transient';
   if (error.code === 'context-too-large') return 'too-large';
+  // BYOK counterparts of the two codes above (set by ByokOrchestrator).
+  if (error.code === 'byok-context-full') return 'too-large';
   if (error.code === 'repeated-tool-call-loop') return 'stuck';
+  if (error.code === 'byok-repeated-tool-call-loop') return 'stuck';
+  if (error.code === 'byok-too-many-tool-rounds') return 'stuck';
   return 'transient';
 };
 

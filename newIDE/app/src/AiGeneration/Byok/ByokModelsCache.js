@@ -67,6 +67,12 @@ export const extractContextWindowTokens = (modelEntry: Object): ?number => {
  * window when the server reports one, drop the entries without an id, and
  * sort by id ascending (so the settings dropdown is stable).
  */
+const compareByModelIds = (a: ByokModelInfo, b: ByokModelInfo): number => {
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+};
+
 export const normalizeByokModels = (
   rawModels: Array<Object>
 ): Array<ByokModelInfo> => {
@@ -80,32 +86,48 @@ export const normalizeByokModels = (
     });
   }
 
-  return models.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return models.sort(compareByModelIds);
 };
 
 // The only mutable module state of the BYOK modules: a per-session read
-// cache of the model lists, keyed by base URL. It is safe because it only
-// ever holds replaceable copies of what the server answered (a stale entry
-// is replaced by the next refresh), and because BYOK settings live in the
-// main window only.
+// cache of the model lists, keyed by the normalized base URL. It is safe
+// because it only ever holds copies of what the server answered (a stale
+// entry is replaced by the next refresh, and a caller mutating the array it
+// got cannot corrupt the cache), and because BYOK settings live in the main
+// window only.
 const modelsByBaseUrl: Map<string, Array<ByokModelInfo>> = new Map();
 
+// The same normalization the client applies to build URLs, so
+// `https://host/v1` and `https://host/v1/` are one cache entry.
+const normalizeCacheBaseUrl = (baseUrl: string): string =>
+  baseUrl.trim().replace(/\/+$/, '');
+
 /**
- * Remember the model list of an endpoint for this session.
+ * Remember the model list of an endpoint for this session (a copy of it).
  */
 export const cacheByokModels = (
   baseUrl: string,
   models: Array<ByokModelInfo>
 ): void => {
-  modelsByBaseUrl.set(baseUrl, models);
+  modelsByBaseUrl.set(normalizeCacheBaseUrl(baseUrl), models.slice());
 };
 
 /**
- * The model list remembered for an endpoint, or null when it was never
- * fetched (or the app was restarted: the cache is in-memory only).
+ * The model list remembered for an endpoint (a copy of it), or null when it
+ * was never fetched (or the app was restarted: the cache is in-memory only).
  */
 export const getCachedByokModels = (baseUrl: string): ?Array<ByokModelInfo> => {
-  return modelsByBaseUrl.get(baseUrl) || null;
+  const cachedModels = modelsByBaseUrl.get(normalizeCacheBaseUrl(baseUrl));
+  return cachedModels ? cachedModels.slice() : null;
+};
+
+/**
+ * Forget every cached model list — used when the stored API key changes, so
+ * the next fetch reflects the new key's accessible models instead of showing
+ * the previous key's list.
+ */
+export const clearByokModels = (): void => {
+  modelsByBaseUrl.clear();
 };
 
 /**
@@ -115,8 +137,8 @@ export const getCachedByokModels = (baseUrl: string): ?Array<ByokModelInfo> => {
 export const refreshByokModels = async (
   connection: ByokConnection
 ): Promise<Array<ByokModelInfo>> => {
-  // The raw entries are needed here (rather than `fetchByokModels`) so the
-  // context-window fields reported by the server can be parsed below.
+  // The raw entries are needed here so the context-window fields reported by
+  // the server can be parsed by normalizeByokModels.
   const rawModels = await fetchRawByokModels(connection);
   const models = normalizeByokModels(rawModels);
   cacheByokModels(connection.baseUrl, models);

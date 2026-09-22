@@ -2,13 +2,18 @@
 import axios from 'axios';
 import {
   cacheByokModels,
+  clearByokModels,
   extractContextWindowTokens,
   getCachedByokModels,
   normalizeByokModels,
   refreshByokModels,
   resolveContextWindowTokens,
 } from './ByokModelsCache';
-import { DEFAULT_BYOK_SETTINGS, type ByokSettings } from './ByokTypes';
+import {
+  DEFAULT_BYOK_SETTINGS,
+  type ByokModelInfo,
+  type ByokSettings,
+} from './ByokTypes';
 
 jest.mock('axios');
 
@@ -215,6 +220,7 @@ describe('resolveContextWindowTokens', () => {
 describe('models cache and refreshByokModels', () => {
   beforeEach(() => {
     mockAxios.get.mockReset();
+    clearByokModels();
   });
 
   it('fetches, normalizes, caches and returns the model list', async () => {
@@ -246,6 +252,46 @@ describe('models cache and refreshByokModels', () => {
       { id: 'one-model', contextWindowTokens: null },
     ]);
     expect(getCachedByokModels('https://other.example.com/v1')).toBe(null);
+  });
+
+  it('normalizes the cache key: trailing slash and whitespace are one entry', () => {
+    cacheByokModels('https://host/v1/', [{ id: 'm', contextWindowTokens: 1 }]);
+
+    expect(getCachedByokModels('https://host/v1')).toEqual([
+      { id: 'm', contextWindowTokens: 1 },
+    ]);
+    expect(getCachedByokModels(' https://host/v1 ')).toEqual([
+      { id: 'm', contextWindowTokens: 1 },
+    ]);
+  });
+
+  it('caches a copy: mutating the returned list cannot corrupt the cache', () => {
+    const models: Array<ByokModelInfo> = [
+      { id: 'm', contextWindowTokens: null },
+    ];
+    cacheByokModels('https://host/v1', models);
+    models.push({ id: 'intruder', contextWindowTokens: null });
+
+    expect(getCachedByokModels('https://host/v1')).toHaveLength(1);
+
+    const cached = getCachedByokModels('https://host/v1');
+    if (!cached) throw new Error('Expected cached models');
+    cached.push({ id: 'intruder', contextWindowTokens: null });
+    expect(getCachedByokModels('https://host/v1')).toHaveLength(1);
+  });
+
+  it('clearByokModels forgets every endpoint (used when the API key changes)', () => {
+    cacheByokModels('https://one.example.com/v1', [
+      { id: 'one-model', contextWindowTokens: null },
+    ]);
+    cacheByokModels('https://two.example.com/v1', [
+      { id: 'two-model', contextWindowTokens: null },
+    ]);
+
+    clearByokModels();
+
+    expect(getCachedByokModels('https://one.example.com/v1')).toBe(null);
+    expect(getCachedByokModels('https://two.example.com/v1')).toBe(null);
   });
 
   it('returns null from the cache for an endpoint that was never fetched', () => {

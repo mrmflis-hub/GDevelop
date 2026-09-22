@@ -1,5 +1,8 @@
 // @flow
-import { editorFunctions } from '../../EditorFunctions';
+import {
+  editorFunctions,
+  editorFunctionsWithoutProject,
+} from '../../EditorFunctions';
 
 /**
  * GDevelop's own tool descriptions and argument JSON-schemas live on its
@@ -66,36 +69,130 @@ const enumProperty = (description: string, values: Array<string>) => ({
   enum: values,
 });
 
+// The item shape shared by every effect change (object effects and layer
+// effects read the same fields through `applyEffectChange`).
+const effectChangeProperty = objectProperty('One effect change.', {
+  effect_name: stringProperty('Name of the effect to change (or to create).'),
+  effect_type: stringProperty(
+    'Type of the effect, needed to create an effect that does not exist yet.'
+  ),
+  new_effect_name: stringProperty(
+    'New name of the effect, or the name to give a newly created effect.'
+  ),
+  new_effect_position: numberProperty(
+    'Position of the effect in the list (moves it, or the index where to insert a new one).'
+  ),
+  delete_this_effect: booleanProperty(
+    'Set to true to remove the effect instead of changing it.'
+  ),
+  changed_properties: arrayProperty(
+    'The effect properties to change.',
+    objectProperty('One effect property change.', {
+      property_name: stringProperty('Name of the effect property.'),
+      new_value: stringProperty(
+        'New value of the property, as a string (numbers and booleans are parsed).'
+      ),
+    })
+  ),
+});
+
 /**
- * The tools exposed to the model in BYOK v1: the read/inspect tools and the
- * simplest write tools. Deliberately **excluded** for now (decisions for a
- * later phase, after the tool loop has proven itself):
- * - `run_script`, `run_edit_agent`, `run_explorer_agent`: the script
- *   sandbox and the sub-agents (BYOK v1 runs a single agent).
- * - `generate_events`: it calls GDevelop's event-generation backend.
- * - `search_object_asset_store`, `search_resource_store`: they call
- *   GDevelop's store APIs with a GDevelop account.
- * - `run_gameplay_test`, `change_gameplay_tests`, `run_tests`: gameplay
- *   test tooling, gated on later phases.
- */
-export const BYOK_V1_TOOL_NAMES: Array<string> = [
+ * The tools exposed to the model by default in BYOK v3 (see
+ * REVIEW/phase5-tool-decisions.md for the full admit/exclude table): the
+ * read/inspect surface, the edit surface, local event writing and the
+ * script agent. Deliberately **excluded**:
+ * - `generate_events`: exact upstream alias of `add_scene_events` — not
+ *   advertised, but still dispatchable (ByokExtraTools maps it to the same
+ *   local implementation).
+ * - `create_object`, the legacy aliases (`inspect_object_properties`,
+ *   `change_object_property`, `remove_behavior`): covered by their modern
+ *   equivalents.
+ * - `search_object_asset_store`, `search_resource_store`,
+ *   `read_full_docs`, `search_docs`, `run_explorer_agent`, `run_edit_agent`,
+ *   `run_tests`, `report_fulfilment_problem`, `get_game_starter_summary`:
+ *   server-side stubs (Phase 7/8).
+ */ export const BYOK_TOOL_NAMES: Array<string> = [
   'describe_instances',
   'inspect_variables',
   'read_scene_events',
+  'read_events_source',
   'read_game_project_json',
-  'read_full_docs',
-  'search_docs',
   'create_scene',
   'create_or_replace_object',
+  'inspect_object_properties_effects',
+  'change_object_properties_effects',
   'add_behavior',
+  'inspect_behavior_properties',
   'change_behavior_property',
+  'inspect_scene_properties_layers_effects',
+  'change_scene_properties_layers_effects_groups',
+  'inspect_project_properties_resources',
+  'change_project_properties_resources',
   'add_or_edit_variable',
   'put_2d_instances',
-  'add_scene_events',
+  'put_3d_instances',
+  // Its registry launchFunction is a permanent failure stub ("handled
+  // server-side" upstream): ByokOrchestrator (BYOK_PLAN_TOOL_NAME) executes
+  // it client-side instead. Do not remove without removing the whitelist
+  // entry — and vice versa.
   'create_or_update_plan',
+  // Intercepts in ByokExtraTools before the editor registry: the registry
+  // implementation of add_scene_events posts to GDevelop's event-generation
+  // backend, the BYOK one (ByokLocalEventWriter) is fully client-side.
+  'add_scene_events',
+  'run_script',
+  // Perception (Phase 6): screenshots of the scene editor and of a running
+  // preview, preview control and runtime feedback — the capture tools are
+  // intercepted (images), the read/control tools wrap the preview session.
+  'capture_scene_screenshot',
+  'capture_preview_screenshot',
+  'start_preview',
+  'stop_preview',
+  'read_preview_logs',
+  'get_runtime_errors',
+  'inspect_runtime_state',
+  // Gameplay tests (Phase 6): the strongest existing run-&-self-correct
+  // loop. run_gameplay_test is intercepted (its screenshots become image
+  // parts); change_gameplay_tests goes through the registry as-is.
+  'run_gameplay_test',
+  'change_gameplay_tests',
 ];
 
-const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
+/**
+ * The tools advertised only while no project is open. With a project open
+ * the runner refuses `initialize_project` anyway, so advertising it would
+ * waste a slot of the (billed) tool list; without one, it is the entry
+ * point of "make me a game from scratch". The name stays dispatchable at
+ * all times — only the advertisement is conditional.
+ */
+export const BYOK_NO_PROJECT_TOOL_NAMES: Array<string> = ['initialize_project'];
+
+/**
+ * Every tool name the BYOK loop may dispatch: the default set, the
+ * no-project additions, and the unadvertised alias(es) the model may still
+ * emit out of hosted-agent habit (generate_events). The orchestrator
+ * enforces this set at dispatch time.
+ */
+export const getByokDispatchableToolNames = (): Array<string> => [
+  ...BYOK_TOOL_NAMES,
+  ...BYOK_NO_PROJECT_TOOL_NAMES,
+  'generate_events',
+];
+
+/**
+ * The names of the tools sent to the model for a turn: the default set,
+ * plus the no-project tools while no project is open (read at turn time,
+ * so a chat that creates its project stops advertising initialize_project
+ * on the next turn).
+ */
+export const getByokAdvertisedToolNames = (options: {|
+  hasOpenedProject: boolean,
+|}): Array<string> => {
+  if (options.hasOpenedProject) return BYOK_TOOL_NAMES;
+  return [...BYOK_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES];
+};
+
+const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'describe_instances',
     description:
@@ -145,11 +242,40 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'read_scene_events',
     description:
-      'Read the events (the game logic) of a scene, rendered as text. Read the existing events before changing them.',
+      'Read the events (the game logic) of a scene, rendered as an indented text tree. Read the existing events before changing them.',
     parameters: {
       type: 'object',
       properties: {
         scene_name: stringProperty('Name of the scene to read.'),
+      },
+      required: ['scene_name'],
+    },
+  },
+  {
+    name: 'read_events_source',
+    description:
+      'Read the events of a scene as EventScript source — the exact syntax add_scene_events accepts back, with `# event-N.M` ids usable as placement targets. Prefer this over read_scene_events when preparing an edit.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty('Name of the scene to read.'),
+        event_ids: arrayProperty(
+          'Optional: read only these events (e.g. ["event-0", "event-2.1"]). All events are read when omitted.',
+          stringProperty('Id of an event, e.g. "event-2.1".')
+        ),
+        search: stringProperty(
+          'Optional: only show the events containing this text.'
+        ),
+        object_names: arrayProperty(
+          'Optional: only show the events involving these objects.',
+          stringProperty('Name of an object.')
+        ),
+        sub_events_depth: numberProperty(
+          'Optional: how deep to show sub-events of the selected events.'
+        ),
+        max_chars: numberProperty(
+          'Optional: maximum length of the returned source (default 30000).'
+        ),
       },
       required: ['scene_name'],
     },
@@ -183,32 +309,6 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
         countOnly: booleanProperty(
           'Optional: return only the number of items of the array, not the items.'
         ),
-      },
-      required: [],
-    },
-  },
-  {
-    name: 'read_full_docs',
-    description:
-      'Read the documentation of GDevelop extensions (behaviors, objects). With BYOK, this call answers that the documentation is not available and the existing knowledge must be used instead.',
-    parameters: {
-      type: 'object',
-      properties: {
-        extension_names: stringProperty(
-          'Comma-separated names of the extensions to document (e.g. "Platformer, Anchors").'
-        ),
-      },
-      required: [],
-    },
-  },
-  {
-    name: 'search_docs',
-    description:
-      'Search the GDevelop documentation for a topic. With BYOK, this call answers that the documentation is not available and the existing knowledge must be used instead.',
-    parameters: {
-      type: 'object',
-      properties: {
-        search_query: stringProperty('The topic to search for.'),
       },
       required: [],
     },
@@ -276,6 +376,52 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
+    name: 'inspect_object_properties_effects',
+    description:
+      'Read the properties, behaviors and effects of an object. Inspect before changing an object.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty('Name of the scene.'),
+        object_name: stringProperty(
+          'Name of the object to inspect (searched in the scene, then in the global objects).'
+        ),
+      },
+      required: ['scene_name', 'object_name'],
+    },
+  },
+  {
+    name: 'change_object_properties_effects',
+    description:
+      'Change the properties or effects of an object, rename it, or delete it (delete_this_object).',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty('Name of the scene.'),
+        object_name: stringProperty(
+          'Name of the object to change (searched in the scene, then in the global objects).'
+        ),
+        changed_properties: arrayProperty(
+          'The object properties to change. Use "name" as property_name to rename the object. Instance attributes (position, angle, ...) belong to put_2d_instances / put_3d_instances instead.',
+          objectProperty('One property change.', {
+            property_name: stringProperty('Name of the property.'),
+            new_value: stringProperty(
+              'New value of the property, as a string (numbers and booleans are parsed).'
+            ),
+          })
+        ),
+        changed_effects: arrayProperty(
+          'The effect changes to apply to the object.',
+          effectChangeProperty
+        ),
+        delete_this_object: booleanProperty(
+          'Set to true to delete the object instead of changing it.'
+        ),
+      },
+      required: ['scene_name', 'object_name'],
+    },
+  },
+  {
     name: 'add_behavior',
     description:
       'Add a behavior to an object (or to every object of a group). The extension providing the behavior is installed automatically when needed.',
@@ -294,6 +440,22 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
         ),
       },
       required: ['scene_name', 'object_name', 'behavior_type'],
+    },
+  },
+  {
+    name: 'inspect_behavior_properties',
+    description:
+      'Read the properties of a behavior on an object (or group), or the shared data of an extension behavior. Inspect before changing a behavior.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty('Name of the scene.'),
+        object_name: stringProperty(
+          'Name of the object (or group) owning the behavior.'
+        ),
+        behavior_name: stringProperty('Name of the behavior to inspect.'),
+      },
+      required: ['scene_name', 'object_name', 'behavior_name'],
     },
   },
   {
@@ -322,6 +484,140 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
         ),
       },
       required: ['scene_name', 'object_name', 'behavior_name'],
+    },
+  },
+  {
+    name: 'inspect_scene_properties_layers_effects',
+    description:
+      'Read the properties, layers and effects of a scene. Inspect a scene before changing it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty('Name of the scene to inspect.'),
+      },
+      required: ['scene_name'],
+    },
+  },
+  {
+    name: 'change_scene_properties_layers_effects_groups',
+    description:
+      'Change the properties, layers, layer effects and object groups of a scene, or delete the scene (delete_this_scene).',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty('Name of the scene to change.'),
+        delete_this_scene: booleanProperty(
+          'Set to true to delete the whole scene instead of changing it.'
+        ),
+        changed_properties: arrayProperty(
+          'The scene settings to change (e.g. name, backgroundColor, gameResolutionWidth, gameResolutionHeight, gameOrientation, gameScaleMode, isFirstScene, stopSoundsOnStartup).',
+          objectProperty('One scene property change.', {
+            property_name: stringProperty('Name of the scene property.'),
+            new_value: stringProperty(
+              'New value of the property, as a string (numbers and booleans are parsed).'
+            ),
+          })
+        ),
+        changed_layers: arrayProperty(
+          'The layer changes to apply: create, rename, reorder, show/hide or delete layers.',
+          objectProperty('One layer change.', {
+            layer_name: stringProperty(
+              'Name of the layer (the empty string is the base layer).'
+            ),
+            new_layer_name: stringProperty('New name of the layer.'),
+            new_layer_position: numberProperty(
+              'Position of the layer in the list (moves it, or the index where to insert a new one).'
+            ),
+            delete_this_layer: booleanProperty(
+              'Set to true to delete the layer (the base layer cannot be deleted).'
+            ),
+            move_instances_to_layer: stringProperty(
+              'When deleting the layer, move its instances to this layer instead.'
+            ),
+            new_visibility: booleanProperty('Visibility of the layer.'),
+          })
+        ),
+        changed_layer_effects: arrayProperty(
+          'The effect changes to apply to a layer.',
+          objectProperty(
+            'The effect changes of one layer (same shape as object effect changes), starting with its layer_name.',
+            {
+              layer_name: stringProperty('Name of the layer.'),
+              ...effectChangeProperty.properties,
+            }
+          )
+        ),
+        changed_groups: arrayProperty(
+          'The object group changes to apply: create, rename, fill or delete groups of objects.',
+          objectProperty('One group change.', {
+            group_name: stringProperty('Name of the group.'),
+            delete_this_group: booleanProperty(
+              'Set to true to delete the group.'
+            ),
+            objects_to_add: arrayProperty(
+              'Names of the objects to add to the group.',
+              stringProperty('Name of an object.')
+            ),
+            objects_to_remove: arrayProperty(
+              'Names of the objects to remove from the group.',
+              stringProperty('Name of an object.')
+            ),
+            new_group_name: stringProperty('New name of the group.'),
+          })
+        ),
+      },
+      required: ['scene_name'],
+    },
+  },
+  {
+    name: 'inspect_project_properties_resources',
+    description:
+      'Read the properties of the project (name, resolution, orientation, ...) and its resources. Inspect the project before changing it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter_by_resource_name: stringProperty(
+          'Optional: only list the resources whose name contains this text (case-insensitive).'
+        ),
+        list_all_resources: booleanProperty(
+          'Optional: list up to 200 resources instead of only the summary.'
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'change_project_properties_resources',
+    description:
+      'Change the properties of the project (name, resolution, orientation, scale mode, first scene, ...) or rename/delete its resources. Provide at least one change.',
+    parameters: {
+      type: 'object',
+      properties: {
+        changed_properties: arrayProperty(
+          'The project properties to change.',
+          objectProperty('One project property change.', {
+            property_name: stringProperty(
+              'Name of the property (e.g. name, version, author, orientation, windowWidth, windowHeight, scaleMode, sizeOnStartupMode, adaptGameResolutionAtRuntime, pixelsRounding, antialiasingMode, minimumFPS, maximumFPS, firstLayout).'
+            ),
+            new_value: stringProperty(
+              'New value of the property, as a string (numbers and booleans are parsed).'
+            ),
+          })
+        ),
+        changed_resources: arrayProperty(
+          'The resource changes to apply: rename or delete resources.',
+          objectProperty('One resource change.', {
+            resource_name: stringProperty('Name of the resource to change.'),
+            new_resource_name: stringProperty(
+              'New name of the resource (skipped when only deleting).'
+            ),
+            delete_this_resource: booleanProperty(
+              'Set to true to delete the resource (refused while it is still used).'
+            ),
+          })
+        ),
+      },
+      required: [],
     },
   },
   {
@@ -392,7 +688,7 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
           'Name of the object to place (or of the objects to erase/modify).'
         ),
         brush_position: stringProperty(
-          'Position of the brush, as "x,y" in pixels (the scene center when omitted).'
+          'Position of the brush, as "x,y" in pixels. Required when creating instances (point/line/grid/random_in_circle brushes); only the "none" and "erase" brushes working on existing instances may omit it.'
         ),
         brush_end_position: stringProperty(
           'End position, as "x,y" (required for the "line" and "grid" brushes).'
@@ -404,7 +700,7 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
           'Comma-separated ids of instances to move/erase/transform (from describe_instances).'
         ),
         new_instances_count: numberProperty(
-          'Number of instances to create (1 when omitted). 0 to only move existing instances.'
+          'Number of instances to create. Defaults to 1 when creating without existing_instance_ids; omitted or 0 with existing_instance_ids only moves/transforms them.'
         ),
         row_count: numberProperty('Rows of the grid ("grid" brush).'),
         column_count: numberProperty('Columns of the grid ("grid" brush).'),
@@ -424,64 +720,274 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'add_scene_events',
+    name: 'put_3d_instances',
     description:
-      'Add events (the game logic) to a scene, from a description of what should happen (and optionally a ready-to-use event script). The events are generated and checked by GDevelop, then inserted in the scene.',
+      'Place, move, transform or erase instances of 3D objects in a 3D layer of a scene, using a brush: "point" places at a position, "line" between two positions, "random_in_sphere" inside a radius, "erase" removes, "none" only moves or transforms existing instances identified by their ids.',
     parameters: {
       type: 'object',
       properties: {
         scene_name: stringProperty('Name of the scene.'),
-        extension_names_list: stringProperty(
-          'Comma-separated names of the extensions used by the new events (e.g. "Platformer, FontStyle").'
+        layer_name: stringProperty(
+          'Name of the 3D layer. Use the empty string for the base layer.'
         ),
-        events_description: stringProperty(
-          'Description of the events to generate. Required unless event_batches is provided.'
+        brush_kind: enumProperty('The brush to use.', [
+          'point',
+          'line',
+          'random_in_sphere',
+          'erase',
+          'none',
+        ]),
+        object_name: stringProperty(
+          'Name of the 3D object to place (or of the objects to erase/modify).'
         ),
+        brush_position: stringProperty(
+          'Position of the brush, as "x,y,z" in pixels. Required when creating instances; only the "none" and "erase" brushes working on existing instances may omit it.'
+        ),
+        brush_end_position: stringProperty(
+          'End position, as "x,y,z" (required for the "line" brush).'
+        ),
+        brush_size: numberProperty(
+          'Radius in pixels (used by the "erase" and "random_in_sphere" brushes).'
+        ),
+        existing_instance_ids: stringProperty(
+          'Comma-separated ids of instances to move/erase/transform (from describe_instances).'
+        ),
+        new_instances_count: numberProperty(
+          'Number of instances to create. Defaults to 1 when creating without existing_instance_ids; omitted or 0 with existing_instance_ids only moves/transforms them.'
+        ),
+        instances_size: stringProperty(
+          'Custom size of the instances, as "width,height,depth" in pixels.'
+        ),
+        instances_rotation: stringProperty(
+          'Rotation of the instances, as "rotationX,rotationY,rotationZ" in degrees.'
+        ),
+        instances_hidden: booleanProperty('Set to true to hide the instances.'),
+      },
+      required: ['scene_name', 'layer_name', 'brush_kind'],
+    },
+  },
+  {
+    name: 'add_scene_events',
+    description:
+      'Write the events (the game logic) of a scene: each batch is EventScript source placed with an operation (insert_at_end, insert_and_replace_event, replace_entire_event_and_sub_events, replace_event_but_keep_existing_sub_events, insert_before_event, insert_after_event, insert_as_sub_event, delete_event). Runs fully locally — read_events_source first, then anchor the edits.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty('Name of the scene to edit.'),
         event_batches: arrayProperty(
-          'Optional: several batches of events, each with its own placement in the scene. Each batch needs an events_description or an event_script.',
-          objectProperty('One batch of events.', {
-            events_description: stringProperty(
-              'Description of the events of this batch.'
-            ),
+          'The batches to apply, in order. Each batch carries EventScript source (the same syntax read_events_source returns) and a placement.',
+          objectProperty('One batch of events to write.', {
             event_script: stringProperty(
-              'Optional GDevelop event script of this batch, when the exact events are already known.'
+              'The events to write, as EventScript source (statements like `if Timer(2, "T") and once:` with indented actions). Not needed for delete_event.'
             ),
-            placement_relation: enumProperty(
-              'Where to insert the events of this batch.',
-              [
-                'append',
-                'insert_before',
-                'insert_after',
-                'replace_event_but_keep_existing_sub_events',
-                'replace_entire_event_and_sub_events',
-                'delete',
-              ]
-            ),
+            placement_relation: enumProperty('How to place the batch.', [
+              'insert_at_end',
+              'insert_and_replace_event',
+              'replace_entire_event_and_sub_events',
+              'replace_event_but_keep_existing_sub_events',
+              'insert_before_event',
+              'insert_after_event',
+              'insert_as_sub_event',
+              'delete_event',
+            ]),
             placement_target_event_id: stringProperty(
-              'Id (or group name) of the existing event targeted by the placement relation.'
+              'Target of the placement: an event id from read_events_source (e.g. "event-2.1") or a group name. Not needed for insert_at_end.'
             ),
             placement_expected_parent_event_id: stringProperty(
-              'Id of the expected parent event, when the target is a sub-event.'
-            ),
-            placement_rationale: stringProperty(
-              'Short explanation of why this placement was chosen.'
+              'For insert_as_sub_event: the event that will own the new sub-events (defaults to the target).'
             ),
             expected_event_source: stringProperty(
-              'For the "replace..." placements: the current source of the replaced event, proving it was read before being replaced.'
+              'Safety anchor for replace operations: the current source of the target event (as read). The edit is refused when it no longer matches.'
             ),
           })
         ),
-        objects_list: stringProperty(
-          'Comma-separated names of the objects used by the new events.'
+      },
+      required: ['scene_name', 'event_batches'],
+    },
+  },
+  {
+    name: 'run_script',
+    description:
+      'Run one JavaScript script that calls the other tools as async functions (e.g. `const created = await create_scene({ scene_name: "Level 2" });`), batching many operations or computations into a single call. Every call in the script must be awaited, and a refused approval means nothing in the script ran.',
+    parameters: {
+      type: 'object',
+      properties: {
+        js_code: stringProperty(
+          'The JavaScript to run. Call the tools by their name, passing the arguments as a JS object (e.g. `await add_or_edit_variable({ variable_scope: "global", variables: [...] });`).'
         ),
-        estimated_complexity: numberProperty(
-          'Optional: rough number of events expected (helps sizing the generation).'
+        title: stringProperty('Optional short title, shown to the user.'),
+      },
+      required: ['js_code'],
+    },
+  },
+  {
+    name: 'capture_scene_screenshot',
+    description:
+      'Capture a screenshot of the currently open scene editor canvas. Look at the scene after visual edits instead of assuming them.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty(
+          'Optional: the scene you want to see. Only the editor canvas that is currently open can be captured — the output says when it may be another scene.'
         ),
-        placement_hint: stringProperty(
-          'Optional general hint about where to insert the events.'
+        layer_name: stringProperty(
+          'Optional: the layer of interest (informational — the whole canvas is captured).'
         ),
       },
-      required: ['scene_name', 'extension_names_list'],
+      required: [],
+    },
+  },
+  {
+    name: 'capture_preview_screenshot',
+    description:
+      'Capture a screenshot of a running preview window (the game as it plays). Pair it with read_preview_logs and inspect_runtime_state for the machine-readable state.',
+    parameters: {
+      type: 'object',
+      properties: {
+        preview_id: numberProperty(
+          'Optional: the window id of the preview to capture. The most recently opened preview is captured when omitted.'
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'start_preview',
+    description:
+      'Start a preview of the game (on its first scene, or the given one) and keep it running for the chat. One preview at a time.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty(
+          'Optional: the scene to preview. The first scene of the game is used when omitted.'
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'stop_preview',
+    description: 'Stop the preview started by this chat.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'read_preview_logs',
+    description:
+      'Read the console logs of the running preview (e.g. the console.log calls of the game).',
+    parameters: {
+      type: 'object',
+      properties: {
+        since_index: numberProperty(
+          'Optional: only return the logs after this index (read_preview_logs returned them last time).'
+        ),
+        level: stringProperty(
+          'Optional: only return this level (log, warn or error).'
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'get_runtime_errors',
+    description:
+      'Read the errors and crashes of the running preview since the last call.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'inspect_runtime_state',
+    description:
+      'Read the live state of the running game: the instances of each scene (names and positions) and the scene/global variables. Read coordinates here, never guess them from pixels.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty(
+          'Optional: only read this scene (all scenes are returned when omitted).'
+        ),
+        variable_paths: arrayProperty(
+          'Optional: only read these variable paths.',
+          stringProperty('A variable path.')
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'run_gameplay_test',
+    description:
+      'Create (or update) and run one gameplay test in a live preview: assertions on the game state, with console logs, final state and screenshots returned — the strongest verify-and-self-correct loop. The executed source is returned on failure so it can be repaired.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scope: objectProperty('Where the test lives.', {
+          type: enumProperty('The kind of scope.', ['project', 'extension']),
+          extension_name: stringProperty(
+            'The extension name (required for the "extension" scope).'
+          ),
+        }),
+        test_name: stringProperty('Name of the gameplay test.'),
+        source: stringProperty(
+          'The JavaScript source of the test (see the gameplay test API: stepFrames, simulateInput, assert...). When omitted, the stored test with this name is run.'
+        ),
+        persist: booleanProperty(
+          'Save the source as the stored test (default true). Set false for a temporary probe — nothing is saved, no approval is needed.'
+        ),
+        timeout_ms: numberProperty(
+          'Optional timeout in milliseconds (1000-120000).'
+        ),
+        screenshots: enumProperty('When to capture screenshots.', [
+          'on-failure',
+          'off',
+        ]),
+        description: stringProperty(
+          'Optional description, saved with a persisted test.'
+        ),
+      },
+      required: ['scope', 'test_name'],
+    },
+  },
+  {
+    name: 'change_gameplay_tests',
+    description:
+      'Delete, rename or reorder the gameplay tests of the project, or change their description (never their source — run_gameplay_test does that).',
+    parameters: {
+      type: 'object',
+      properties: {
+        scope: objectProperty('Where the tests live.', {
+          type: enumProperty('The kind of scope.', ['project', 'extension']),
+          extension_name: stringProperty(
+            'The extension name (required for the "extension" scope).'
+          ),
+        }),
+        changes: arrayProperty(
+          'The changes to apply, in order.',
+          objectProperty('One test change.', {
+            test_name: stringProperty('Name of the test to change.'),
+            delete_this_test: booleanProperty(
+              'Set to true to delete the test.'
+            ),
+            changed_properties: arrayProperty(
+              'The properties to change (name, description or index).',
+              objectProperty('One property change.', {
+                property_name: stringProperty(
+                  'The property to change (name, description or index).'
+                ),
+                new_value: stringProperty(
+                  'The new value, as a string (numbers are parsed).'
+                ),
+              })
+            ),
+          })
+        ),
+      },
+      required: ['scope', 'changes'],
     },
   },
   {
@@ -515,13 +1021,43 @@ const BYOK_V1_TOOL_SCHEMAS: Array<ByokToolSchema> = [
       required: ['tasks'],
     },
   },
+  {
+    name: 'initialize_project',
+    description:
+      'Create a new, empty GDevelop project (or one from a template) and open it in the editor — the entry point when no project is open. Only usable while no project is open.',
+    parameters: {
+      type: 'object',
+      properties: {
+        project_name: stringProperty('Name of the project to create.'),
+        template_slug: stringProperty(
+          'Slug of a template to start from (as in the "Games examples" library), or "" / "none" / "empty" for an empty project.'
+        ),
+        also_read_existing_events: booleanProperty(
+          'Also return the existing events of the created project (e.g. of a template) as text.'
+        ),
+      },
+      required: ['project_name', 'template_slug'],
+    },
+  },
 ];
 
 /**
- * The schemas of the tools exposed to the model in BYOK v1.
+ * The schemas of the tools exposed to the model in BYOK v3.
  */
 export const getByokToolSchemas = (): Array<ByokToolSchema> => {
-  return BYOK_V1_TOOL_SCHEMAS;
+  return BYOK_TOOL_SCHEMAS;
+};
+
+/**
+ * The schemas of a subset of tools, by name — what the orchestrator sends
+ * as the `tools` array of a turn (the advertised set, which can differ per
+ * turn, e.g. without initialize_project while a project is open).
+ */
+export const getByokToolSchemasForNames = (
+  names: Array<string>
+): Array<ByokToolSchema> => {
+  const knownNames = new Set(names);
+  return BYOK_TOOL_SCHEMAS.filter(schema => knownNames.has(schema.name));
 };
 
 /**
@@ -581,11 +1117,31 @@ const collectPropertyTypeProblems = (
   }
 };
 
+/**
+ * The tools implemented BY BYOK ITSELF (in ByokExtraTools/ByokRuntimeTools)
+ * rather than by the editor registry — screenshots, preview control and
+ * runtime reads have no upstream EditorFunction. The validator skips the
+ * registry-membership check for them; a dedicated test asserts each is
+ * actually intercepted (see ByokExtraTools.spec.js).
+ */
+export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
+  'capture_scene_screenshot',
+  'capture_preview_screenshot',
+  'start_preview',
+  'stop_preview',
+  'read_preview_logs',
+  'get_runtime_errors',
+  'inspect_runtime_state',
+];
+
+const BYOK_ONLY_TOOL_NAMES_SET: Set<string> = new Set(BYOK_ONLY_TOOL_NAMES);
+
 const collectSchemaProblems = (
   schema: ByokToolSchema,
+  registry: Object,
   problems: Array<string>
 ): void => {
-  if (!editorFunctions[schema.name]) {
+  if (!registry[schema.name] && !BYOK_ONLY_TOOL_NAMES_SET.has(schema.name)) {
     problems.push(
       `Tool "${schema.name}" is not in the editorFunctions registry.`
     );
@@ -601,29 +1157,65 @@ const collectSchemaProblems = (
 };
 
 /**
- * Check that the whitelist and its schemas stay in sync with GDevelop's
- * tool registry: every whitelisted name must exist in the registry, every
- * schema must be described, and every property must use a known type. The
- * test suite fails when this returns problems, so an upstream tool rename
- * is caught here instead of at runtime.
+ * The full registry the schemas are checked against: the with-project
+ * registry plus the without-project one (`initialize_project` only exists
+ * there).
  */
-export const validateByokToolSchemas = (): Array<string> => {
+// Merged through any: the two registries' launchFunction signatures are
+// deliberately incompatible (with/without project), the lookup here only
+// reads membership.
+const FULL_EDITOR_FUNCTIONS_REGISTRY: any = {};
+for (const toolName of Object.keys(editorFunctions)) {
+  FULL_EDITOR_FUNCTIONS_REGISTRY[toolName] = (editorFunctions: any)[toolName];
+}
+for (const toolName of Object.keys(editorFunctionsWithoutProject)) {
+  FULL_EDITOR_FUNCTIONS_REGISTRY[
+    toolName
+  ] = (editorFunctionsWithoutProject: any)[toolName];
+}
+
+/**
+ * Check that the whitelist and its schemas stay in sync: every whitelisted
+ * name (default set, no-project set) must exist in the editor registry and
+ * have a schema with described, typed properties, and the default set must
+ * stay within the tool-count cap (each advertised schema is billed as input
+ * tokens on every turn). The test suite fails when this returns problems,
+ * so an upstream tool rename is caught here instead of at runtime. The
+ * registry and the schema list are injectable so the tests can exercise
+ * the failure branches with synthetic inputs.
+ */
+export const validateByokToolSchemas = (
+  registry: Object = FULL_EDITOR_FUNCTIONS_REGISTRY,
+  schemas: Array<ByokToolSchema> = BYOK_TOOL_SCHEMAS
+): Array<string> => {
   const problems: Array<string> = [];
 
-  const schemaNames = BYOK_V1_TOOL_SCHEMAS.map(schema => schema.name);
-  if (schemaNames.length !== BYOK_V1_TOOL_NAMES.length) {
+  const schemaNames = schemas.map(schema => schema.name);
+  const whitelistedNames = [...BYOK_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES];
+  if (schemaNames.length !== whitelistedNames.length) {
     problems.push(
       'Some tools of the whitelist have no schema (or the opposite).'
     );
   }
-  for (const toolName of BYOK_V1_TOOL_NAMES) {
+  for (const toolName of whitelistedNames) {
     if (!schemaNames.includes(toolName)) {
       problems.push(`Whitelisted tool "${toolName}" has no schema.`);
     }
   }
+  // The cap grew with Phase 6 (perception + gameplay tests, 9 tools): the
+  // roadmap's tool-count guidance yields to the phase-mandated surface,
+  // descriptions stay concise, and Phase 7's skills can scope per-task
+  // subsets.
+  if (BYOK_TOOL_NAMES.length > 32) {
+    problems.push(
+      `The default tool set has ${
+        BYOK_TOOL_NAMES.length
+      } tools — the cap is 32.`
+    );
+  }
 
-  for (const schema of BYOK_V1_TOOL_SCHEMAS) {
-    collectSchemaProblems(schema, problems);
+  for (const schema of schemas) {
+    collectSchemaProblems(schema, registry, problems);
   }
 
   return problems;

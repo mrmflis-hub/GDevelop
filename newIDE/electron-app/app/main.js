@@ -38,6 +38,7 @@ const {
   closePreviewWindow,
   closePreviewWindowsForParent,
   closeAllPreviewWindows,
+  getPreviewWindows,
 } = require('./PreviewWindow');
 const {
   setupLocalGDJSDevelopmentWatcher,
@@ -462,12 +463,42 @@ app.on('ready', function() {
 
   // BYOK API key encryption: the renderer delegates to safeStorage (the
   // OS key store — DPAPI on Windows), see ByokSafeStorage.js.
-  ipcMain.handle('byok-encryption-available', () => isByokEncryptionAvailable());
+  ipcMain.handle('byok-encryption-available', () =>
+    isByokEncryptionAvailable()
+  );
   ipcMain.handle('byok-encrypt', (_event, plainText) =>
     encryptByokSecret(String(plainText))
   );
   ipcMain.handle('byok-decrypt', (_event, cipherText) =>
     decryptByokSecret(String(cipherText))
+  );
+
+  // BYOK perception: capture a screenshot of an open preview window (the
+  // last one when no id is given) as base64 PNG — works while the window is
+  // occluded. The renderer side lives in ByokRuntimeTools.
+  ipcMain.handle(
+    'byok-preview-capture',
+    (_event, previewId) => {
+      const openPreviews = getPreviewWindows()
+        .map(entry => entry.previewWindow)
+        .filter(window => window && !window.isDestroyed());
+      const previewWindow =
+        (typeof previewId === 'number'
+          ? openPreviews.find(window => window.id === previewId)
+          : null) ||
+        openPreviews[openPreviews.length - 1] ||
+        null;
+      if (!previewWindow) {
+        return Promise.resolve({ ok: false, error: 'No preview window is open.' });
+      }
+      return previewWindow.webContents
+        .capturePage()
+        .then(image => ({ ok: true, data: image.toPNG().toString('base64') }))
+        .catch(error => ({
+          ok: false,
+          error: (error && error.message) || String(error),
+        }));
+    }
   );
 
   ipcMain.on('set-main-menu', (event, mainMenuTemplate) => {

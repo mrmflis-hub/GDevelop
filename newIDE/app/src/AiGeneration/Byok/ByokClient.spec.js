@@ -2,7 +2,8 @@
 import axios from 'axios';
 import {
   buildEndpointUrl,
-  fetchByokModels,
+  createByokCancellation,
+  fetchRawByokModels,
   sendByokChatCompletion,
   sendByokChatCompletionWithRetries,
 } from './ByokClient';
@@ -19,8 +20,16 @@ const BASE_URL = 'https://api.example.com/v1';
 const CONNECTION = { baseUrl: BASE_URL, apiKey: API_KEY };
 
 // A synthetic axios-shaped rejection, like axios produces for an HTTP error.
-const makeResponseError = (status: number, data?: any): Object => ({
-  response: { status, data: data === undefined ? {} : data },
+const makeResponseError = (
+  status: number,
+  data?: any,
+  headers?: Object
+): Object => ({
+  response: {
+    status,
+    data: data === undefined ? {} : data,
+    headers: headers || {},
+  },
   request: {},
 });
 
@@ -72,6 +81,15 @@ describe('buildEndpointUrl', () => {
     );
   });
 
+  it('trims whitespace around the base URL (pasted URLs carry some)', () => {
+    expect(buildEndpointUrl('  https://host/v1/ ', '/models')).toBe(
+      'https://host/v1/models'
+    );
+    expect(buildEndpointUrl('https://host/v1/\n', '/models')).toBe(
+      'https://host/v1/models'
+    );
+  });
+
   it('keeps the /v1 segment of the base URL as-is', () => {
     // The base URL already includes /v1 if the provider uses it: it must
     // not be added or removed by the client.
@@ -84,7 +102,7 @@ describe('buildEndpointUrl', () => {
   });
 });
 
-describe('fetchByokModels', () => {
+describe('fetchRawByokModels', () => {
   beforeEach(() => {
     mockAxios.get.mockReset();
   });
@@ -94,7 +112,7 @@ describe('fetchByokModels', () => {
       makeModelListResponse([{ id: 'model-a' }, { id: 'model-b' }])
     );
 
-    await fetchByokModels(CONNECTION);
+    await fetchRawByokModels(CONNECTION);
 
     expect(mockAxios.get).toHaveBeenCalledTimes(1);
     const [url, config] = mockAxios.get.mock.calls[0];
@@ -105,38 +123,12 @@ describe('fetchByokModels', () => {
     expect(url).not.toContain(API_KEY);
   });
 
-  it('maps the entries to model infos, without context window (parsed later)', async () => {
-    mockAxios.get.mockResolvedValueOnce(
-      makeModelListResponse([
-        { id: 'model-a', context_length: 4096 },
-        { id: 'model-b' },
-      ])
-    );
-
-    const models = await fetchByokModels(CONNECTION);
-
-    expect(models).toEqual([
-      { id: 'model-a', contextWindowTokens: null },
-      { id: 'model-b', contextWindowTokens: null },
-    ]);
-  });
-
-  it('skips entries without an id', async () => {
-    mockAxios.get.mockResolvedValueOnce(
-      makeModelListResponse([{ nope: true }, { id: 'model-a' }])
-    );
-
-    const models = await fetchByokModels(CONNECTION);
-
-    expect(models).toEqual([{ id: 'model-a', contextWindowTokens: null }]);
-  });
-
   it('throws a ByokError when the response is not a model list', async () => {
     mockAxios.get.mockResolvedValueOnce(makeModelListResponse({ nope: 1 }));
 
     let thrownError: any = null;
     try {
-      await fetchByokModels(CONNECTION);
+      await fetchRawByokModels(CONNECTION);
     } catch (error) {
       thrownError = error;
     }
@@ -149,9 +141,9 @@ describe('fetchByokModels', () => {
   it('accepts a bare array as the response body (non-standard servers)', async () => {
     mockAxios.get.mockResolvedValueOnce({ data: [{ id: 'model-a' }] });
 
-    const models = await fetchByokModels(CONNECTION);
+    const rawModels = await fetchRawByokModels(CONNECTION);
 
-    expect(models).toEqual([{ id: 'model-a', contextWindowTokens: null }]);
+    expect(rawModels).toEqual([{ id: 'model-a' }]);
   });
 
   it('throws an authentication error on a 401, without leaking the key', async () => {
@@ -161,7 +153,7 @@ describe('fetchByokModels', () => {
 
     let thrownError: any = null;
     try {
-      await fetchByokModels(CONNECTION);
+      await fetchRawByokModels(CONNECTION);
     } catch (error) {
       thrownError = error;
     }
@@ -176,6 +168,12 @@ describe('fetchByokModels', () => {
 describe('sendByokChatCompletion', () => {
   beforeEach(() => {
     mockAxios.post.mockReset();
+    // The automocked axios returns undefined from CancelToken.source (and
+    // the jest preset resets implementations before each test anyway).
+    mockAxios.CancelToken.source.mockImplementation(() => ({
+      token: { __fakeCancelToken: true },
+      cancel: jest.fn(),
+    }));
   });
 
   it('posts to {baseUrl}/chat/completions with the key in the Authorization header only', async () => {
@@ -278,6 +276,91 @@ describe('sendByokChatCompletion', () => {
 
     expect(thrownError.kind).toBe('unknown');
     expect(thrownError.message).toContain('unexpected chat response');
+  });
+
+  it('throws an unknown ByokError when the choice has no message', async () => {
+    mockAxios.post.mockResolvedValueOnce({
+      data: { choices: [{}] },
+    });
+
+    let thrownError: any = null;
+    try {
+      await sendByokChatCompletion({
+        ...CONNECTION,
+        options: makeChatOptions(),
+      });
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError.kind).toBe('unknown');
+    expect(thrownError.message).toContain('without a message');
+  });
+
+  it('throws an unknown ByokError when a tool call is malformed', async () => {
+    mockAxios.post.mockResolvedValueOnce({
+      data: makeChatResponse({
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{ function: { name: 'create_scene' } }],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    });
+
+    let thrownError: any = null;
+    try {
+      await sendByokChatCompletion({
+        ...CONNECTION,
+        options: makeChatOptions(),
+      });
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError.kind).toBe('unknown');
+    expect(thrownError.message).toContain('without an id');
+  });
+
+  it('passes the cancellation token with the request', async () => {
+    mockAxios.post.mockResolvedValueOnce({ data: makeChatResponse() });
+    const cancellation = createByokCancellation();
+
+    await sendByokChatCompletion({
+      ...CONNECTION,
+      options: makeChatOptions({ cancellation }),
+    });
+
+    expect(mockAxios.post.mock.calls[0][2].cancelToken).toBe(
+      cancellation.token
+    );
+  });
+
+  it('classifies a cancelled request as cancelled, never retried', async () => {
+    const cancellation = createByokCancellation();
+    cancellation.cancel();
+    mockAxios.post.mockRejectedValueOnce({
+      __CANCEL__: true,
+      message: 'The request was cancelled by the user.',
+    });
+
+    let thrownError: any = null;
+    try {
+      await sendByokChatCompletionWithRetries({
+        ...CONNECTION,
+        options: makeChatOptions({ cancellation }),
+      });
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError.kind).toBe('cancelled');
+    expect(mockAxios.post).toHaveBeenCalledTimes(1);
   });
 
   it('throws an unknown ByokError when the response is not an object', async () => {
@@ -414,6 +497,66 @@ describe('sendByokChatCompletionWithRetries', () => {
 
     expect(thrownError.kind).toBe('authentication');
     expect(mockAxios.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a rate limit whose Retry-After exceeds the backoff budget', async () => {
+    mockAxios.post.mockRejectedValueOnce(
+      makeResponseError(
+        429,
+        { error: { message: 'Too many requests' } },
+        { 'retry-after': '60' }
+      )
+    );
+
+    let thrownError: any = null;
+    try {
+      await sendByokChatCompletionWithRetries({
+        ...CONNECTION,
+        options: makeChatOptions(),
+      });
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError.kind).toBe('rate-limit');
+    expect(thrownError.retryAfterMs).toBe(60000);
+    // Hammering the endpoint with an early retry would only extend the
+    // limit: the error is surfaced instead.
+    expect(mockAxios.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a rate limit with a short (or absent) Retry-After', async () => {
+    mockAxios.post
+      .mockRejectedValueOnce(
+        makeResponseError(
+          429,
+          { error: { message: 'Slow down' } },
+          { 'retry-after': '0' }
+        )
+      )
+      .mockResolvedValueOnce({ data: makeChatResponse() });
+
+    const result = await sendByokChatCompletionWithRetries({
+      ...CONNECTION,
+      options: makeChatOptions(),
+    });
+
+    expect(result).toEqual(makeChatResponse());
+    expect(mockAxios.post).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a timeout error', async () => {
+    mockAxios.post
+      .mockRejectedValueOnce(makeRequestError('ECONNABORTED'))
+      .mockResolvedValueOnce({ data: makeChatResponse() });
+
+    const result = await sendByokChatCompletionWithRetries({
+      ...CONNECTION,
+      options: makeChatOptions(),
+    });
+
+    expect(result).toEqual(makeChatResponse());
+    expect(mockAxios.post).toHaveBeenCalledTimes(2);
   });
 
   it('retries a network error with backoff', async () => {

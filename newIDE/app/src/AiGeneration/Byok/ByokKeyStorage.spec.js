@@ -42,6 +42,9 @@ const loadKeyStorageModule = (isDesktop: boolean) => {
  * available and everything succeeds.
  */
 const setSuccessfulIpcHandlers = () => {
+  // Shared module state of the fake main process: reset so a test that set
+  // it to null cannot leak into the next one.
+  fakeDecryptedKey = null;
   mockIpcRendererInvoke.mockImplementation(
     async (channel: string, value: string) => {
       if (channel === 'byok-encryption-available') return true;
@@ -70,6 +73,7 @@ describe('ByokKeyStorage (web build: obfuscated storage)', () => {
   beforeEach(() => {
     localStorage.clear();
     mockIpcRendererInvoke.mockReset();
+    fakeDecryptedKey = null;
     const keyStorageModule = loadKeyStorageModule(false);
     saveByokKey = keyStorageModule.saveByokKey;
     loadByokKey = keyStorageModule.loadByokKey;
@@ -82,6 +86,15 @@ describe('ByokKeyStorage (web build: obfuscated storage)', () => {
   it('saves then loads the same key', async () => {
     await saveByokKey('sk-test-1234567890');
     expect(await loadByokKey()).toBe('sk-test-1234567890');
+  });
+
+  it('round-trips keys containing percent signs without corrupting them', async () => {
+    // A literal `%` in the stored bytes used to be read back as a
+    // percent-escape: silently corrupted, or rejected as "no key stored".
+    for (const key of ['a%b', '%', '%25', '%41', 'trailing%', 'key%2z']) {
+      await saveByokKey(key);
+      expect(await loadByokKey()).toBe(key);
+    }
   });
 
   it('loads and round-trips keys with non-ASCII characters', async () => {
@@ -156,6 +169,33 @@ describe('ByokKeyStorage (web build: obfuscated storage)', () => {
     expect(await loadByokKey()).toBe(null);
   });
 
+  it('loads null on a v3 (OS-encrypted) entry: the web build cannot decrypt it', async () => {
+    localStorage.setItem(
+      BYOK_KEY_STORAGE_ITEM,
+      JSON.stringify({ version: 3, value: FAKE_CIPHER_TEXT })
+    );
+    expect(await loadByokKey()).toBe(null);
+  });
+
+  it('resolves false when the storage write fails, instead of reporting success', async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    // jsdom defines the storage methods on Storage.prototype.
+    const setItemSpy = jest
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('QuotaExceededError');
+      });
+
+    await expect(saveByokKey('sk-test-1234567890')).resolves.toBe(false);
+
+    setItemSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    // Nothing was written.
+    expect(localStorage.getItem(BYOK_KEY_STORAGE_ITEM)).toBe(null);
+  });
+
   it('never touches Electron on the web build', async () => {
     await saveByokKey('sk-test-1234567890');
     await loadByokKey();
@@ -167,7 +207,15 @@ describe('ByokKeyStorage (web build: obfuscated storage)', () => {
     expect(await isByokKeyEncryptionAvailable()).toBe(false);
   });
 
-  it('reports the storage info as obfuscated and not encrypted', async () => {
+  it('reports nothing stored as neither encrypted nor obfuscated', async () => {
+    expect(await getByokKeyStorageInfo()).toEqual({
+      encrypted: false,
+      obfuscated: false,
+    });
+  });
+
+  it('reports a stored key as obfuscated and not encrypted', async () => {
+    await saveByokKey('sk-test-1234567890');
     expect(await getByokKeyStorageInfo()).toEqual({
       encrypted: false,
       obfuscated: true,
@@ -204,9 +252,17 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
     );
   });
 
-  it('reports the storage info as encrypted', async () => {
+  it('reports the storage info as encrypted once a v3 key is stored', async () => {
+    await saveByokKey('sk-test-1234567890');
     expect(await getByokKeyStorageInfo()).toEqual({
       encrypted: true,
+      obfuscated: false,
+    });
+  });
+
+  it('reports nothing stored as neither encrypted nor obfuscated', async () => {
+    expect(await getByokKeyStorageInfo()).toEqual({
+      encrypted: false,
       obfuscated: false,
     });
   });
@@ -274,6 +330,86 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
     consoleErrorSpy.mockRestore();
   });
 
+  it('reports the storage honestly as obfuscated after a failed encryption', async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    mockIpcRendererInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'byok-encryption-available') return true;
+      if (channel === 'byok-encrypt') {
+        return { ok: false, error: 'safeStorage refused' };
+      }
+      return { ok: true, data: 'never-used' };
+    });
+
+    await saveByokKey('sk-test-1234567890');
+
+    // Encryption is still "available" (platform capability), but what is
+    // stored is the v2 obfuscated form: the status row must say so.
+    expect(await isByokKeyEncryptionAvailable()).toBe(true);
+    expect(await getByokKeyStorageInfo()).toEqual({
+      encrypted: false,
+      obfuscated: true,
+    });
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('falls back to the obfuscated v2 form when the byok-encrypt IPC call rejects', async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    mockIpcRendererInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'byok-encryption-available') return true;
+      if (channel === 'byok-encrypt') {
+        throw new Error('IPC exploded');
+      }
+      return { ok: true, data: 'never-used' };
+    });
+
+    await expect(saveByokKey('sk-test-1234567890')).resolves.toBe(true);
+    expect(
+      JSON.parse(localStorage.getItem(BYOK_KEY_STORAGE_ITEM) || 'null').version
+    ).toBe(2);
+    expect(await loadByokKey()).toBe('sk-test-1234567890');
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('loads null when the byok-decrypt IPC call rejects, without throwing', async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    await saveByokKey('sk-test-1234567890');
+    mockIpcRendererInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'byok-decrypt') {
+        throw new Error('IPC exploded');
+      }
+      if (channel === 'byok-encryption-available') return true;
+      return { ok: true, data: 'never-used' };
+    });
+
+    await expect(loadByokKey()).resolves.toBe(null);
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('resolves false when checking availability on a rejected IPC call', async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    mockIpcRendererInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'byok-encryption-available') {
+        throw new Error('IPC exploded');
+      }
+      return { ok: true, data: 'never-used' };
+    });
+
+    await expect(isByokKeyEncryptionAvailable()).resolves.toBe(false);
+
+    consoleErrorSpy.mockRestore();
+  });
+
   it('migrates a v2 (obfuscated) entry to v3 on read', async () => {
     localStorage.setItem(
       BYOK_KEY_STORAGE_ITEM,
@@ -308,6 +444,21 @@ describe('ByokKeyStorage (desktop app: OS-encrypted storage)', () => {
     expect(storedValue).not.toContain('sk-old-plaintext-key');
   });
 
+  it('does not let a concurrent user save be overwritten by the v2→v3 migration', async () => {
+    localStorage.setItem(
+      BYOK_KEY_STORAGE_ITEM,
+      JSON.stringify({ version: 2, value: obfuscate('sk-old-key') })
+    );
+
+    // The migration read starts first, the user saves a new key while it is
+    // in flight: the stored key must end up being the new one.
+    const loadPromise = loadByokKey();
+    await saveByokKey('sk-new-key');
+    await loadPromise;
+
+    expect(await loadByokKey()).toBe('sk-new-key');
+  });
+
   it('clears the entry without calling the main process', async () => {
     await saveByokKey('sk-test-1234567890');
     mockIpcRendererInvoke.mockClear();
@@ -336,6 +487,17 @@ describe('obfuscate / deobfuscate', () => {
     );
     expect(deobfuscate(obfuscate(''))).toBe('');
     expect(deobfuscate(obfuscate('clé-privée-🔑'))).toBe('clé-privée-🔑');
+  });
+
+  it('round-trips keys containing percent signs', () => {
+    // A literal `%` byte must be escaped on decode, or the value is read as
+    // a percent-escape ('%41' → 'A', '%2z' → not valid UTF-8 → null).
+    expect(deobfuscate(obfuscate('a%b'))).toBe('a%b');
+    expect(deobfuscate(obfuscate('%'))).toBe('%');
+    expect(deobfuscate(obfuscate('%25'))).toBe('%25');
+    expect(deobfuscate(obfuscate('%41'))).toBe('%41');
+    expect(deobfuscate(obfuscate('trailing%'))).toBe('trailing%');
+    expect(deobfuscate(obfuscate('key%2z'))).toBe('key%2z');
   });
 
   it('is deterministic: the same input gives the same output', () => {

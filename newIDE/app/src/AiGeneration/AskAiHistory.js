@@ -28,6 +28,7 @@ import { useLongTouch } from '../Utils/UseLongTouch';
 import { useResponsiveWindowSize } from '../UI/Responsive/ResponsiveWindowMeasurer';
 import { AiRequestContext } from './AiRequestContext';
 import { getAiRequestSummaryTitle } from './AiRequestUtils';
+import { isByokAiRequestId } from './Byok/ByokSeam';
 import classes from './AskAiHistory.module.css';
 
 /**
@@ -49,6 +50,8 @@ type Props = {|
   onStartNewChat: () => void,
   canStartNewChat: boolean,
   selectedAiRequestId: string | null,
+  byokChatSummaries?: ?Array<AiRequestSummary>,
+  onArchiveByokChat?: ?(aiRequestId: string) => void,
 |};
 
 type ChatStatus =
@@ -242,6 +245,11 @@ type AskAiHistoryContentProps = {|
   onStartNewChat: () => void,
   canStartNewChat: boolean,
   selectedAiRequestId: string | null,
+  // The BYOK chats of the session (local records, no server action exists
+  // for them): listed in their own section so a chat left running in the
+  // background stays reachable and stoppable.
+  byokChatSummaries?: ?Array<AiRequestSummary>,
+  onArchiveByokChat?: ?(aiRequestId: string) => void,
   className?: string,
 |};
 
@@ -250,6 +258,8 @@ export const AskAiHistoryContent = ({
   onStartNewChat,
   canStartNewChat,
   selectedAiRequestId,
+  byokChatSummaries,
+  onArchiveByokChat,
   className,
 }: AskAiHistoryContentProps): React.Node => {
   const {
@@ -301,30 +311,45 @@ export const AskAiHistoryContent = ({
         aiRequestId,
         isArchived,
       }: {| aiRequestId: string, isArchived: boolean |}
-    ): Array<MenuItemTemplate> => [
-      {
-        label: i18n._(t`Rename`),
-        click: () => setRenamedAiRequestId(aiRequestId),
-      },
-      isArchived
-        ? {
-            label: i18n._(t`Unarchive`),
-            click: () => setAiRequestArchived(aiRequestId, false),
-          }
-        : {
+    ): Array<MenuItemTemplate> => {
+      // BYOK chats are local records: archiving suspends and removes them
+      // locally, and there is nothing to rename, unarchive or delete
+      // server-side.
+      if (isByokAiRequestId(aiRequestId)) {
+        return [
+          {
             label: i18n._(t`Archive`),
-            click: () => setAiRequestArchived(aiRequestId, true),
-          },
-      ...(isArchived
-        ? [
-            {
-              label: i18n._(t`Delete`),
-              click: () => onDeleteAiRequest(aiRequestId),
+            click: () => {
+              if (onArchiveByokChat) onArchiveByokChat(aiRequestId);
             },
-          ]
-        : []),
-    ],
-    [setAiRequestArchived, onDeleteAiRequest]
+          },
+        ];
+      }
+      return [
+        {
+          label: i18n._(t`Rename`),
+          click: () => setRenamedAiRequestId(aiRequestId),
+        },
+        isArchived
+          ? {
+              label: i18n._(t`Unarchive`),
+              click: () => setAiRequestArchived(aiRequestId, false),
+            }
+          : {
+              label: i18n._(t`Archive`),
+              click: () => setAiRequestArchived(aiRequestId, true),
+            },
+        ...(isArchived
+          ? [
+              {
+                label: i18n._(t`Delete`),
+                click: () => onDeleteAiRequest(aiRequestId),
+              },
+            ]
+          : []),
+      ];
+    },
+    [setAiRequestArchived, onDeleteAiRequest, onArchiveByokChat]
   );
   const buildFilterMenuTemplate = React.useCallback(
     (i18n: I18nType): Array<MenuItemTemplate> =>
@@ -363,6 +388,7 @@ export const AskAiHistoryContent = ({
   const hasGameSection =
     gameAiRequestSummaries.length > 0 || canLoadMoreGameAiRequestSummaries;
   const hasChats = sortedAiRequestSummaries.length > 0;
+  const hasByokChats = !!byokChatSummaries && byokChatSummaries.length > 0;
 
   const renderChatItems = (summaries: Array<AiRequestSummary>) =>
     summaries.map(aiRequestSummary => {
@@ -454,32 +480,46 @@ export const AskAiHistoryContent = ({
         </PlaceholderError>
       ) : isLoading && !hasChats ? (
         <LoadingSkeleton />
-      ) : !hasChats ? (
+      ) : !hasChats && !hasByokChats ? (
         <div className={classes.emptyMessage}>
           {emptyMessages[aiRequestSummariesFilter]}
         </div>
       ) : (
         <ScrollView>
-          {hasGameSection && (
+          {hasChats && (
             <>
+              {hasGameSection && (
+                <>
+                  <div className={classes.list}>
+                    {renderChatItems(gameAiRequestSummaries)}
+                  </div>
+                  {canLoadMoreGameAiRequestSummaries &&
+                    renderLoadMore(onLoadMoreGameAiRequestSummaries)}
+                  <div className={classes.sectionTitle}>
+                    {sectionTitles[aiRequestSummariesFilter]}
+                  </div>
+                </>
+              )}
               <div className={classes.list}>
-                {renderChatItems(gameAiRequestSummaries)}
+                {renderChatItems(recentAiRequestSummaries)}
               </div>
-              {canLoadMoreGameAiRequestSummaries &&
-                renderLoadMore(onLoadMoreGameAiRequestSummaries)}
+              {canLoadMore && renderLoadMore(onLoadMoreAiRequestSummaries)}
+            </>
+          )}
+          {hasByokChats && (
+            <>
               <div className={classes.sectionTitle}>
-                {sectionTitles[aiRequestSummariesFilter]}
+                <Trans>BYOK (your own key)</Trans>
+              </div>
+              <div className={classes.list}>
+                {renderChatItems(byokChatSummaries || [])}
               </div>
             </>
           )}
-          <div className={classes.list}>
-            {renderChatItems(recentAiRequestSummaries)}
-          </div>
           <ContextMenu
             ref={contextMenuRef}
             buildMenuTemplate={buildMenuTemplate}
           />
-          {canLoadMore && renderLoadMore(onLoadMoreAiRequestSummaries)}
         </ScrollView>
       )}
     </div>
@@ -494,6 +534,8 @@ export const AskAiHistory = ({
   onStartNewChat,
   canStartNewChat,
   selectedAiRequestId,
+  byokChatSummaries,
+  onArchiveByokChat,
 }: Props): React.Node => {
   const isDrawer = layout !== 'side-panel';
   // In a drawer, choosing a chat is the end of the interaction: close it.
@@ -512,6 +554,8 @@ export const AskAiHistory = ({
       }}
       canStartNewChat={canStartNewChat}
       selectedAiRequestId={selectedAiRequestId}
+      byokChatSummaries={byokChatSummaries}
+      onArchiveByokChat={onArchiveByokChat}
       className={isDrawer ? undefined : classes.sidePanel}
     />
   );

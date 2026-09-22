@@ -90,6 +90,24 @@ describe('ByokChatStore', () => {
     expect(ByokChatStore.getByokChat(chat.id)).toBe(null);
   });
 
+  it('ignores updates after a chat was archived (guards the suspend-on-archive path)', () => {
+    const listener = mockFn(jest.fn());
+    const unsubscribe = ByokChatStore.subscribeByokChats(listener);
+    const chat = ByokChatStore.createByokChat();
+    ByokChatStore.archiveByokChat(chat.id);
+    listener.mockClear();
+
+    // An orchestrator that was suspended but still had one update in
+    // flight must not resurrect the archived chat.
+    chat.status = 'ready';
+    ByokChatStore.updateByokChat(chat);
+
+    expect(ByokChatStore.getByokChat(chat.id)).toBe(null);
+    expect(listener).not.toHaveBeenCalled();
+
+    unsubscribe();
+  });
+
   it('supports subscribing and unsubscribing', () => {
     const listener = mockFn(jest.fn());
     const unsubscribe = ByokChatStore.subscribeByokChats(listener);

@@ -21,6 +21,218 @@ orchestrating agent writes one consolidated entry per session.
 
 ---
 
+## 2026-09-22 — Phases 5 and 6 implemented: local EventScript event writing, full tool parity, script agent, project creation, loop guard, vision + perception + gameplay tests (byok-v4)
+
+**Agent:** ZCode main orchestrator (all code and tests written by the orchestrator per the house rule) + 4 read-only Explore subagents in one wave (arg-extraction mapping of the inspect/change/run_script/initialize_project/add_scene_events+ApplyEventsChanges/gameplay-test+perception surfaces of `EditorFunctions/index.js` and the preview/debugger plumbing).
+
+**Actions:**
+- **Environment:** rebuilt the session environment per the known recipe (`npm install --ignore-scripts`, `npx patch-package`, `make-version-metadata`, `build-theme-resources`, `import-libGD.js` — only the HEAD~3 build downloads today); `package-lock.json` re-dirtied by the install and restored with `git checkout --`.
+- **Step 5.0** — decision table written to `REVIEW/phase5-tool-decisions.md`: every registry tool admitted/excluded with a reason; `generate_events` = dispatchable-but-unadvertised alias; `create_object` + legacy aliases excluded; store-search decision = keep the account-gated store paths, no new toggle.
+- **Step 5.1** — `ByokToolSchema.js`: whitelist renamed `BYOK_TOOL_NAMES` (22 always-advertised) + `BYOK_NO_PROJECT_TOOL_NAMES` (`initialize_project`, advertised only while no project is open — what reconciles the step list's 23 names with the ≤22 AC) + `getByokDispatchableToolNames` (adds the alias); 12 new schemas authored against each implementation's extractor calls; validator extended (merged registry, count cap, `BYOK_ONLY_TOOL_NAMES` exemption for the Phase-6 interception-only tools).
+- **Step 5.2 (headline)** — `ByokEventScriptParser.js`: full EventScript grammar written from `EventScriptRenderer.js` + the shared conformance fixtures — statements (if/always/else/else-if/while/repeat/for-each/for-each-child/group/comment/link/local vars/pass/disabled), condition compositions (`not`/`Or(`/`And(`/`Not(`/parenthesized and-groups/`once`), actions with `await`, string-aware top-level splitting (commas, ` and `, loop clauses), `\n` parameter unescaping, and **code-only parameter refill from libGD metadata** (the hosted "compilation" step). All 9 conformance fixtures round-trip parse→gd→render byte-identically; positioned, model-fixable errors. `ByokLocalEventWriter.js`: batches → validated `AiGeneratedEventChange`-shaped ops → `applyEventsChanges` (all-or-nothing pre-validation through a real gd.EventsList, `expected_event_source` anchor verification via `renderEventSourceById`, hosted `delete` alias, `onSceneEventsModifiedOutsideEditor` notification, `byok-*` aiGeneratedEventIds). `ByokExtraTools.js`: the interception registry (plan-tool pattern generalized) resolving `add_scene_events`/`generate_events` **before** the editor registry (whose implementations would post to GDevelop's backend). Orchestrator consults it in `executeToolCalls`.
+- **Step 5.3** — `run_script` admitted (registry runner untouched: sandbox, 600-call cap, sequential guard; one approval per script via its `modifiesProject`); script-first policy added to the prompt; schema pinned in tests.
+- **Step 5.4** — `initialize_project` admitted (conditional advertisement); orchestrator options are now getters (`getExecutor()`, plus existing `hasOpenedProject`/`getProjectUserContent` re-read per turn); `ByokSeam`'s executor takes `getProject` (read at call time); container keeps `byokCreatedProjectRef` (set synchronously in `onFunctionCallsExecuted`) + `byokProjectRef` (live prop) behind `getByokLiveProject()`; the orchestrator re-fetches the snapshot when a batch creates a project. Unit test: mid-chat `initialize_project` → next turn re-reads getters, drops `initialize_project` from the tools, leaves the "no project" prompt section.
+- **Step 5.5** — `ByokLoopGuards.js`: last-8 fingerprint history, 3rd identical call → corrective refusal (loop continues), 4th → `byok-repeated-tool-call-loop` error (mapped to "The AI got stuck" in `AiRequestErrorRow`); plan tool exempt; identical re-reads count. Hooked between collect and execute.
+- **Steps 5.6 + 6.5 (prompts)** — `byok-v3` then `byok-v4`: EventScript operational core (~15 lines), script policy, project-creation section, look-verify cycle, hybrid grounding, gameplay-test guidance (`on-failure` screenshots, `paused` = window visibility), tool list auto-generated.
+- **Step 6.0** — `imageSupport` setting (`auto`/`yes`/`no`, default auto) in `ByokTypes` + a Preferences selector; `describeInvalidRequestForImageContent` in `ByokErrors`; orchestrator auto-degrades a chat to text-only (one retry) when the endpoint's 4xx names image content.
+- **Step 6.1** — `ByokImageContent.js`: image registry (session-scoped ids), `estimateByokImageTokens` (w×h/784), canvas downscale to ≤1024/JPEG-0.7 (node-safe fallback); `ByokTranscript` carries `images` ids on tool outputs and materializes them at replay as a `[tool result image]` user message with `image_url` parts + one-line placeholders for evicted ones; latest-2 rule.
+- **Step 6.2** — `capture_scene_screenshot` (DOM discovery of the visible scene-editor canvas — `findLargestVisibleSceneCanvas`, no editor refactoring) + `capture_preview_screenshot` (Electron `byok-preview-capture` IPC over `PreviewWindow.getPreviewWindows()` → `webContents.capturePage`), both returning `{success, image, width, height, note}` (never an image without its textual sibling).
+- **Step 6.3** — `ByokPreviewSession.js`: start/stop around the registered preview launcher (subscribes before launching, unregisters on stop — no dangling listeners), 200-entry log ring buffer (library warnings filtered), crash capture, `refresh` state dump reduced per scene (instances/variables); tools `start_preview`, `stop_preview`, `read_preview_logs`, `get_runtime_errors`, `inspect_runtime_state`.
+- **Step 6.4** — `run_gameplay_test` admitted and intercepted **for result shaping only** (base64 screenshots → image ids via the pipeline, everything else — assertions/errors/logs/finalState/repair `source` — kept); `change_gameplay_tests` goes through the registry unchanged (persist-vs-probe approval via upstream `getModifiesProject`).
+- **Step 6.5** — image token budget in the context guard: under ratio pressure the guard decrements `imagesToKeep` (2→1→0) and still executes the pending batch; only a text-only overflow hard-stops (a `slice(-0)` bug found here — see Bugs).
+- **Gates:** `npm test -- --watchAll=false` → **164 suites / 1740 passed / 1 skipped / 0 failed** (from 157/1561 at Phase 4: +179 tests); `npm run lint` → 0 warnings; Flow (flow.exe workaround) → 0 errors; `npm run check-format` → clean. `node --check` on both Electron files.
+
+**Bugs found:**
+1. **`slice(-0)` kept every image when the budget hit zero** — `getByokSurvivingImageIds` used `imageIds.slice(-keepCount)`: with `keepCount = 0`, `slice(-0) === slice(0)` returns the whole array, so full eviction kept sending all images (caught by the Phase-6 image-budget AC test: parts stayed 2 after both evictions). Fixed with an explicit `keepCount <= 0 → empty Set` guard (`ByokTranscript.js`). Repro: any run whose context guard evicts to 0 — the very scenario the AC pins.
+2. **Loop-guard history reset on argument change** — my first `ByokLoopGuards` implementation replaced the history with `[fingerprint]` on a differing call instead of appending (the phase says "keep the last N (8) fingerprints"); the streak still worked but the memory contract didn't. Fixed to append + cap + derive the trailing streak (`ByokLoopGuards.js`; pinned by the history-size test).
+3. **Parser accepted non-event statements at top level** — `'whenever something:'` fell through `classifyStatement` into the for-each-child header parser (garbage-in-garbage-out instead of a positioned error). Fixed: `parseEventsList` rejects non-header kinds with a message listing the valid statements (`ByokEventScriptParser.js`).
+4. **Composition short-names mismatch** — the parser matched `BuiltinCommonInstructions::Or(` while the renderer emits `Or(`, so compositions parsed as unknown calls with raw operands. Fixed by matching the short names and mapping back to the builtin types.
+5. **Test-harness trap (environment, fixed in-session):** running **raw `npx jest` silently bypasses the project's `react-app-rewired` config** — no `setupTests.js`, hence no libGD and misleading `global.gd` failures across all gd-dependent suites (including pre-existing ones). Correct runner: `npm test -- --watchAll=false`. Diagnosed with a load-check throw that never failed. Also documented in memory.
+
+**Issues found:**
+- **Files touched outside the phase budgets (each minimal, none avoidable — flagged per agents.md §3):** `src/setupTests.js` — reverted after diagnosing (final diff: none; the file was a red herring from the raw-jest trap); `src/GameplayTests/GameplayTestRunner.js` — added the 9-line `getProjectPreviewLauncher` export (the BYOK preview session needs the launcher MainFrame registers; no behavior change); `newIDE/electron-app/app/PreviewWindow.js` — added the 2-line `getPreviewWindows()` registry getter for the capture IPC; `src/AiGeneration/AiRequestChat/AiRequestErrorRow.js` — one line mapping `byok-repeated-tool-call-loop` → the "stuck" UI kind (implied by step 5.5's wording, not listed in its files).
+- **AC reconciliations (documented in the phase docs):** Phase 5's step 5.1 "at minimum" list enumerates 23 advertised names while the AC caps the default set at 22 — resolved by advertising `initialize_project` only on no-project turns (unit-tested); the Phase 6 doc's "Modified: …+5 tools" vs its steps' 9 tools — the steps and ACs won (9 admitted, count cap moved to ≤32 with a comment); Phase 5's "byok-v3" AC is superseded by Phase 6's `byok-v4` landed in the same session.
+- **Headless-session QA (the established pattern):** the Phase 5 parity-matrix QA, the refused-script/stop flows, the stuck-loop demo, the Phase 6 "trees overlap" flagship, the preview/gameplay-test flows and the network-tab verification all need the real desktop app + a real endpoint — step-by-step checklists added as `usertasks.md` Tasks 6 and 7; the corresponding AC sub-clauses are annotated in the phase docs.
+- **6.0 "notify once in-chat" interpreted as:** one console.info + the chat going text-only + the replay placeholders explaining the missing screenshots (no fabricated transcript message). Revisit with Phase 9's durable chats if a visible in-chat notice is wanted.
+- **Chat UI does not render transcript images for the user yet** — the model sees them, the user sees the tool-output text; noted in Phase6.md §5 for a later polish.
+- `ensureExtensionInstalled` in the BYOK executor memo still keys on the React `project` prop, so an extension install in the same second a project is created mid-chat uses the stale memo until the next render (next render fixes it; the project itself is resolved live). Left as-is deliberately — `useEnsureExtensionInstalled` is upstream and out of budget.
+- The evening sessions of 2026-09-21 (AIflow mapping, audit2109, roadmap writing) each dispatched subagent waves; only the roadmap session wrote a worklog entry — noted for completeness, nothing to fix retroactively.
+- **Environment:** libGD S3 builds for HEAD..HEAD~2 404 (only the HEAD~3 build exists this session); the "worker process failed to exit gracefully" Jest notice appears on the full run (pre-existing, no failing test).
+
+**Audit greps (run 2026-09-22, outputs as-is):**
+```
+$ grep -rln "ByokEventScriptParser|ByokLocalEventWriter|ByokExtraTools|ByokLoopGuards|ByokImageContent|ByokPreviewSession|ByokRuntimeTools" newIDE/app/src newIDE/electron-app/app
+→ AskAiEditorContainer.js + the Byok/ modules themselves + ByokToolSchema.js + ByokTranscript.js + ByokTypes.js + electron-app/app/main.js (containment: no other consumers)
+
+$ grep -rn "api.gdevelop.io|/ai-generated-event|createAiGeneratedEvent|prepareAiUserContent" <the 7 new Byok modules>
+→ NO MATCHES (clean — local event writing touches no GDevelop backend)
+
+$ grep -n "applyEventsChanges|renderEventSourceById|unserializeFromJSObject|serializeToJSON" ByokLocalEventWriter.js
+→ 3,4,6,7,13,44,158,269,320,358,367,373 (all four local primitives used)
+
+$ grep -rn "getProjectPreviewLauncher|byok-preview-capture" GameplayTestRunner.js electron-app/app/main.js ByokRuntimeTools.js
+→ GameplayTestRunner.js:874, ByokRuntimeTools.js:70,87,101, main.js:480 (the capture wiring is connected end to end)
+```
+
+**Files worked on:**
+- Created (14): `newIDE/app/src/AiGeneration/Byok/ByokEventScriptParser.js` + `.spec.js`, `ByokLocalEventWriter.js` + `.spec.js`, `ByokExtraTools.js` + `.spec.js`, `ByokLoopGuards.js` + `.spec.js`, `ByokImageContent.js` + `.spec.js`, `ByokPreviewSession.js` + `.spec.js`, `ByokRuntimeTools.js` + `.spec.js`; `REVIEW/phase5-tool-decisions.md`.
+- Modified (28): Byok: `ByokToolSchema.js`/`.spec.js`, `ByokOrchestrator.js`/`.spec.js`, `ByokPrompts.js`/`.spec.js`, `ByokTranscript.js`/`.spec.js`, `ByokTypes.js`/`.spec.js`, `ByokErrors.js`/`.spec.js`, `ByokSeam.js`/`.spec.js`, `ByokSettingsTab.js`/`.spec.js`, `ByokClient.js`. Elsewhere (documented above): `AskAiEditorContainer.js`, `AiRequestChat/AiRequestErrorRow.js`, `GameplayTests/GameplayTestRunner.js`, `electron-app/app/PreviewWindow.js`, `electron-app/app/main.js`. Docs: `Phase5.md`, `Phase6.md`, `usertasks.md`, this file. (`src/setupTests.js` was touched while diagnosing the jest trap and restored byte-identical.)
+- Read (key mapping inputs, no changes): `EventScriptRenderer.js` + fixtures, `EventScriptSourceView.js`, `ApplyEventsChanges.js`, `EditorFunctions/index.js` (registry + mapped implementations), `EditorFunctionCallRunner.js`, `GameplayTestTools.js`, `GameplayTestRunner.js` (wiring), `LocalPreviewDebuggerServer.js`, `Debugger/index.js`, `InstancesEditor/index.js`, `electron-app/app/PreviewWindow.js`/`main.js`, `AskAiStandAloneForm.js`, `AiRequestChat/AiRequestErrorRow.js`, `Core/GDCore/Events/**` (serialization field names), `AIflow.md`, `styleguide.md`, `agents.md`.
+
+---
+
+## 2026-09-21 — Phases 5–9 roadmap written: BYOK ≥ hosted AI (capability, perception, knowledge/skills, autonomous workflow, robustness)
+
+**Agent:** ZCode main orchestrator + 5 Explore subagents in one wave (hosted-AI capability catalog via web+repo history; agentic/game-build SOTA via web; repo perception/preview/events-as-code mapping; engine knowledge taxonomy web+repo; BYOK v1 limitation audit) — read-only, within the ≤5 rule.
+
+**Actions:**
+- User goal: make BYOK equal or better than the server-side AI, focused on game making (math, physics, JS, three.js, screenshots, UI entry points), mapped into `Phase5.md`–`Phase9.md`.
+- Research wave findings consolidated: hosted capability catalog + `AI_ORCHESTRATOR_TOOLS_VERSION` timeline (v1→v15 via commit archaeology) + discovery of an **upstream v18 branch in this clone** (`upstream/claude/gdevelop-ai-extensions-95js2m`, 9 extension-authoring tools, not in master); SOTA practices (Anthropic tool-design/multi-agent/context-engineering posts, OpenAI function-calling guide, SKILL.md standard, Voyager, browser-use hybrid grounding, GameDevBench/GameCraft-Bench results — runtime visual feedback ≈ +11 pts on game-dev tasks); repo feasibility (3 existing screenshot paths, debugger WS protocol incl. `game.crashed`/console/state dumps, `unserializeFromJSObject` + `ApplyEventsChanges` local event application, `run_script` sandbox, gameplay-test harness with input simulation + screenshots); engine knowledge taxonomy (EventScript grammar derivable from `EventScriptRenderer.js` + fixtures; object/behavior/action/expression catalogs machine-generable from Extensions metadata; docs open-source Markdown); BYOK v1 top-10 limitations (session-only chats, hard context dead-end, no initialize_project + stale-closure wiring, no vision, no compaction, no stuck-loop detection, null sub-agent seam, no fork/suggestions, single model).
+- Wrote the five phase docs in house format (steps/files/tests/ACs each): **Phase5** tool parity + local EventScript→events writing + `run_script` + `initialize_project` + loop detection (`byok-v3`); **Phase6** vision input, screenshot tools (editor canvas / Electron `capturePage` / gameplay tests), preview control, console/crash/state reads, act→look→verify (`byok-v4`); **Phase7** prompt composer with token budget, machine-generated engine reference + `search_reference` tool, EventScript grammar pack, game-design system messages, math/physics/JS packs, SKILL.md-style skills system with starter set, offline docs, per-project notes (`byok-v5`); **Phase8** scout/reviewer sub-agents, completion gates, build-workflow recipe, extension authoring ported from the v18 branch, standalone-form + context-menu entry points, fork/restore points (`byok-v6`); **Phase9** streaming, compaction, IndexedDB persistence, model routing, capability gating + built-in benchmark, local suggestions/feedback, dev-only eval harness. Phase5.md §0 carries the roadmap overview (category→phase matrix, dependency graph, equality/advantage rationale).
+- No source code touched; documentation session only.
+
+**Bugs found:** none (no code executed or modified).
+
+**Issues found:**
+- **Concurrent session notice:** while this session ran, a separate 5-agent code audit wrote `REVIEW/audit2109{client,loop,schema,storage,ui}.md` and the worklog entry below (68 findings). Its fix track owns those bugs; roadmap touchpoints noted so the phases don't duplicate or contradict: whitelist-not-enforced-at-dispatch (Phase 5 assumes enforcement — its step 5.1 tests should assert dispatch-time filtering once fixed); no abort propagation / Retry-After (Phase 9 step 9.7); per-model context window unused (Phase 6/9 budget guards should consume the fixed resolution); `archiveByokChat` hard-deletes (Phase 9 step 9.3).
+- **Latent v1 wiring flaw (fix lands in Phase 5 step 5.4):** `AskAiEditorContainer.js:649-664` captures the BYOK executor/`hasOpenedProject`/`getProjectUserContent` as closures at chat start — any project change mid-chat (including a future `initialize_project`) is invisible to the running orchestrator.
+- **EventScript parser does not exist client-side** — the canonical grammar lives in the private GDevelop-services repo (`EventScriptRenderer.js` header comment). Phase 5 must author a parser from the in-repo serializer + shared conformance fixtures (`EventScriptRenderer.fixtures.json`); risk tracked in Phase5.md §4.
+- **Upstream v18 branch may land in master** (AI extension authoring, branch enabled 2026-09-15). Phase 8 ports the approach as BYOK-intercepted tools with a delegation guard if the registry versions stop being stubs; re-check upstream before implementing step 8.4.
+- **Docs redistribution needs a license check** before bundling GDevelop-documentation Markdown (Phase 7 step 7.7 blocks on it; fetch-on-demand is the fallback).
+- **Hosted-AI user reports exploitable by design:** persistent server `add_scene_events` "Infrastructure error" (forum thread 75417) — local event writing (Phase 5) is structurally immune; "Ask AI does not read PC files" — `read_game_project_json`/`run_script` cover most of that need client-side.
+- `audit.md` D1–D7 backlog is subsumed by the new phases (each D-decision now has a concrete home); `usertasks.md` Tasks 1–3 remain user-blocked and unchanged.
+
+**Files worked on:**
+- Created: `REVIEW/Phase5.md`, `REVIEW/Phase6.md`, `REVIEW/Phase7.md`, `REVIEW/Phase8.md`, `REVIEW/Phase9.md`.
+- Modified: `REVIEW/worklog.md` (this entry).
+- Read: `REVIEW/Phase4.md` (house format), `REVIEW/report.md`, `REVIEW/worklog.md` (format + the concurrent audit entry), memory notes; subagents read (repo): `newIDE/app/src/AiGeneration/Byok/*` (all 14 modules), `AskAiEditorContainer.js`, `AskAiStandAloneForm.js`, `AskAiPrefill.js`, `AiGeneration/AiRequestUtils.js`, `AiGeneration/Utils.js`, `EditorFunctions/index.js` + `GameplayTestTools.js` + `ApplyEventsChanges.js` + `ScriptExecution/*` + `SimplifiedProject/*`, `GameplayTests/GameplayTestRunner.js` + `GameplayTestStateInspectors.js`, `EventsSheet/EventsTree/TextRenderer/EventScriptRenderer.js` (+fixtures) + `EventsSheet/index.js`, `ObjectsList/index.js`, `MainFrame/index.js` + `MainFrameCommands.js` + `UseCapturesManager.js`, `MainFrame/EditorContainers/EventsFunctionsExtensionEditorContainer.js` + `GameplayTestEditorContainer.js`, `Debugger/*`, `HotReload/*`, `PreviewState.js`, `ExportAndShare/LocalExporters/LocalPreviewLauncher/*`, `EventsFunctionsExtensionsLoader/*`, `JsExtensionsLoader/*`, `InstancesEditor/*`, `ResourcesList/ResourcePreview/Resource3DPreview.worker.js`, `Utils/GDevelopServices/Generation.js`, `Utils/Serializer.js`, `electron-app/app/main.js` + `PreviewWindow.js` + `DebuggerServer.js`, `GDJS/Runtime/*` (debugger-client, gameplay-tests, capturemanager, events-tools, pixi-renderers, runtimeobject/runtimescene), `Core/GDCore/Events/Builtin/*`, `Extensions/*` (Physics2Behavior, Physics3DBehavior, 3D, PlatformBehavior, TweenBehavior, TileMap, Lighting, ExampleJsExtension + catalog sweep), git history (tools-version commit timeline, v18 branch); internet: wiki.gdevelop.io (AI, gameplay-tests), gdevelop.io blog+pricing, github.com/4ian/GDevelop (issue #7932, releases, branches), forum.gdevelop.io threads, anthropic.com engineering posts (tools, multi-agent, context engineering, agent skills), developers.openai.com (function calling, vision), code.claude.com best practices, arxiv (Voyager 2305.16291, WebVoyager 2401.13919, self-debug 2304.05128, TITAN 2509.22170, mem0 2504.19413), GameDevBench + GameCraft-Bench, browser-use blog, agentskills.io, GDevelopApp/GDevelop-documentation repo.
+
+---
+
+## 2026-09-21 — Full Phase 1–4 code audit by 5 parallel agents (audit2109*.md)
+
+**Agent:** ZCode main orchestrator + 5 general-purpose audit subagents in one wave ("storage", "client", "loop", "schema", "ui") — within the ≤5 rule; the "schema" agent was dropped once by a provider rate limit before doing any work and was re-dispatched alone.
+
+**Actions:**
+- Enumerated the complete Phase 1–4 implementation surface from the phase docs + git: 13 impl/spec pairs in `src\AiGeneration\Byok\` plus 6 upstream-touched files (`AskAiEditorContainer.js`, `PreferencesContext.js`, `PreferencesDialog.js`, `PreferencesProvider.js`, electron `ByokSafeStorage.js`, `main.js`) — 32 files; `AiRequestChat\index.js` confirmed NOT modified.
+- Split the files evenly by subsystem (6/6/6/7/7), each agent reading its files IN FULL from the current working tree (uncommitted orchestrator/prompts/toolschema changes included), grep-following every dependency into the wider repo (IPC channel match, EditorFunctions tool registry cross-check, Generation.js message types, preferences paths), and writing a dedicated report `REVIEW/audit2109<name>.md` (assigned-files list first, then issues ordered A→E with affected file:function, human-readable explanation, proposed fix, and tests to write incl. edge cases). No source files modified; no npm gates run (static audit).
+- Totals across the five reports: 68 findings — **0×A**, 11×B, 17×C, 22×D, 18×E (B counts include cross-agent duplicates, see below).
+
+**Bugs found** (highest-severity, deduplicated; full detail in the five `audit2109*.md` reports):
+- `resolveContextWindowTokens` (`ByokModelsCache.js:133-156`) has **zero production callers** — the orchestrator uses only the global `settings.contextWindowTokens` for the context bar and the 0.9 runaway guard, so large-context models are cut off at ~7.4k tokens. Found independently by 4 of 5 agents (storage/client/loop/ui).
+- Key-storage obfuscation round-trip **corrupts keys containing `%`** on web / desktop encryption-fallback (`ByokKeyStorage.js:74-89`): `key%25` silently becomes `key%`, `%2z…` becomes "no key stored"; the v2→v3 desktop migration then persists the corrupted key.
+- Orchestrator **does not enforce the tool whitelist at dispatch** (`ByokOrchestrator.js` `executeToolCalls`): a hallucinated non-whitelisted tool (e.g. `run_script`) actually executes on non-strict OpenAI-compatible servers.
+- **No abort propagation**: `suspend()` cannot stop the in-flight axios call (retries can stretch it to ~6 min of paid tokens) and a late plain-text answer calls `markReady()` over the `suspended` status; the Test-connection ping shares the no-cancel/no-`Retry-After` problem (429 retry amplification).
+- **Stop-during-approval race**: the `isSuspended` check runs only before the approval await — Stop then Approve still executes the modifying batch.
+- **BYOK chats are permanently unreachable** once deselected: `listByokChats`/`archiveByokChat` are dead in production, so an orchestrator told "Continue working" keeps calling the paid endpoint with no UI to watch or stop it (`AskAiEditorContainer.js:538-547, 1314-1356`).
+- **Silent message loss + dead Retry** after the missing-key error: `startByokChat` errors before creating an orchestrator, then `onSendMessage`/`onRetryByokChat` no-op while the input is cleared anyway (`AskAiEditorContainer.js:637-647, 965-986, 1495-1504`).
+- Plan tool output **never renders as a plan**: BYOK shells lack `mode:'orchestrator'`, which `ChatMessages.js:516` gates the plan component on — users see raw JSON.
+- `put_2d_instances` `brush_position` schema description promises "the scene center when omitted" but the implementation **rejects omitted positions** (`EditorFunctions\index.js:3875-3884`) — models following the schema get guaranteed failed rounds.
+
+**Issues found:**
+- Provider rate-limited the first "schema" agent dispatch (`1302 Rate limit reached`) before it produced anything; a solo re-dispatch succeeded — waves of 5 remain at the edge of what the provider allows.
+- All BYOK error strings shown to users are hardcoded English rendered raw (`ByokErrors.js:45-71` and guard messages), violating the non-negotiable Lingui rule while the rest of the settings tab is fully `<Trans>`-ed; `byok-context-full` also leaves a phantom working state (dead Stop button) and its Retry re-sends the full history.
+- Status row honesty gap (`ByokKeyStorage.js:199-209, 285-291`): a silent v2 downgrade after failed `byok-encrypt` still shows "encrypted by your operating system", against Phase 3's "Honest UI" goal; `saveByokKey` swallows failures so the tab shows "stored" for a key that wasn't persisted.
+- Numerous C/D/E items recorded per-report: models-cache staleness on key change + shared mutable default settings reference; `fetchByokModels` dead/duplicated code; response validation shallower than declared Flow types (malformed `tool_calls` crashes `ByokTranscript.js:48-57`); `buildEndpointUrl` doesn't trim whitespace; `aborted`/non-finished executor results silently dropped (dangling `tool_calls` → protocol-invalid transcripts); schema↔implementation sync pinned for only `create_scene`; `depends_on` vs `dependsOn` latent mismatch; per-keystroke clamping in number fields; setState-after-unmount; desktop blur-save vs click-load IPC race; missing negative-path tests in `ByokToolSchema.spec.js` and missing suspend/abort/executor-throw tests in `ByokOrchestrator.spec.js`.
+- Clean bill on the security-critical paths: IPC channel names/payloads match both sides; API key never in logs, transcripts, errors, preferences (spec-enforced) and is header-only with redaction on every throw path; all 11 tool names + property/enum schemas match the registry exactly; round cap and refused-edit suspension enforced and tested.
+- Audit is static-analysis only — no test/lint/flow gates were run this session; the four uncommitted working-tree files (`AskAiEditorContainer.js`, `ByokOrchestrator.js`+spec, `ByokPrompts.js`, `ByokToolSchema.js`+spec) were audited as-on-disk.
+
+**Files worked on:**
+- Created: `REVIEW/audit2109storage.md`, `REVIEW/audit2109client.md`, `REVIEW/audit2109loop.md`, `REVIEW/audit2109schema.md`, `REVIEW/audit2109ui.md` (written by the respective subagents; the only files they were allowed to write).
+- Modified: `REVIEW/worklog.md` (this entry).
+- Read (audited in full by the assigned agents): all 26 `newIDE/app/src/AiGeneration/Byok/*.js` files (13 impl + 13 spec), `newIDE/app/src/AiGeneration/AskAiEditorContainer.js`, `newIDE/app/src/MainFrame/Preferences/PreferencesContext.js`, `PreferencesDialog.js`, `PreferencesProvider.js`, `newIDE/electron-app/app/ByokSafeStorage.js`, `newIDE/electron-app/app/main.js`; dependency-verification reads across `src/Utils/GDevelopServices/Generation.js`, `src/AiGeneration/AiRequestChat/*`, `src/AiGeneration/AiRequestUtils.js`, `src/EditorFunctions/index.js`, `src/Utils/RetryIfFailed.js`, `REVIEW/Phase1-4.md`, `REVIEW/report.md`, `styleguide.md`.
+
+---
+
+## 2026-09-21 — AI flow architecture map (AIflow.md): prompts, tools, context, skills audit
+
+**Agent:** ZCode main orchestrator + 3 Explore subagents in one wave (tool-registry inventory; hosted-flow client prompt surface; "skills"/game-design prompt search) — read-only, within the ≤5 rule.
+
+**Actions:**
+- Architecture-design mapping session requested by the user: "what the agent has access to, what and where prompts reach it, what tools, skills and game design system messages are available".
+- Subagent 1 inventoried the full tool registry (`EditorFunctions\index.js:9029-9083`): ~27 client-executed tools + 10 server-side stubs, the runner's execution model, the `run_script` sandbox (hygiene, not security; 600-call cap), backend-calling tools and endpoints, and the `modifiesProject` approval gating.
+- Subagent 2 mapped the hosted flow's client prompt surface: every field of `createAiRequest`/`addMessageToAiRequest`, the SimplifiedProject content (in/out), CDN presets (`ai-settings-v2.json`), the BYOK seam in `AskAiEditorContainer.js`, and prefill/suggestion prompt material.
+- Subagent 3 sweep-verified "skills" and game-design prompt content across `src` + locales (verdict: neither exists client-side), outlined `ByokPrompts.js`, and listed the `Byok\` folder.
+- Orchestrator re-read `ByokPrompts.js` (full `byok-v2` prompt, section by section) and `ByokToolSchema.js` (11-tool whitelist + exclusion rationale), and confirmed the orchestrator's per-turn message assembly (system message, snapshot folded into last user message, 20 000-char tool-output cap) by grep.
+- Wrote `REVIEW/AIflow.md` (the deliverable) and this worklog entry. No source code touched.
+
+**Bugs found:** none (read-only documentation session).
+
+**Issues found:**
+- **No "skills" concept exists anywhere in the repo** (only 3 unrelated "skill" string hits: a fixture, Learn-section marketing copy, a name-generator word). If the term is expected from product material, it refers to server-side content; anything skill-like for BYOK would be greenfield.
+- **No game-design system-message content exists client-side**: hosted orchestrator/sub-agent prompts live server-side (repo holds only fingerprints — `AI_ORCHESTRATOR_TOOLS_VERSION = 'v15'`, `systemPromptTemplateHash`), and the BYOK prompt is strictly operational. Recorded in AIflow.md §7 as the main prompting gap/opportunity (natural home: a new section in `ByokPrompts.js` or a sibling module, with a prompt-version bump).
+- `read_full_docs`/`search_docs` are permanent failure stubs upstream (docs served server-side) — already excluded from the BYOK whitelist; noted in AIflow.md so future prompting work doesn't assume a docs tool exists.
+- BYOK capability gap vs hosted (11 vs ~37 tools) is now documented in one place (AIflow.md §5.4), useful for the D1–D7 backlog decisions in `audit.md`.
+- `create_or_replace_object` is the one whitelisted BYOK tool with a GDevelop-backend dependency (asset-store search when given `description`/`asset_id`) — flagged in AIflow.md §5.4; relevant to Task 2 QA in `usertasks.md`.
+
+**Files worked on:**
+- Created: `REVIEW/AIflow.md`.
+- Modified: `REVIEW/worklog.md` (this entry).
+- Read: `REVIEW/report.md`, `REVIEW/worklog.md` (format/tail), `newIDE/app/src/AiGeneration/Byok/ByokPrompts.js`, `ByokToolSchema.js`, grep-verified `ByokOrchestrator.js` (message-assembly points); subagents additionally read `newIDE/app/src/EditorFunctions/index.js`, `EditorFunctionCallRunner.js`, `ScriptExecution/*`, `GameplayTestTools.js`, `SimplifiedProject/*`, `newIDE/app/src/AiGeneration/*` (Utils.js, PrepareAiUserContent.js, AiConfiguration.js, AskAiEditorContainer.js, AiRequestContext.js, AskAiPrefill.js, Toolbar.js, AskAiHistory.js, UseGenerateEvents.js, UseSearchAndInstallAsset.js, UseSearchAndInstallResource.js), `newIDE/app/src/Utils/GDevelopServices/Generation.js`, `AiRequestChat/SuggestionLines.js`, `MainFrame/EditorContainers/GameplayTestEditorContainer.js`, `locales/en/messages.js`.
+
+---
+
+## 2026-09-21 — Audit fixes implemented (A1–A5, C5, C13): refusal outputs, stop-mid-flight, plan tool interception, whitelist cleanup, approval memory, retry
+
+**Agent:** ZCode main orchestrator (no subagents dispatched).
+
+**Actions:**
+- Implemented every functional fix proposed by `audit.md` (section A + C5 + C13), on the user's go-ahead:
+  - **A1** — `ByokOrchestrator.js`: new `appendNotExecutedToolOutputs(functionCalls, message)` helper; a refused edit approval now records a `success:false` output ("The user refused this edit. Ask them how to proceed before trying again.") for **every** call of the refused batch (including the non-modifying ones, which are never run) before `markSuspended()` — the transcript stays a valid OpenAI conversation (no assistant `tool_calls` without following tool messages), so the chat survives and resumes.
+  - **A2** — `executeToolCalls` re-checks `isSuspended` first and records the arrived batch as not executed ("The assistant was stopped before running this tool call. Send a new message to continue.") — the Stop button now also cancels a batch that arrived during an in-flight model call.
+  - **A4** — split fix: (1) `create_or_update_plan` is intercepted by the orchestrator via `appendPlanToolOutput` — parses `args.tasks` and echoes `{success:true, plan:{tasks}}` (the exact shape `getLatestActivePlan`/the plan UI consume; invalid arguments become a `success:false` output), exported constant `BYOK_PLAN_TOOL_NAME`; (2) `add_scene_events`, `read_full_docs` and `search_docs` removed from `BYOK_V1_TOOL_NAMES` + `BYOK_V1_TOOL_SCHEMAS` (14 → 11 tools) with the exclusion comment documenting why (server-side dependencies / permanent failure stubs upstream); (3) `BYOK_AGENT_PROMPT_VERSION` bumped `'byok-v1'` → `'byok-v2'` (the generated tool list changed).
+  - **A3** — `AskAiEditorContainer.js`: the BYOK branch of `onSendMessage` now resets the chat input right after dispatching to the orchestrator (deliberately **without** awaiting the loop, which can run for minutes), mirroring the server path; `selectedByokChatId` added to the callback's deps.
+  - **C5** — container: `approvedByokEditCallIdsRef` (capped at 500, like the server's `approvedEditBatchKeysRef`); the BYOK approval wrapper asks only for not-yet-approved calls and records approvals; cleared in `onIsAutoEditEnabledChange` next to `clearApprovedEditBatches()`.
+  - **C13** — orchestrator: `retryAfterError()` (guards: not running, status must be `error`; re-enters `runLoop` without appending anything — the transcript replay is exactly a retry); container: `onRetryByokChat` passed as `onRetryAfterError` for BYOK chats instead of hiding the retry.
+- Spec updates: `ByokToolSchema.spec.js` (11-tool whitelist, three new exclusions asserted); `ByokOrchestrator.spec.js` (refusal test rewritten to assert the not-executed outputs; +6 new tests: protocol-valid resume after refusal, suspend-mid-model-call, plan-tool interception incl. the plan payload and the invalid-arguments failure, retry-after-error incl. the non-error guard).
+- Updated `audit.md` (Fixed notes on A1–A5, C5, C13; verdict + summary table) and `usertasks.md` (Task 4 now records the applied fixes; Task 2's ★ items verify them interactively; the stale bug warnings removed).
+- Gate results, final tree: `npm test -- --watchAll=false` → **157 suites, 1561 passed, 1 pre-existing skip** (+6); `npm run lint` → **clean**; `npm run flow` → **0 errors**; `npm run check-format` → **clean** (after `prettier --write` of the three touched source files).
+- Wrote this worklog entry.
+
+**Bugs found:**
+- None new (this session fixes the audit's findings; no regressions surfaced — the full suite including all Phase 1–4 tests is green).
+
+**Issues found:**
+- The refusal message and the stopped message are plain English strings, not `<Trans>`-wrapped: they travel as tool-output JSON consumed by the model (and rendered like upstream runner outputs, which are also untranslated server strings). Consistent with the existing Byok error messages; recorded as a deliberate choice.
+- A3/C5/C13 container wiring has no unit tests, per the step 4.6 decision (container covered by manual QA): the ★ items of `usertasks.md` Task 2 now verify all three interactively.
+- Whitelist shrinkage means the Phase 2 doc's 14-tool list and `Phase4.md`'s prompt instructions are now historical: `ByokToolSchema.js`'s comment + the audit record the reasons. The plan instruction survives (the tool is now functional).
+
+**Files worked on:**
+- Modified: `newIDE/app/src/AiGeneration/Byok/ByokOrchestrator.js`, `ByokOrchestrator.spec.js`, `ByokToolSchema.js`, `ByokToolSchema.spec.js`, `ByokPrompts.js` (version bump), `newIDE/app/src/AiGeneration/AskAiEditorContainer.js`, `REVIEW/audit.md`, `REVIEW/usertasks.md`, `REVIEW/worklog.md` (this entry).
+- Read: `REVIEW/audit.md` (fix proposals), `REVIEW/usertasks.md`, the touched sources and specs.
+
+---
+
+## 2026-09-21 — Post-Phase-4 review: usertasks.md (user-blocked tasks) and audit.md (full issues audit)
+
+**Agent:** ZCode main orchestrator (no subagents dispatched).
+
+**Actions:**
+- Re-read all phase documents' acceptance criteria (`Phase1–4.md`), `report.md` §5 (diff budget), and every worklog entry; cross-checked claims against the actual source tree and git state.
+- Created `REVIEW/usertasks.md`: every task blocked on user action/input/decision, as step-by-step instructions — Phase 3 desktop verification (step 3.5 checklist incl. packaged build), Phase 4 real-endpoint QA (step 4.8), git commit decisions (pending doc move + uncommitted Phases 3–4), approval of the audit's bug fixes, deferred-feature green-lighting, and small housekeeping decisions.
+- Created `REVIEW/audit.md`: all errors and issues found across the work history, each with references and fix proposals — functional bugs (section A), missing/unverified ACs (B), deviations and doc drift (C), deliberately-deferred features (D), environment/process (E).
+- Wrote this worklog entry.
+
+**Bugs found (new in this review — details and fixes in `audit.md` section A):**
+- **A1 (P1)** `ByokOrchestrator.js` ~271–278: a refused edit approval leaves `function_call`s without `function_call_output`s; every later message in that chat sends an assistant-with-tool_calls not followed by tool messages — strict endpoints (incl. OpenAI) reject it with 400, bricking the chat. Secondary: the chat then shows a perpetual working state with a dead Stop button.
+- **A4 (P1)** Four of the fourteen whitelisted tools can never succeed in BYOK v1: `create_or_update_plan` and `read_full_docs`/`search_docs` are permanent failure stubs upstream (`EditorFunctions/index.js` ~8600–8650), and `add_scene_events` (~5430) delegates to the `generateEvents` collaborator the executor stubs — yet the prompt advertises all of them and *mandates* `create_or_update_plan` for multi-step requests. Event editing is impossible in v1.
+- **A2 (P2)** `ByokOrchestrator.js` runLoop ~325–351: `suspend()` during an in-flight model round does not stop that round's tool batch — edits can land after the user pressed stop.
+- **A3 (P3)** `AskAiEditorContainer.js` ~943–955: the BYOK send branch returns before the `resetUserInput` calls the server path makes — the sent message stays in the input field.
+- **A5 (P3)** Consequence of A1 (tracked for QA visibility): suspended-after-refusal chats render as working forever.
+
+**Issues found (full list with references and proposals in `audit.md`):**
+- Phase gates still open: Phase 3 manual desktop checklist and Phase 4 real-endpoint QA were never executed (headless sessions; `electron-app` has no `node_modules`) — now `usertasks.md` Tasks 1–2.
+- Documented deviations: container diff +307/−30 vs the ~20–40-line budget (C1, structural reasons recorded); no batch-approval memory in BYOK (C5); no retry affordance for failed BYOK chats (C13); unexported upstream helpers reimplemented (C2); "two handlers" doc wording vs three (C3); AGENTS.md git-repo/path/shell drift + uncommitted doc move (C4); session-only chats absent from history (C6); recurring lockfile churn (C7/E3), electron-app untested-by-design (C8), libGD HEAD~2 fallback (C9), Phase 1's third touched file (C10), pre-existing empty-blur key deletion (C11), no-op manual process affordances on BYOK chats (C12).
+- Deferred-by-design features inventoried with their seams (audit D1–D7: persisted history, streaming, nested event generation + store tools, sub-agents, badge/token row, per-chat overrides, standalone form) — decisions requested via `usertasks.md` Task 5.
+- Phase 2's "real endpoint" AC was met with a local mock server only (B3); Phase 1's app-restart persistence was code-verified only (B4).
+
+**Files worked on:**
+- Created: `REVIEW/usertasks.md`, `REVIEW/audit.md`.
+- Modified: `REVIEW/worklog.md` (this entry).
+- Read: `REVIEW/Phase1.md`–`Phase4.md` (AC sections), `REVIEW/report.md` §5–6, `REVIEW/worklog.md` (all entries), `usertasks.md`/`audit.md` (drafting), `newIDE/app/src/AiGeneration/Byok/ByokOrchestrator.js` (verification pass), `ByokPrompts.js`, `ByokSeam.js`, `AskAiEditorContainer.js` (byok branch), `AiRequestChat/index.js` (isWorking computation), `EditorFunctions/index.js` (stub-tool implementations ~5430, ~8600–8650), git status/diffs.
+
+---
+
 ## 2026-09-20 — Phase 4 implemented: the BYOK agent loop (prompts, orchestrator, chat store, seam in AskAiEditorContainer)
 
 **Agent:** ZCode main orchestrator (no subagents dispatched).

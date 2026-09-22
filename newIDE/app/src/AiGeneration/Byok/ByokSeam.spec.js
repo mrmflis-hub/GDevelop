@@ -106,7 +106,7 @@ describe('byokCallRequiresApproval', () => {
 describe('createByokEditorFunctionCallExecutor', () => {
   const makeExecutorDeps = (overrides: any = {}) => ({
     processEditorFunctionCalls: (jest.fn(): any),
-    project: { name: 'fake-project' },
+    getProject: () => ({ name: 'fake-project' }),
     i18n: {},
     editorCallbacks: {},
     ensureExtensionInstalled: (jest.fn(): any),
@@ -143,7 +143,8 @@ describe('createByokEditorFunctionCallExecutor', () => {
 
     expect(deps.processEditorFunctionCalls).toHaveBeenCalledTimes(1);
     const runnerOptions = deps.processEditorFunctionCalls.mock.calls[0][0];
-    expect(runnerOptions.project).toBe(deps.project);
+    // The project is resolved at call time through getProject.
+    expect(runnerOptions.project).toEqual({ name: 'fake-project' });
     expect(runnerOptions.toolOptions).toBe(null);
     expect(runnerOptions.toolsVersion).toBe(null);
     expect(runnerOptions.functionCalls).toEqual([
@@ -184,6 +185,35 @@ describe('createByokEditorFunctionCallExecutor', () => {
     expect(deps.onSceneEventsModifiedOutsideEditor).toHaveBeenCalledWith({
       scene: 'scene-1',
       newOrChangedAiGeneratedEventIds: new Set(['event-1', 'event-2']),
+    });
+  });
+
+  it('OR-accumulates isNewObjectTypeUsed like the server-backed flow', async () => {
+    const deps = makeExecutorDeps();
+    deps.processEditorFunctionCalls.mockImplementation(async (options: any) => {
+      // An early call introduces a new object type, a later one in the same
+      // scene reports false: the flush must still say true.
+      options.onObjectsModifiedOutsideEditor({
+        scene: 'scene-1',
+        isNewObjectTypeUsed: true,
+      });
+      options.onObjectsModifiedOutsideEditor({
+        scene: 'scene-1',
+        isNewObjectTypeUsed: false,
+      });
+      return { results: [], createdSceneNames: [], createdProject: null };
+    });
+    const executor = ByokSeam.createByokEditorFunctionCallExecutor(deps);
+
+    await executor([], {
+      aiRequestId: 'byok-chat-1',
+      getRelatedAiRequestLastMessages: () => ({}),
+    });
+
+    expect(deps.onObjectsModifiedOutsideEditor).toHaveBeenCalledTimes(1);
+    expect(deps.onObjectsModifiedOutsideEditor).toHaveBeenCalledWith({
+      scene: 'scene-1',
+      isNewObjectTypeUsed: true,
     });
   });
 

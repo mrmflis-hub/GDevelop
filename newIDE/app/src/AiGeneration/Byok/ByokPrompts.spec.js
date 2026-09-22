@@ -1,5 +1,5 @@
 // @flow
-import { getByokToolSchemas } from './ByokToolSchema';
+import { BYOK_TOOL_NAMES, getByokToolSchemas } from './ByokToolSchema';
 import {
   BYOK_AGENT_PROMPT_VERSION,
   buildByokSystemPrompt,
@@ -68,5 +68,53 @@ describe('ByokPrompts', () => {
     expect(prompt).toContain('plain text only when the task is done');
     expect(prompt).toContain('never put calls that depend on another call');
     expect(prompt).toContain('create_or_update_plan');
+  });
+});
+
+describe('ByokPrompts v4 (Phases 5 and 6 sections)', () => {
+  it('pins the prompt version', () => {
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v4');
+  });
+
+  it('teaches the EventScript operational core', () => {
+    const prompt = buildByokSystemPrompt({
+      toolNames: BYOK_TOOL_NAMES,
+      hasOpenedProject: true,
+    });
+    expect(prompt).toContain('Writing events (add_scene_events)');
+    expect(prompt).toContain('read_events_source');
+    expect(prompt).toContain('expected_event_source');
+    expect(prompt).toContain('placement relations');
+  });
+
+  it('teaches the script-first policy', () => {
+    const prompt = buildByokSystemPrompt({
+      toolNames: BYOK_TOOL_NAMES,
+      hasOpenedProject: true,
+    });
+    expect(prompt).toContain('Batching work with run_script');
+    expect(prompt).toContain('5 or more related operations');
+    expect(prompt).toContain(
+      'A refused approval means nothing in the script ran'
+    );
+  });
+
+  it('teaches the look-verify cycle and hybrid grounding', () => {
+    const prompt = buildByokSystemPrompt({
+      toolNames: BYOK_TOOL_NAMES,
+      hasOpenedProject: true,
+    });
+    expect(prompt).toContain('Look and verify');
+    expect(prompt).toContain('capture a screenshot');
+    expect(prompt).toContain('never guess from pixels');
+    expect(prompt).toContain('paused');
+  });
+
+  it('teaches project creation when no project is open', () => {
+    const prompt = buildByokSystemPrompt({
+      toolNames: BYOK_TOOL_NAMES,
+      hasOpenedProject: false,
+    });
+    expect(prompt).toContain('initialize_project first');
   });
 });

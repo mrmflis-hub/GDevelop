@@ -74,6 +74,13 @@ const textToUtf8Bytes = (text: string): Array<number> => {
 const utf8BytesToText = (bytes: Array<number>): ?string => {
   let escaped = '';
   for (const byte of bytes) {
+    // `%` is itself an escape character for decodeURIComponent: a literal
+    // 0x25 byte must be escaped as `%25`, or any key containing `%` is
+    // silently corrupted (or rejected as an invalid escape) on read.
+    if (byte === 0x25) {
+      escaped += '%25';
+      continue;
+    }
     if (byte < 0x80) {
       escaped += String.fromCharCode(byte);
       continue;
@@ -155,16 +162,19 @@ const encryptSecret = async (
  * Decrypt a stored key payload according to the version that produced it.
  * Returns null when the value cannot be recovered (the caller then reports
  * "no key stored"). Version 1 (Phase 1 plaintext) is handled by the caller,
- * which migrates it on read.
+ * which migrates it on read. The payload comes from localStorage: it is
+ * untrusted, so every field is narrowed before use.
  */
-const decryptSecret = async (payload: any): Promise<?string> => {
+const decryptSecret = async (payload: mixed): Promise<?string> => {
+  if (!payload || typeof payload !== 'object') return null;
+  const record: Object = payload;
   // Version 3: OS-encrypted ciphertext, only the main process can decrypt.
-  if (payload.version === 3 && typeof payload.value === 'string') {
+  if (record.version === 3 && typeof record.value === 'string') {
     if (!ipcRenderer) return null;
     try {
       const result: ByokSafeStorageResult = await ipcRenderer.invoke(
         'byok-decrypt',
-        payload.value
+        record.value
       );
       if (result && result.ok) {
         return result.data;
@@ -178,21 +188,35 @@ const decryptSecret = async (payload: any): Promise<?string> => {
   }
 
   // Version 2: the web-build obfuscation, undone renderer-side.
-  if (payload.version === 2 && typeof payload.value === 'string') {
-    return deobfuscate(payload.value);
+  if (record.version === 2 && typeof record.value === 'string') {
+    return deobfuscate(record.value);
   }
 
   return null;
 };
 
 /**
- * Save the BYOK API key (encrypted on desktop, obfuscated on web). An empty
- * key clears the entry rather than storing an empty string.
+ * All writes (and the migrations triggered by reads) go through this chain,
+ * so they apply in the order they were started — a migration that read an
+ * old value cannot land after a newer user save and resurrect the old key.
  */
-export const saveByokKey = async (key: string): Promise<void> => {
+let storageWriteChain: Promise<void> = Promise.resolve();
+
+const enqueueStorageWrite = <T>(write: () => Promise<T>): Promise<T> => {
+  const chained = storageWriteChain.then(write);
+  storageWriteChain = chained.then(() => {}, () => {});
+  return chained;
+};
+
+/**
+ * Save the BYOK API key (encrypted on desktop, obfuscated on web). An empty
+ * key clears the entry rather than storing an empty string. Resolves to false
+ * when nothing could be written (storage unavailable, quota exceeded), so
+ * callers can tell the user instead of silently losing the key.
+ */
+const performSaveByokKey = async (key: string): Promise<boolean> => {
   if (!key) {
-    await clearByokKey();
-    return;
+    return await performClearByokKey();
   }
 
   try {
@@ -205,12 +229,27 @@ export const saveByokKey = async (key: string): Promise<void> => {
         BYOK_KEY_STORAGE_ITEM,
         JSON.stringify({ version: 2, value: obfuscate(key) })
       );
-      return;
+      return true;
     }
 
     localStorage.setItem(BYOK_KEY_STORAGE_ITEM, JSON.stringify(secret));
+    return true;
   } catch (error) {
     console.error('Unable to store the BYOK API key:', error);
+    return false;
+  }
+};
+
+export const saveByokKey = (key: string): Promise<boolean> =>
+  enqueueStorageWrite(() => performSaveByokKey(key));
+
+/** The raw stored entry, or null when the storage cannot be read. */
+const getStoredSerializedKey = (): ?string => {
+  try {
+    return localStorage.getItem(BYOK_KEY_STORAGE_ITEM);
+  } catch (error) {
+    console.error('Unable to read the BYOK API key storage:', error);
+    return null;
   }
 };
 
@@ -228,9 +267,15 @@ export const loadByokKey = async (): Promise<?string> => {
     if (!parsedKey || typeof parsedKey !== 'object') return null;
 
     // Version 1 (Phase 1): the key was stored in plaintext under `key`.
-    // Migrate it to the current format right away, replacing the plaintext.
+    // Migrate it to the current format right away, replacing the plaintext —
+    // but only if the entry has not been replaced by a newer save while the
+    // (async) read was in flight, or the migration would resurrect the old
+    // key over the new one.
     if (typeof parsedKey.key === 'string' && parsedKey.key) {
-      await saveByokKey(parsedKey.key);
+      await enqueueStorageWrite(async () => {
+        if (getStoredSerializedKey() !== serializedKey) return;
+        await performSaveByokKey(parsedKey.key);
+      });
       return parsedKey.key;
     }
 
@@ -239,9 +284,12 @@ export const loadByokKey = async (): Promise<?string> => {
 
     // A version 2 (obfuscated) entry read on the desktop app is re-saved as
     // version 3, so the OS encryption replaces the weaker form; on the web
-    // build this branch is never taken.
+    // build this branch is never taken. Same concurrency guard as above.
     if (parsedKey.version === 2 && ipcRenderer) {
-      await saveByokKey(key);
+      await enqueueStorageWrite(async () => {
+        if (getStoredSerializedKey() !== serializedKey) return;
+        await performSaveByokKey(key);
+      });
     }
 
     return key;
@@ -252,15 +300,21 @@ export const loadByokKey = async (): Promise<?string> => {
 };
 
 /**
- * Remove the stored BYOK API key, if any.
+ * Remove the stored BYOK API key, if any. Resolves to false when the entry
+ * could not be removed.
  */
-export const clearByokKey = async (): Promise<void> => {
+const performClearByokKey = async (): Promise<boolean> => {
   try {
     localStorage.removeItem(BYOK_KEY_STORAGE_ITEM);
+    return true;
   } catch (error) {
     console.error('Unable to remove the BYOK API key:', error);
+    return false;
   }
 };
+
+export const clearByokKey = (): Promise<boolean> =>
+  enqueueStorageWrite(performClearByokKey);
 
 /**
  * True when the key can be stored encrypted by the platform: the desktop app
@@ -279,13 +333,33 @@ export const isByokKeyEncryptionAvailable = async (): Promise<boolean> => {
 };
 
 /**
- * The status of the key storage, displayed in the BYOK settings tab: the key
- * is either OS-encrypted (desktop) or merely obfuscated (web).
+ * The status of the key storage, displayed in the BYOK settings tab. Reports
+ * the format the key is *actually* stored in — not just what the platform
+ * could do — so a desktop fallback to obfuscation (a failed encryption) is
+ * shown for what it is.
  */
 export const getByokKeyStorageInfo = async (): Promise<{|
   encrypted: boolean,
   obfuscated: boolean,
 |}> => {
-  const encrypted = await isByokKeyEncryptionAvailable();
-  return { encrypted, obfuscated: !encrypted };
+  let storedVersion = 0;
+  const serializedKey = getStoredSerializedKey();
+  if (serializedKey) {
+    try {
+      const parsedKey = JSON.parse(serializedKey);
+      if (
+        parsedKey &&
+        typeof parsedKey === 'object' &&
+        typeof parsedKey.version === 'number'
+      ) {
+        storedVersion = parsedKey.version;
+      }
+    } catch (error) {
+      // A corrupted entry counts as "nothing readable stored".
+    }
+  }
+
+  const canEncrypt = await isByokKeyEncryptionAvailable();
+  const encrypted = canEncrypt && storedVersion === 3;
+  return { encrypted, obfuscated: storedVersion > 0 && !encrypted };
 };

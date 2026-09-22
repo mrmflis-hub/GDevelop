@@ -4,6 +4,7 @@ import * as React from 'react';
 
 import PreferencesContext from '../../MainFrame/Preferences/PreferencesContext';
 import Checkbox from '../../UI/Checkbox';
+import FlatButton from '../../UI/FlatButton';
 import { Column, Line } from '../../UI/Grid';
 import { ColumnStackLayout, LineStackLayout } from '../../UI/Layout';
 import CompactSelectField from '../../UI/CompactSelectField';
@@ -12,6 +13,7 @@ import SelectOption from '../../UI/SelectOption';
 import Text from '../../UI/Text';
 import TextField from '../../UI/TextField';
 import {
+  BYOK_IMAGE_SUPPORTS,
   BYOK_REASONING_EFFORTS,
   DEFAULT_BYOK_SETTINGS,
   MAX_CONTEXT_WINDOW_TOKENS,
@@ -22,12 +24,22 @@ import {
   type ByokSettings,
 } from './ByokTypes';
 import {
+  clearByokKey,
   getByokKeyStorageInfo,
   loadByokKey,
   saveByokKey,
 } from './ByokKeyStorage';
-import { classifyByokError } from './ByokErrors';
-import { getCachedByokModels, refreshByokModels } from './ByokModelsCache';
+import {
+  classifyByokError,
+  getGenericMessageForKind,
+  type ByokError,
+  type ByokErrorKind,
+} from './ByokErrors';
+import {
+  clearByokModels,
+  getCachedByokModels,
+  refreshByokModels,
+} from './ByokModelsCache';
 import { sendByokChatCompletionWithRetries } from './ByokClient';
 
 /**
@@ -68,10 +80,96 @@ export const getKeyStorageStatusText = (
   );
 };
 
+/**
+ * The translated message for each error kind — the display-side counterpart
+ * of ByokErrors' English fallbacks (which stay machine-readable and are also
+ * what non-React consumers log).
+ */
+const renderGenericMessageForKind = (kind: ByokErrorKind): React.Node => {
+  if (kind === 'authentication') {
+    return (
+      <Trans>
+        Your API key was rejected by the endpoint (401). Check the API key in
+        the BYOK settings.
+      </Trans>
+    );
+  }
+  if (kind === 'forbidden') {
+    return (
+      <Trans>
+        The endpoint refused the request (403). Your API key may not have access
+        to this model or resource.
+      </Trans>
+    );
+  }
+  if (kind === 'not-found') {
+    return (
+      <Trans>
+        The endpoint was not found (404). Check the base URL in the BYOK
+        settings: for most providers it should end with /v1.
+      </Trans>
+    );
+  }
+  if (kind === 'rate-limit') {
+    return (
+      <Trans>
+        The endpoint is rate-limiting the requests (429). Wait a moment and try
+        again.
+      </Trans>
+    );
+  }
+  if (kind === 'invalid-request') {
+    return (
+      <Trans>
+        The endpoint rejected the request as invalid (400). The request
+        contained something it does not accept.
+      </Trans>
+    );
+  }
+  if (kind === 'server') {
+    return <Trans>The endpoint had an internal error. Try again later.</Trans>;
+  }
+  if (kind === 'network') {
+    return (
+      <Trans>
+        Could not reach the endpoint (network error). Check the base URL and
+        your internet connection.
+      </Trans>
+    );
+  }
+  if (kind === 'timeout') {
+    return (
+      <Trans>
+        The endpoint took too long to answer (timeout). Try again in a moment.
+      </Trans>
+    );
+  }
+  if (kind === 'cancelled') {
+    return <Trans>The request was cancelled.</Trans>;
+  }
+  return <Trans>The endpoint returned an unexpected error.</Trans>;
+};
+
+/**
+ * What to show the user for a BYOK error: the endpoint-provided message when
+ * it sent one (dynamic text, escaped by React), the translated generic
+ * message otherwise.
+ */
+export const renderByokErrorMessage = (error: ByokError): React.Node => {
+  if (error.message !== getGenericMessageForKind(error.kind)) {
+    return error.message;
+  }
+  return renderGenericMessageForKind(error.kind);
+};
+
 // The value of the "Type manually…" option of the models dropdown: chosen,
 // it swaps the dropdown back to the free-text field (for servers without a
 // /models endpoint).
 const MANUAL_MODEL_OPTION_VALUE = '__manual__';
+
+// A test ping should fail fast, not hold the button for up to 3 × 120s of
+// retries (the conversation timeout does not fit a settings dialog).
+const CONNECTION_TEST_TIMEOUT_MS = 15000;
 
 type ConnectionTestResult = {| ok: boolean, message: React.Node |};
 
@@ -114,22 +212,51 @@ const ByokSettingsTab = (): React.Node => {
     connectionTestResult,
     setConnectionTestResult,
   ] = React.useState<?ConnectionTestResult>(null);
+  // The raw text of a context-window field being edited: while set, the
+  // field shows it as-is and the clamped value is persisted only on blur —
+  // clamping on every keystroke would rewrite what the user is typing.
+  const [
+    defaultContextWindowDraft,
+    setDefaultContextWindowDraft,
+  ] = React.useState<string | null>(null);
+  const [
+    perModelContextWindowDraft,
+    setPerModelContextWindowDraft,
+  ] = React.useState<{| modelId: string, text: string |} | null>(null);
 
+  // Async handlers must not update state once the dialog is closed.
+  const isSubscribedRef = React.useRef<boolean>(true);
   React.useEffect(() => {
-    let isSubscribed = true;
-    (async () => {
-      const storageInfo = await getByokKeyStorageInfo();
-      const storedKey = await loadByokKey();
-      if (!isSubscribed) return;
-
-      setIsKeyStorageEncrypted(storageInfo.encrypted);
-      setHasStoredKey(!!storedKey);
-    })();
+    isSubscribedRef.current = true;
     return () => {
-      isSubscribed = false;
+      isSubscribedRef.current = false;
     };
   }, []);
 
+  // The save triggered by leaving the key field is async (an IPC round-trip
+  // on desktop): buttons reading the key await this promise first, so
+  // "type a key then immediately click Fetch models" cannot race the save
+  // and read the previous (or empty) stored key.
+  const pendingKeySaveRef = React.useRef<?Promise<boolean>>(null);
+
+  const refreshKeyStorageState = React.useCallback(async () => {
+    const storageInfo = await getByokKeyStorageInfo();
+    const storedKey = await loadByokKey();
+    if (!isSubscribedRef.current) return;
+
+    setIsKeyStorageEncrypted(storageInfo.encrypted);
+    setHasStoredKey(!!storedKey);
+  }, []);
+
+  React.useEffect(
+    () => {
+      refreshKeyStorageState();
+    },
+    [refreshKeyStorageState]
+  );
+
+  // Partial rather than the $Shape the preferences files use: this Flow
+  // version flags $Shape as deprecated.
   const updateByokSetting = (partial: Partial<ByokSettings>) => {
     setMultipleValues({ byok: { ...byokSettings, ...partial } });
   };
@@ -140,19 +267,29 @@ const ByokSettingsTab = (): React.Node => {
   const visibleModels = fetchedModels || cachedModels;
 
   const showModelsDropdown =
-    !!visibleModels && visibleModels.length > 0 && !isManuallyTypingModel;
+    !!visibleModels &&
+    visibleModels.length > 0 &&
+    !isManuallyTypingModel &&
+    // A model the list does not contain (typed manually earlier) would
+    // render as a blank dropdown selection: keep the free-text field until
+    // the model appears in the list.
+    (!byokSettings.modelName ||
+      visibleModels.some(model => model.id === byokSettings.modelName));
 
   const onFetchModels = async () => {
     setIsFetchingModels(true);
     setModelsFetchMessage(null);
     setIsManuallyTypingModel(false);
 
-    const storedApiKey = (await loadByokKey()) || '';
     try {
+      if (pendingKeySaveRef.current) await pendingKeySaveRef.current;
+      const storedApiKey = (await loadByokKey()) || '';
       const models = await refreshByokModels({
         baseUrl: byokSettings.endpointUrl,
         apiKey: storedApiKey,
       });
+      if (!isSubscribedRef.current) return;
+
       setFetchedModels(models);
       if (models.length === 0) {
         setModelsFetchMessage(
@@ -163,10 +300,12 @@ const ByokSettingsTab = (): React.Node => {
         );
       }
     } catch (rawError) {
+      if (!isSubscribedRef.current) return;
+
       const byokError = classifyByokError(rawError);
-      setModelsFetchMessage(byokError.message);
+      setModelsFetchMessage(renderByokErrorMessage(byokError));
     } finally {
-      setIsFetchingModels(false);
+      if (isSubscribedRef.current) setIsFetchingModels(false);
     }
   };
 
@@ -174,21 +313,25 @@ const ByokSettingsTab = (): React.Node => {
     setIsTestingConnection(true);
     setConnectionTestResult(null);
 
-    const storedApiKey = (await loadByokKey()) || '';
     const options: ByokChatCompletionOptions = {
       model: byokSettings.modelName,
       messages: [{ role: 'user', content: 'ping' }],
+      timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
     };
     if (byokSettings.reasoningEffort !== 'default') {
       options.reasoningEffort = byokSettings.reasoningEffort;
     }
 
     try {
+      if (pendingKeySaveRef.current) await pendingKeySaveRef.current;
+      const storedApiKey = (await loadByokKey()) || '';
       await sendByokChatCompletionWithRetries({
         baseUrl: byokSettings.endpointUrl,
         apiKey: storedApiKey,
         options,
       });
+      if (!isSubscribedRef.current) return;
+
       setConnectionTestResult({
         ok: true,
         message: (
@@ -198,10 +341,38 @@ const ByokSettingsTab = (): React.Node => {
         ),
       });
     } catch (rawError) {
+      if (!isSubscribedRef.current) return;
+
       const byokError = classifyByokError(rawError);
-      setConnectionTestResult({ ok: false, message: byokError.message });
+      setConnectionTestResult({
+        ok: false,
+        message: renderByokErrorMessage(byokError),
+      });
     } finally {
-      setIsTestingConnection(false);
+      if (isSubscribedRef.current) setIsTestingConnection(false);
+    }
+  };
+
+  const saveApiKey = () => {
+    const savePromise = saveByokKey(apiKey).then(saved => {
+      // The cached model list belongs to the previous key: forget it so the
+      // next fetch reflects what the new key can access.
+      if (apiKey) clearByokModels();
+      return saved;
+    });
+    pendingKeySaveRef.current = savePromise;
+    savePromise.then(() => {
+      if (isSubscribedRef.current) refreshKeyStorageState();
+    });
+  };
+
+  const onClearStoredKey = async () => {
+    setApiKey('');
+    await clearByokKey();
+    clearByokModels();
+    if (isSubscribedRef.current) {
+      setIsKeyStorageEncrypted(false);
+      setHasStoredKey(false);
     }
   };
 
@@ -246,11 +417,38 @@ const ByokSettingsTab = (): React.Node => {
     });
   };
 
+  const commitDefaultContextWindowDraft = () => {
+    if (defaultContextWindowDraft === null) return;
+
+    updateByokSetting({
+      contextWindowTokens: clampContextWindow(
+        parseInt(defaultContextWindowDraft, 10)
+      ),
+    });
+    setDefaultContextWindowDraft(null);
+  };
+
+  const commitPerModelContextWindowDraft = () => {
+    if (!perModelContextWindowDraft) return;
+
+    updateContextWindowForModel(
+      perModelContextWindowDraft.modelId,
+      perModelContextWindowDraft.text
+    );
+    setPerModelContextWindowDraft(null);
+  };
+
   const reasoningEffortLabels = {
     default: t`Default`,
     low: t`Low`,
     medium: t`Medium`,
     high: t`High`,
+  };
+
+  const imageSupportLabels = {
+    auto: t`Auto-detect`,
+    yes: t`Yes`,
+    no: t`No`,
   };
 
   const keyStorageStatusText = getKeyStorageStatusText(
@@ -292,12 +490,11 @@ const ByokSettingsTab = (): React.Node => {
       <TextField
         name="byok-api-key"
         type="password"
+        autoComplete="off"
         floatingLabelText={<Trans>API key</Trans>}
         value={apiKey}
         onChange={(event, text) => setApiKey(text)}
-        onBlur={() => {
-          saveByokKey(apiKey).then(() => setHasStoredKey(!!apiKey));
-        }}
+        onBlur={saveApiKey}
       />
       {keyStorageStatusText && (
         <Line noMargin>
@@ -306,6 +503,15 @@ const ByokSettingsTab = (): React.Node => {
           </Text>
         </Line>
       )}
+      <Line noMargin>
+        {/* The discoverable way to remove a stored key (emptying the field
+            and blurring also clears it, but nothing says so). */}
+        <FlatButton
+          label={<Trans>Clear the stored key</Trans>}
+          onClick={onClearStoredKey}
+          disabled={!hasStoredKey}
+        />
+      </Line>
       <LineStackLayout noMargin alignItems="center">
         <Column noMargin expand>
           <Text noMargin>
@@ -384,12 +590,21 @@ const ByokSettingsTab = (): React.Node => {
             <TextField
               name={`byok-context-window-${contextWindowRow.modelId}`}
               type="number"
-              value={contextWindowRow.tokens}
+              value={
+                perModelContextWindowDraft &&
+                perModelContextWindowDraft.modelId === contextWindowRow.modelId
+                  ? perModelContextWindowDraft.text
+                  : String(contextWindowRow.tokens)
+              }
               min={MIN_CONTEXT_WINDOW_TOKENS}
               max={MAX_CONTEXT_WINDOW_TOKENS}
               onChange={(event, value) =>
-                updateContextWindowForModel(contextWindowRow.modelId, value)
+                setPerModelContextWindowDraft({
+                  modelId: contextWindowRow.modelId,
+                  text: value,
+                })
               }
+              onBlur={commitPerModelContextWindowDraft}
             />
           </Column>
         </LineStackLayout>
@@ -404,14 +619,15 @@ const ByokSettingsTab = (): React.Node => {
           <TextField
             name="byok-context-window"
             type="number"
-            value={byokSettings.contextWindowTokens}
+            value={
+              defaultContextWindowDraft !== null
+                ? defaultContextWindowDraft
+                : String(byokSettings.contextWindowTokens)
+            }
             min={MIN_CONTEXT_WINDOW_TOKENS}
             max={MAX_CONTEXT_WINDOW_TOKENS}
-            onChange={(event, value) =>
-              updateByokSetting({
-                contextWindowTokens: clampContextWindow(parseInt(value, 10)),
-              })
-            }
+            onChange={(event, value) => setDefaultContextWindowDraft(value)}
+            onBlur={commitDefaultContextWindowDraft}
           />
         </Column>
       </LineStackLayout>
@@ -438,6 +654,34 @@ const ByokSettingsTab = (): React.Node => {
                 key={effort}
                 value={effort}
                 label={reasoningEffortLabels[effort]}
+              />
+            ))}
+          </CompactSelectField>
+        </Column>
+      </LineStackLayout>
+      <LineStackLayout noMargin alignItems="center">
+        <Column noMargin expand>
+          <Text noMargin>
+            <Trans>Image support</Trans>
+          </Text>
+        </Column>
+        <Column noMargin expand>
+          <CompactSelectField
+            value={byokSettings.imageSupport}
+            onChange={(value: string) => {
+              const support = BYOK_IMAGE_SUPPORTS.find(
+                candidate => candidate === value
+              );
+              if (!support) return;
+
+              updateByokSetting({ imageSupport: support });
+            }}
+          >
+            {BYOK_IMAGE_SUPPORTS.map(support => (
+              <SelectOption
+                key={support}
+                value={support}
+                label={imageSupportLabels[support]}
               />
             ))}
           </CompactSelectField>

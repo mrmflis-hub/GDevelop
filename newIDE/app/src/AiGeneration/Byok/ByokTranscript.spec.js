@@ -1,9 +1,12 @@
 // @flow
 import {
   assistantMessageToByokMessage,
+  byokMessagesForTranscriptItem,
   byokResponseToAssistantMessage,
   byokToolResultToFunctionCallOutput,
   createByokAiRequestShell,
+  getByokSurvivingImageIds,
+  getByokTranscriptImageIds,
   userRequestToByokMessage,
 } from './ByokTranscript';
 import { getFunctionCallsToProcess } from '../AiRequestUtils';
@@ -179,6 +182,69 @@ describe('assistantMessageToByokMessage', () => {
     ).toEqual({ role: 'user', content: 'Make a game' });
   });
 
+  it('replays a multi-part user message as one user message with the texts joined', () => {
+    const multiPartUserMessage: AiRequestMessage = {
+      type: 'message',
+      status: 'completed',
+      role: 'user',
+      content: [
+        { type: 'user_request', status: 'completed', text: 'Add a player' },
+        { type: 'user_request', status: 'completed', text: 'and an enemy' },
+      ],
+    };
+
+    expect(assistantMessageToByokMessage(multiPartUserMessage)).toEqual({
+      role: 'user',
+      content: 'Add a player and an enemy',
+    });
+  });
+
+  it('drops reasoning items when replaying an assistant message', () => {
+    // Hosted transcripts carry `reasoning` items: sending them back as
+    // content would be a real (and costly) bug.
+    const assistantMessageWithReasoning: AiRequestMessage = {
+      type: 'message',
+      status: 'completed',
+      role: 'assistant',
+      content: [
+        // $FlowFixMe[incompatible-type] - reasoning items only exist on
+        // hosted transcripts.
+        {
+          type: 'reasoning',
+          status: 'completed',
+          summary: { text: 'Thinking...', type: 'summary_text' },
+        },
+        {
+          type: 'output_text',
+          status: 'completed',
+          text: 'The answer.',
+          annotations: [],
+        },
+        {
+          type: 'function_call',
+          status: 'completed',
+          call_id: 'call-1',
+          name: 'describe_instances',
+          arguments: '{}',
+        },
+      ],
+    };
+
+    const byokMessage = assistantMessageToByokMessage(
+      assistantMessageWithReasoning
+    );
+    expect(byokMessage.role).toBe('assistant');
+    if (byokMessage.role !== 'assistant') throw new Error('Expected assistant');
+    expect(byokMessage.content).toBe('The answer.');
+    expect(byokMessage.tool_calls).toEqual([
+      {
+        id: 'call-1',
+        type: 'function',
+        function: { name: 'describe_instances', arguments: '{}' },
+      },
+    ]);
+  });
+
   it('uses null content for an assistant message with only tool calls', () => {
     const assistantMessage = byokResponseToAssistantMessage(
       makeResponse(null, [makeToolCall('call-1', 'create_scene')])
@@ -277,6 +343,11 @@ describe('createByokAiRequestShell', () => {
     expect(aiRequest.createdAt).toBe(aiRequest.updatedAt);
   });
 
+  it('sets the orchestrator mode, which the chat UI gates its plan component on', () => {
+    const aiRequest = createByokAiRequestShell('byok-chat-1');
+    expect(aiRequest.mode).toBe('orchestrator');
+  });
+
   it('accepts initial context stats', () => {
     const aiRequest = createByokAiRequestShell('byok-chat-1', {
       totalTokens: 150,
@@ -286,5 +357,163 @@ describe('createByokAiRequestShell', () => {
       totalTokens: 150,
       usedPercentage: 0.02,
     });
+  });
+});
+
+describe('byokMessagesForTranscriptItem (image replay)', () => {
+  const makeImageOutput = (callId: string, imageIds: Array<string>): any => ({
+    type: 'function_call_output',
+    call_id: callId,
+    output: JSON.stringify({ success: true, image: imageIds[0] }),
+    images: imageIds,
+  });
+
+  const makeImageRegistry = () => {
+    const images = {
+      'img-1': {
+        id: 'img-1',
+        dataUrl: 'data:image/jpeg;base64,AAA',
+        width: 1024,
+        height: 1024,
+        approxTokens: 1337,
+      },
+      'img-2': {
+        id: 'img-2',
+        dataUrl: 'data:image/jpeg;base64,BBB',
+        width: 1024,
+        height: 1024,
+        approxTokens: 1337,
+      },
+    };
+    const imagesById: any = images;
+    return (id: string) => imagesById[id] || null;
+  };
+
+  it('emits a tool message followed by a user message with the image part', () => {
+    const messages: Array<any> = byokMessagesForTranscriptItem(
+      makeImageOutput('call-1', ['img-1']),
+      {
+        imagesEnabled: true,
+        survivingImageIds: new Set(['img-1']),
+        getImage: makeImageRegistry(),
+      }
+    );
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0].role).toBe('tool');
+    expect(messages[1].role).toBe('user');
+    expect(Array.isArray(messages[1].content)).toBe(true);
+    expect(messages[1].content[0]).toEqual({
+      type: 'text',
+      text: '[tool result image]',
+    });
+    expect(messages[1].content[1]).toEqual({
+      type: 'image_url',
+      image_url: { url: 'data:image/jpeg;base64,AAA' },
+    });
+  });
+
+  it('replaces evicted images by a placeholder line and sends no part', () => {
+    const messages: Array<any> = byokMessagesForTranscriptItem(
+      makeImageOutput('call-1', ['img-1']),
+      {
+        imagesEnabled: true,
+        survivingImageIds: new Set(),
+        getImage: makeImageRegistry(),
+      }
+    );
+
+    expect(messages).toHaveLength(2);
+    expect(messages[1].content).toHaveLength(1);
+    expect(messages[1].content[0].text).toContain('removed to save context');
+  });
+
+  it('sends no image part when images are disabled', () => {
+    const messages: Array<any> = byokMessagesForTranscriptItem(
+      makeImageOutput('call-1', ['img-1']),
+      {
+        imagesEnabled: false,
+        survivingImageIds: new Set(['img-1']),
+        getImage: makeImageRegistry(),
+      }
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe('tool');
+  });
+
+  it('keeps plain tool outputs as a single tool message', () => {
+    const messages = byokMessagesForTranscriptItem(
+      {
+        type: 'function_call_output',
+        call_id: 'call-2',
+        output: '{"success":true}',
+      },
+      {
+        imagesEnabled: true,
+        survivingImageIds: new Set(),
+        getImage: makeImageRegistry(),
+      }
+    );
+    expect(messages).toHaveLength(1);
+  });
+});
+
+describe('getByokTranscriptImageIds / getByokSurvivingImageIds', () => {
+  const makeTranscript = (): Array<any> => [
+    {
+      type: 'message',
+      status: 'completed',
+      role: 'user',
+      content: [{ type: 'user_request', status: 'completed', text: 'hi' }],
+    },
+    makeImageOutputForSurviving('call-1', ['img-1']),
+    makeImageOutputForSurviving('call-2', ['img-2', 'img-3']),
+  ];
+
+  const makeImageOutputForSurviving = (
+    callId: string,
+    imageIds: Array<string>
+  ): any => ({
+    type: 'function_call_output',
+    call_id: callId,
+    output: '{}',
+    images: imageIds,
+  });
+
+  it('collects the image ids in order', () => {
+    expect(getByokTranscriptImageIds(makeTranscript())).toEqual([
+      'img-1',
+      'img-2',
+      'img-3',
+    ]);
+  });
+
+  it('keeps the latest N and none when N is zero (the slice(-0) trap)', () => {
+    const transcript = makeTranscript();
+    expect(getByokSurvivingImageIds(transcript, 2)).toEqual(
+      new Set(['img-2', 'img-3'])
+    );
+    expect(getByokSurvivingImageIds(transcript, 1)).toEqual(new Set(['img-3']));
+    expect(getByokSurvivingImageIds(transcript, 0)).toEqual(new Set());
+  });
+});
+
+describe('byokToolResultToFunctionCallOutput with images', () => {
+  it('stores the image references on the output item', () => {
+    const message: any = byokToolResultToFunctionCallOutput(
+      'call-1',
+      '{"success":true}',
+      ['img-9']
+    );
+    expect(message.images).toEqual(['img-9']);
+  });
+
+  it('omits the field when there is no image', () => {
+    const message: any = byokToolResultToFunctionCallOutput(
+      'call-1',
+      '{"success":true}'
+    );
+    expect(message.images).toBeUndefined();
   });
 });

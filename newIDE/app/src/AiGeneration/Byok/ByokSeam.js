@@ -105,7 +105,10 @@ type ByokExecutorDeps = {|
   // `processEditorFunctionCalls`, injected so this module stays testable
   // without the whole editor registry.
   processEditorFunctionCalls: (options: any) => Promise<any>,
-  project: any,
+  // The project, read **at call time** (not captured at construction): a
+  // chat that creates its project mid-flight (initialize_project) must run
+  // its next batch against the new project, before React re-renders.
+  getProject: () => any,
   i18n: any,
   editorCallbacks: any,
   // Needed by the v1 whitelist: `add_behavior` and `create_or_replace_object`
@@ -174,7 +177,7 @@ export const createByokEditorFunctionCallExecutor = (
 
     try {
       return await deps.processEditorFunctionCalls({
-        project: deps.project,
+        project: deps.getProject(),
         i18n: deps.i18n,
         editorCallbacks: deps.editorCallbacks,
         toolOptions: null,
@@ -204,9 +207,15 @@ export const createByokEditorFunctionCallExecutor = (
           accumulatedInstancesScenes.add(changes.scene);
         },
         onObjectsModifiedOutsideEditor: changes => {
+          // OR-accumulate like the server-backed flow: once any call of the
+          // batch used a new object type in a scene, the flush must say so
+          // even if a later call reported false for the same scene.
+          const alreadyAccumulatedNewObjectType = accumulatedObjectsChanges.get(
+            changes.scene
+          );
           accumulatedObjectsChanges.set(
             changes.scene,
-            changes.isNewObjectTypeUsed
+            !!alreadyAccumulatedNewObjectType || !!changes.isNewObjectTypeUsed
           );
         },
         onObjectGroupsModifiedOutsideEditor: changes => {

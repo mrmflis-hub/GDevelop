@@ -5,6 +5,7 @@
 import * as React from 'react';
 import { act } from 'react-dom/test-utils';
 import TestRenderer from 'react-test-renderer';
+import CompactSelectField from '../../UI/CompactSelectField';
 import TextField from '../../UI/TextField';
 import RaisedButton from '../../UI/RaisedButton';
 import SelectOption from '../../UI/SelectOption';
@@ -19,6 +20,7 @@ import {
 jest.mock('./ByokModelsCache', () => ({
   getCachedByokModels: (jest.fn(): any).mockReturnValue(null),
   refreshByokModels: jest.fn(),
+  clearByokModels: jest.fn(),
 }));
 jest.mock('./ByokClient', () => ({
   sendByokChatCompletionWithRetries: jest.fn(),
@@ -54,6 +56,7 @@ const ByokSettingsTabModule = require('./ByokSettingsTab');
 const ByokSettingsTab = ByokSettingsTabModule.default;
 const clampContextWindow = ByokSettingsTabModule.clampContextWindow;
 const getKeyStorageStatusText = ByokSettingsTabModule.getKeyStorageStatusText;
+const renderByokErrorMessage = ByokSettingsTabModule.renderByokErrorMessage;
 const ByokModelsCache = require('./ByokModelsCache');
 const ByokClientModule = require('./ByokClient');
 const ByokKeyStorageModule = require('./ByokKeyStorage');
@@ -160,7 +163,7 @@ describe('ByokSettingsTab', () => {
     });
   });
 
-  it('clamps the context window entered in the field to 512', () => {
+  it('clamps the context window entered in the field to 512 on blur', () => {
     const { component, setMultipleValues } = renderTab();
     const contextWindowField = findFieldByName(
       component,
@@ -170,13 +173,19 @@ describe('ByokSettingsTab', () => {
     act(() => {
       contextWindowField.props.onChange({}, '10');
     });
+    // While typing, nothing is persisted: clamping on every keystroke would
+    // rewrite what the user is typing.
+    expect(setMultipleValues).not.toHaveBeenCalled();
+    act(() => {
+      contextWindowField.props.onBlur({ currentTarget: { value: '10' } });
+    });
 
     expect(setMultipleValues).toHaveBeenCalledWith({
       byok: { ...DEFAULT_BYOK_SETTINGS, contextWindowTokens: 512 },
     });
   });
 
-  it('clamps the context window entered in the field to 1,000,000', () => {
+  it('clamps the context window entered in the field to 1,000,000 on blur', () => {
     const { component, setMultipleValues } = renderTab();
     const contextWindowField = findFieldByName(
       component,
@@ -186,10 +195,56 @@ describe('ByokSettingsTab', () => {
     act(() => {
       contextWindowField.props.onChange({}, '99999999');
     });
+    act(() => {
+      contextWindowField.props.onBlur({ currentTarget: { value: '99999999' } });
+    });
 
     expect(setMultipleValues).toHaveBeenCalledWith({
       byok: { ...DEFAULT_BYOK_SETTINGS, contextWindowTokens: 1000000 },
     });
+  });
+
+  it('lets a multi-keystroke value be typed without clamping corruption', () => {
+    const { component, setMultipleValues } = renderTab();
+    const contextWindowField = findFieldByName(
+      component,
+      'byok-context-window'
+    );
+
+    // Typing "16384" character by character: previously the per-keystroke
+    // clamp rewrote the field and the final value ended up garbled.
+    for (const partialValue of ['1', '16', '163', '1638', '16384']) {
+      act(() => {
+        contextWindowField.props.onChange({}, partialValue);
+      });
+    }
+    act(() => {
+      contextWindowField.props.onBlur({ currentTarget: { value: '16384' } });
+    });
+
+    const calls = setMultipleValues.mock.calls;
+    expect(calls[calls.length - 1][0].byok.contextWindowTokens).toBe(16384);
+  });
+
+  it('clears the stored key from the Clear button', async () => {
+    const { saveByokKey } = require('./ByokKeyStorage');
+    await saveByokKey('sk-to-be-cleared');
+
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+    // The Clear button is the only FlatButton of the tab.
+    const FlatButton = require('../../UI/FlatButton').default;
+    const flatButtons = component.root.findAllByType(FlatButton);
+    expect(flatButtons).toHaveLength(1);
+
+    await act(async () => {
+      flatButtons[0].props.onClick({});
+      await flushPromises();
+    });
+
+    expect(localStorage.getItem('gd-byok-key')).toBe(null);
   });
 
   it('keeps the API key out of every setMultipleValues call', () => {
@@ -458,6 +513,9 @@ describe('ByokSettingsTab: per-model context windows', () => {
     act(() => {
       contextWindowField.props.onChange({}, '4096');
     });
+    act(() => {
+      contextWindowField.props.onBlur({ currentTarget: { value: '4096' } });
+    });
 
     expect(setMultipleValues).toHaveBeenCalledWith({
       byok: {
@@ -483,7 +541,9 @@ describe('ByokSettingsTab: per-model context windows', () => {
       component,
       'byok-context-window-my-model'
     );
-    expect(contextWindowField.props.value).toBe(32768);
+    // The field shows the raw (string) value while idle; the clamped number
+    // is persisted on blur only.
+    expect(contextWindowField.props.value).toBe('32768');
     expect(JSON.stringify(component.toJSON())).toContain('auto (server)');
   });
 
@@ -503,6 +563,9 @@ describe('ByokSettingsTab: per-model context windows', () => {
     );
     act(() => {
       contextWindowField.props.onChange({}, '16384');
+    });
+    act(() => {
+      contextWindowField.props.onBlur({ currentTarget: { value: '16384' } });
     });
 
     expect(setMultipleValues).toHaveBeenCalledWith({
@@ -555,6 +618,9 @@ describe('ByokSettingsTab: test connection', () => {
     const call = mockSendForTestConnection.mock.calls[0][0];
     expect(call.options.model).toBe('');
     expect(call.options.messages).toEqual([{ role: 'user', content: 'ping' }]);
+    // A test ping must fail fast, not hold the button for minutes of
+    // conversation-grade retries.
+    expect(call.options.timeoutMs).toBe(15000);
     expect(JSON.stringify(component.toJSON())).toContain(
       'Connection successful!'
     );
@@ -654,5 +720,93 @@ describe('getKeyStorageStatusText', () => {
     expect(renderNodeToText(getKeyStorageStatusText(false, true))).toContain(
       'light obfuscation'
     );
+  });
+});
+
+describe('renderByokErrorMessage', () => {
+  const renderNodeToText = (node: any) =>
+    JSON.stringify(
+      TestRenderer.create(
+        <I18nProvider i18n={i18n} language="en">
+          {node}
+        </I18nProvider>
+      ).toJSON()
+    );
+
+  it('passes an endpoint-provided message through as dynamic text', () => {
+    expect(
+      renderByokErrorMessage({
+        kind: 'authentication',
+        message: 'This key is from the wrong workspace.',
+        status: 401,
+        retryAfterMs: null,
+      })
+    ).toBe('This key is from the wrong workspace.');
+  });
+
+  it('renders the translated generic message when the endpoint sent none', () => {
+    const node = renderByokErrorMessage({
+      kind: 'not-found',
+      message:
+        'The endpoint was not found (404). Check the base URL in the BYOK settings: for most providers it should end with /v1.',
+      status: 404,
+      retryAfterMs: null,
+    });
+    // A <Trans> node (a React element, not a raw string): same English
+    // text, but extractable by the Lingui pipeline.
+    expect(typeof node).toBe('object');
+    expect(renderNodeToText(node)).toContain(
+      'The endpoint was not found (404)'
+    );
+  });
+});
+
+describe('ByokSettingsTab image support selector (Phase 6)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockGetCachedByokModels.mockReset();
+    mockGetCachedByokModels.mockReturnValue(null);
+    mockGetByokKeyStorageInfo.mockReset();
+    mockGetByokKeyStorageInfo.mockResolvedValue({
+      encrypted: false,
+      obfuscated: true,
+    });
+  });
+
+  it('renders the Image support selector with the auto-detect default', async () => {
+    const { component } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+    const selectFields = component.root.findAllByType(CompactSelectField);
+    const imageSupportField = selectFields.find(
+      field => field.props.value === 'auto'
+    );
+    if (!imageSupportField) {
+      throw new Error('The image support selector was not rendered');
+    }
+    expect(JSON.stringify(component.toJSON())).toContain('Image support');
+  });
+
+  it('persists a changed image support through setMultipleValues', async () => {
+    const { component, setMultipleValues } = renderTab();
+    await act(async () => {
+      await flushPromises();
+    });
+    const selectFields = component.root.findAllByType(CompactSelectField);
+    const imageSupportField = selectFields.find(
+      field => field.props.value === 'auto'
+    );
+    if (!imageSupportField) {
+      throw new Error('The image support selector was not rendered');
+    }
+
+    await act(async () => {
+      imageSupportField.props.onChange('no');
+    });
+
+    expect(setMultipleValues).toHaveBeenCalledWith({
+      byok: expect.objectContaining({ imageSupport: 'no' }),
+    });
   });
 });

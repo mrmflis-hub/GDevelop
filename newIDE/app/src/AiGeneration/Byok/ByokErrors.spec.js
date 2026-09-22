@@ -1,6 +1,7 @@
 // @flow
 import {
   classifyByokError,
+  describeInvalidRequestForImageContent,
   describeInvalidRequestForReasoningEffort,
   isRetryableByokError,
   makeByokError,
@@ -97,6 +98,73 @@ describe('classifyByokError', () => {
     expect(classifyByokError(new Error('boom')).kind).toBe('unknown');
   });
 
+  it('keeps the original message as a detail for a local (non-endpoint) failure', () => {
+    const error = classifyByokError(new Error('boom'));
+    expect(error.kind).toBe('unknown');
+    expect(error.message).toContain('unexpected error');
+    expect(error.message).toContain('(boom)');
+  });
+
+  it('classifies a cancelled request (axios Cancel) as cancelled', () => {
+    const error = classifyByokError({
+      __CANCEL__: true,
+      message: 'The request was cancelled by the user.',
+    });
+    expect(error.kind).toBe('cancelled');
+    expect(error.status).toBe(null);
+    expect(isRetryableByokError(error)).toBe(false);
+  });
+
+  it('reads the Retry-After delay (seconds) of a 429 response', () => {
+    const error = classifyByokError(
+      makeAxiosError({
+        response: {
+          status: 429,
+          data: { error: { message: 'Too many requests' } },
+          headers: { 'retry-after': '30' },
+        },
+      })
+    );
+    expect(error.kind).toBe('rate-limit');
+    expect(error.retryAfterMs).toBe(30000);
+  });
+
+  it('reads the Retry-After delay (HTTP-date) of a 429 response', () => {
+    const twoMinutesFromNow = new Date(Date.now() + 120000).toUTCString();
+    const error = classifyByokError(
+      makeAxiosError({
+        response: {
+          status: 429,
+          data: {},
+          headers: { 'retry-after': twoMinutesFromNow },
+        },
+      })
+    );
+    expect(error.retryAfterMs).toBeGreaterThanOrEqual(110000);
+    expect(error.retryAfterMs).toBeLessThanOrEqual(120000);
+  });
+
+  it('reports a null Retry-After when the header is absent or garbage', () => {
+    expect(
+      classifyByokError(
+        makeAxiosError({
+          response: { status: 429, data: {}, headers: {} },
+        })
+      ).retryAfterMs
+    ).toBe(null);
+    expect(
+      classifyByokError(
+        makeAxiosError({
+          response: {
+            status: 429,
+            data: {},
+            headers: { 'retry-after': 'soon' },
+          },
+        })
+      ).retryAfterMs
+    ).toBe(null);
+  });
+
   it('uses the message of the OpenAI-style error body when present', () => {
     const error = classifyByokError(
       makeAxiosResponseError(401, {
@@ -139,6 +207,7 @@ describe('isRetryableByokError', () => {
     ['server', true],
     ['network', true],
     ['timeout', true],
+    ['cancelled', false],
     ['unknown', false],
   ];
 
@@ -217,6 +286,48 @@ describe('redactSecretFromByokError', () => {
       kind: 'network',
       message: 'failed to call [redacted]',
       status: null,
+      retryAfterMs: null,
     });
+  });
+});
+
+describe('describeInvalidRequestForImageContent', () => {
+  const makeInvalidRequestError = (message: string) =>
+    makeByokError('invalid-request', message, 400);
+
+  it('detects the rejections naming images', () => {
+    expect(
+      describeInvalidRequestForImageContent(
+        makeInvalidRequestError('This model does not support image content.')
+      )
+    ).toBe(true);
+    expect(
+      describeInvalidRequestForImageContent(
+        makeInvalidRequestError('Invalid content type: image_url.')
+      )
+    ).toBe(true);
+    expect(
+      describeInvalidRequestForImageContent(
+        makeInvalidRequestError('This endpoint is not multimodal.')
+      )
+    ).toBe(true);
+    expect(
+      describeInvalidRequestForImageContent(
+        makeInvalidRequestError('Vision input is not enabled for this model.')
+      )
+    ).toBe(true);
+  });
+
+  it('ignores other invalid requests and other kinds', () => {
+    expect(
+      describeInvalidRequestForImageContent(
+        makeInvalidRequestError('Unknown parameter: reasoning_effort')
+      )
+    ).toBe(false);
+    expect(
+      describeInvalidRequestForImageContent(
+        makeByokError('authentication', 'Bad image key', 401)
+      )
+    ).toBe(false);
   });
 });

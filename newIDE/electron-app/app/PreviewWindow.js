@@ -127,9 +127,14 @@ const closeAllPreviewWindows = () => {
   });
 };
 
+// The live registry of open preview windows, for the BYOK preview-capture
+// IPC (read-only access: entries are managed by open/close above).
+const getPreviewWindows = () => previewWindows;
+
 module.exports = {
   openPreviewWindow,
   closePreviewWindow,
   closePreviewWindowsForParent,
   closeAllPreviewWindows,
+  getPreviewWindows,
 };

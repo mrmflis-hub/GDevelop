@@ -2,8 +2,13 @@
 import {
   type AiRequest,
   type AiRequestContextStats,
+  type AiRequestFunctionCallOutput,
   type AiRequestMessage,
 } from '../../Utils/GDevelopServices/Generation';
+import {
+  type ByokUserContentItem,
+  type ByokImageInfo,
+} from './ByokImageContent';
 import {
   type ByokChatCompletionResponse,
   type ByokChatMessage,
@@ -18,13 +23,29 @@ import {
  * with an `output_text` / `function_call` content array, user messages with
  * a `user_request` content, and standalone `function_call_output` messages
  * for the tool results.
+ *
+ * Tool results may carry images (screenshot tools): the ids are stored on
+ * the output item and materialized at replay time as a following `user`
+ * message with `image_url` content parts — the OpenAI-compatible way to
+ * show a tool result image to the model.
  */
+
+/**
+ * A function_call_output that references images by id (the base type is
+ * inexact upstream, so this is a local extension of it).
+ */
+export type ByokFunctionCallOutputWithImages = AiRequestFunctionCallOutput & {
+  images?: Array<string>,
+};
 
 /**
  * Map a chat-completions response to one assistant transcript message. The
  * content array holds an `output_text` item when the model answered with
  * text (skipped when empty), and one `function_call` item per tool call
- * asked by the model.
+ * asked by the model. (The content items are the subset of
+ * `AiRequestAssistantMessage['content']` this mapper produces — the
+ * `reasoning` variant only exists on hosted transcripts. The array is
+ * typed any: Flow cannot prove the exact-variant compatibility.)
  */
 export const byokResponseToAssistantMessage = (
   response: ByokChatCompletionResponse
@@ -32,6 +53,8 @@ export const byokResponseToAssistantMessage = (
   const choice = response.choices[0];
   const message = choice ? choice.message : null;
 
+  // Array<any>: the pushed items are valid AiRequestAssistantMessage
+  // content, but Flow cannot prove the exact-variant compatibility.
   const content: Array<any> = [];
 
   const text =
@@ -68,16 +91,83 @@ export const byokResponseToAssistantMessage = (
 /**
  * Map a tool result (already serialized to a JSON string, like
  * `getFunctionCallOutputsFromEditorFunctionCallResults` does) to the
- * standalone transcript message that carries it.
+ * standalone transcript message that carries it — optionally referencing
+ * the images the result produced (see byokMessagesForTranscriptItem).
  */
 export const byokToolResultToFunctionCallOutput = (
   callId: string,
-  resultJsonString: string
-): AiRequestMessage => ({
-  type: 'function_call_output',
-  call_id: callId,
-  output: resultJsonString,
-});
+  resultJsonString: string,
+  images?: Array<string>
+): AiRequestMessage => {
+  // Built through any: the images extension is not on the upstream
+  // AiRequestFunctionCallOutput type (it is a BYOK-local field).
+  const output: any = {
+    type: 'function_call_output',
+    call_id: callId,
+    output: resultJsonString,
+  };
+  if (images && images.length > 0) output.images = images;
+  return output;
+};
+
+/**
+ * The image ids referenced by a transcript, in order — the basis of the
+ * latest-N eviction rule.
+ */
+export const getByokTranscriptImageIds = (
+  messages: Array<AiRequestMessage>
+): Array<string> => {
+  const imageIds: Array<string> = [];
+  for (const message of messages) {
+    if (message.type !== 'function_call_output') continue;
+    const images = (message: any).images;
+    if (!Array.isArray(images)) continue;
+    for (const imageId of images) {
+      if (typeof imageId === 'string') imageIds.push(imageId);
+    }
+  }
+  return imageIds;
+};
+
+/**
+ * The ids that survive eviction when only the latest `keepCount` images of
+ * a chat are re-sent (0 or less keeps none — `slice(-0)` would keep them
+ * all, the classic negative-zero trap).
+ */
+export const getByokSurvivingImageIds = (
+  messages: Array<AiRequestMessage>,
+  keepCount: number
+): Set<string> => {
+  if (keepCount <= 0) return new Set();
+  const imageIds = getByokTranscriptImageIds(messages);
+  return new Set(imageIds.slice(-keepCount));
+};
+
+/**
+ * The images of one output item that the replay should materialize, with a
+ * placeholder note for the evicted ones.
+ */
+const getByokImagePartsForOutput = (
+  images: Array<string>,
+  options: {|
+    imagesEnabled: boolean,
+    survivingImageIds: Set<string>,
+    getImage: (id: string) => ?ByokImageInfo,
+  |}
+): Array<ByokUserContentItem> => {
+  const parts: Array<ByokUserContentItem> = [];
+  for (const imageId of images) {
+    if (!options.imagesEnabled) continue;
+    if (!options.survivingImageIds.has(imageId)) continue;
+    const image = options.getImage(imageId);
+    if (!image) continue;
+    parts.push({
+      type: 'image_url',
+      image_url: { url: image.dataUrl },
+    });
+  }
+  return parts;
+};
 
 /**
  * Map the text typed by the user to the OpenAI message of the request body.
@@ -90,9 +180,69 @@ export const userRequestToByokMessage = (text: string): ByokChatMessage => ({
 });
 
 /**
- * Rebuild an OpenAI message out of an internal transcript item, to send the
- * whole conversation back to the endpoint at every turn (our transcript is
- * the single source of truth — no parallel OpenAI array is kept):
+ * Map one internal transcript item to the OpenAI messages of the request
+ * body. Tool outputs referencing images add a following `user` message
+ * carrying `[tool result image]` plus the surviving image parts (older
+ * images get a one-line placeholder, per the eviction rule) — with images
+ * disabled, no part is ever emitted.
+ */
+export const byokMessagesForTranscriptItem = (
+  aiRequestMessage: AiRequestMessage,
+  options?: {|
+    imagesEnabled?: boolean,
+    survivingImageIds?: Set<string>,
+    getImage?: (id: string) => ?ByokImageInfo,
+  |}
+): Array<ByokChatMessage> => {
+  const imagesEnabled = options ? options.imagesEnabled !== false : true;
+  const survivingImageIds =
+    options && options.survivingImageIds
+      ? options.survivingImageIds
+      : new Set(getByokTranscriptImageIds([aiRequestMessage]));
+  const getImage =
+    options && options.getImage ? options.getImage : (id: string) => null;
+
+  if (aiRequestMessage.type === 'function_call_output') {
+    const messages: Array<ByokChatMessage> = [
+      {
+        role: 'tool',
+        content: aiRequestMessage.output,
+        tool_call_id: aiRequestMessage.call_id,
+      },
+    ];
+    const images = (aiRequestMessage: any).images;
+    if (!images || !Array.isArray(images) || images.length === 0) {
+      return messages;
+    }
+
+    const parts = getByokImagePartsForOutput(images, {
+      imagesEnabled,
+      survivingImageIds,
+      getImage,
+    });
+    if (!imagesEnabled) return messages;
+
+    const noteLines: Array<string> = ['[tool result image]'];
+    for (const imageId of images) {
+      if (survivingImageIds.has(imageId)) continue;
+      noteLines.push(
+        `[screenshot ${imageId} removed to save context — call the capture tool again if needed]`
+      );
+    }
+    messages.push({
+      role: 'user',
+      content: [{ type: 'text', text: noteLines.join('\n') }, ...parts],
+    });
+    return messages;
+  }
+
+  return [assistantMessageToByokMessage(aiRequestMessage)];
+};
+
+/**
+ * Rebuild a single OpenAI message out of an internal transcript item
+ * (images are never materialized here — see byokMessagesForTranscriptItem
+ * for the image-aware replay):
  * - a user message becomes a `user` message;
  * - an assistant message becomes an `assistant` message, with its text
  *   and/or its tool calls;
@@ -137,20 +287,18 @@ export const assistantMessageToByokMessage = (
     });
   }
 
-  const byokMessage: ByokChatMessage = {
-    role: 'assistant',
-    content: text || null,
-  };
-  if (toolCalls.length > 0) {
-    (byokMessage: any).tool_calls = toolCalls;
+  if (toolCalls.length === 0) {
+    return { role: 'assistant', content: text || null };
   }
-  return byokMessage;
+  return { role: 'assistant', content: text || null, tool_calls: toolCalls };
 };
 
 /**
  * The minimal `AiRequest` a BYOK chat starts from: the same shape the chat
- * UI and `AiRequestUtils.js` consume, with an empty transcript. Phase 4's
- * store builds on this (ids prefixed `byok-`).
+ * UI and `AiRequestUtils.js` consume, with an empty transcript. The
+ * `orchestrator` mode is what the chat UI keys its plan component on (see
+ * ChatMessages.js) — without it, the plan tool's output renders as raw JSON.
+ * Phase 4's store builds on this (ids prefixed `byok-`).
  */
 export const createByokAiRequestShell = (
   id: string,
@@ -163,6 +311,7 @@ export const createByokAiRequestShell = (
     updatedAt: now,
     userId: '',
     status: 'working',
+    mode: 'orchestrator',
     error: null,
     output: [],
     contextStats: contextStats || null,

@@ -1,8 +1,10 @@
 // @flow
 import {
+  BYOK_IMAGE_SUPPORTS,
   DEFAULT_BYOK_SETTINGS,
   getByokSettings,
   isByokFullyConfigured,
+  isByokImageSupport,
   isByokReasoningEffort,
   type ByokSettings,
 } from './ByokTypes';
@@ -19,9 +21,31 @@ describe('DEFAULT_BYOK_SETTINGS', () => {
       endpointUrl: '',
       modelName: '',
       reasoningEffort: 'default',
+      imageSupport: 'auto',
       contextWindowTokens: 8192,
       contextWindowByModel: {},
     });
+  });
+});
+
+describe('ByokImageSupport', () => {
+  it('accepts the three documented values and rejects the others', () => {
+    for (const support of BYOK_IMAGE_SUPPORTS) {
+      expect(isByokImageSupport(support)).toBe(true);
+    }
+    expect(isByokImageSupport('maybe')).toBe(false);
+    expect(isByokImageSupport(null)).toBe(false);
+  });
+
+  it('is read back by getByokSettings, defaulting corrupted values', () => {
+    expect(
+      getByokSettings({ byok: ({ imageSupport: 'no' }: any) }).imageSupport
+    ).toBe('no');
+    expect(
+      getByokSettings({ byok: ({ imageSupport: 'sometimes' }: any) })
+        .imageSupport
+    ).toBe('auto');
+    expect(getByokSettings(({}: any)).imageSupport).toBe('auto');
   });
 });
 
@@ -37,6 +61,19 @@ describe('getByokSettings', () => {
   it('returns the defaults when the byok field is not an object (corrupted storage)', () => {
     expect(getByokSettings({ byok: ('not an object': any) })).toEqual(
       DEFAULT_BYOK_SETTINGS
+    );
+  });
+
+  it('returns a fresh copy of the defaults, never the shared constant', () => {
+    // A caller mutating what it got must not pollute the module default
+    // (which also seeds the preferences defaults).
+    const first = getByokSettings(({}: any));
+    first.contextWindowByModel['some-model'] = 1234;
+    first.endpointUrl = 'https://mutated.example.com/v1';
+
+    expect(getByokSettings(({}: any)).contextWindowByModel).toEqual({});
+    expect(getByokSettings(({}: any)).endpointUrl).toBe(
+      DEFAULT_BYOK_SETTINGS.endpointUrl
     );
   });
 

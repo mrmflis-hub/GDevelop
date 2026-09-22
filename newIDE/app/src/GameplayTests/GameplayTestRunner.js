@@ -866,6 +866,17 @@ type GameplayTestRunnerDependencies = {|
 
 let gameplayTestRunnerDependencies: GameplayTestRunnerDependencies | null = null;
 
+/**
+ * The preview launcher registered by the MainFrame, for the parts of the
+ * editor that need to launch previews outside of the React tree (the BYOK
+ * perception tools). Null until the MainFrame registered the dependencies.
+ */
+export const getProjectPreviewLauncher = (): ?PreviewLauncherInterface => {
+  return gameplayTestRunnerDependencies
+    ? gameplayTestRunnerDependencies.getPreviewLauncher()
+    : null;
+};
+
 export const registerGameplayTestRunnerDependencies = (
   dependencies: GameplayTestRunnerDependencies | null
 ): void => {

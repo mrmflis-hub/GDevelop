@@ -1,71 +1,193 @@
 // @flow
 import {
-  BYOK_V1_TOOL_NAMES,
+  BYOK_NO_PROJECT_TOOL_NAMES,
+  BYOK_TOOL_NAMES,
+  getByokAdvertisedToolNames,
+  getByokDispatchableToolNames,
   getByokToolSchemas,
+  getByokToolSchemasForNames,
   toOpenAiToolsFormat,
   validateByokToolSchemas,
 } from './ByokToolSchema';
-import { editorFunctions } from '../../EditorFunctions';
+import {
+  editorFunctions,
+  editorFunctionsWithoutProject,
+} from '../../EditorFunctions';
+
+const FULL_REGISTRY: any = {};
+for (const toolName of Object.keys(editorFunctions)) {
+  FULL_REGISTRY[toolName] = (editorFunctions: any)[toolName];
+}
+for (const toolName of Object.keys(editorFunctionsWithoutProject)) {
+  FULL_REGISTRY[toolName] = (editorFunctionsWithoutProject: any)[toolName];
+}
 
 describe('validateByokToolSchemas', () => {
   it('returns no problem: the whitelist and its schemas are in sync with the registry', () => {
     expect(validateByokToolSchemas()).toEqual([]);
   });
 
-  it('catches a whitelisted name that disappears from the registry', () => {
-    // The registry is the real one from EditorFunctions: simulate an
-    // upstream rename by checking the validator logic on a copy of the
-    // behavior (a missing entry must be reported).
-    const realNames = BYOK_V1_TOOL_NAMES.map(name => name);
-    for (const name of realNames) {
-      expect(editorFunctions[name]).not.toBeUndefined();
+  it('catches a whitelisted name that disappears from the registry (upstream rename)', () => {
+    const renamedRegistry = { ...FULL_REGISTRY };
+    delete renamedRegistry['create_scene'];
+
+    const problems = validateByokToolSchemas(renamedRegistry);
+    expect(problems).toEqual([
+      'Tool "create_scene" is not in the editorFunctions registry.',
+    ]);
+  });
+
+  it('catches an unknown property type, including inside array items', () => {
+    const schemaCopy = getByokToolSchemas().map(schema => ({ ...schema }));
+    const planSchema = schemaCopy.find(
+      schema => schema.name === 'create_or_update_plan'
+    );
+    if (!planSchema) throw new Error('plan schema not found');
+    planSchema.parameters = JSON.parse(JSON.stringify(planSchema.parameters));
+    planSchema.parameters.properties.tasks.items.properties.id.type = 'strng';
+
+    const problems = validateByokToolSchemas(FULL_REGISTRY, schemaCopy);
+    expect(problems).toEqual([
+      expect.stringContaining('unknown property type: strng'),
+    ]);
+    expect(problems[0]).toContain('tasks.items.id');
+  });
+
+  it('catches a schema without a description', () => {
+    const schemaCopy = getByokToolSchemas().map(schema => ({ ...schema }));
+    const describeSchema = schemaCopy.find(
+      schema => schema.name === 'describe_instances'
+    );
+    if (!describeSchema) throw new Error('describe_instances schema not found');
+    describeSchema.description = '';
+
+    const problems = validateByokToolSchemas(FULL_REGISTRY, schemaCopy);
+    expect(problems).toEqual(['Tool "describe_instances" has no description.']);
+  });
+
+  it('catches a whitelisted tool whose schema is missing', () => {
+    const schemaCopy = getByokToolSchemas().filter(
+      schema => schema.name !== 'add_behavior'
+    );
+
+    const problems = validateByokToolSchemas(FULL_REGISTRY, schemaCopy);
+    expect(problems).toContain(
+      'Whitelisted tool "add_behavior" has no schema.'
+    );
+    expect(problems).toContain(
+      'Some tools of the whitelist have no schema (or the opposite).'
+    );
+  });
+
+  it('enforces the tool-count cap on the default set', () => {
+    // The cap is the Phase 6 budget (22 Phase 5 tools + 9 Phase 6 tools,
+    // with headroom): every advertised schema is billed as input tokens on
+    // every turn, so the guard exists to force a conscious decision when
+    // the surface grows again.
+    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(32);
+    expect(BYOK_TOOL_NAMES.length).toBeGreaterThanOrEqual(30);
+    expect(validateByokToolSchemas()).toEqual([]);
+  });
+});
+
+describe('BYOK_TOOL_NAMES (the v4 whitelist)', () => {
+  it('contains the Phase 5 additions (parity surface + local event writing)', () => {
+    const phase5Additions = [
+      'put_3d_instances',
+      'inspect_object_properties_effects',
+      'change_object_properties_effects',
+      'inspect_behavior_properties',
+      'inspect_scene_properties_layers_effects',
+      'change_scene_properties_layers_effects_groups',
+      'inspect_project_properties_resources',
+      'change_project_properties_resources',
+      'read_events_source',
+      'add_scene_events',
+      'run_script',
+    ];
+    for (const toolName of phase5Additions) {
+      expect(BYOK_TOOL_NAMES).toContain(toolName);
+    }
+  });
+
+  it('contains the Phase 6 additions (perception + gameplay tests)', () => {
+    const phase6Additions = [
+      'capture_scene_screenshot',
+      'capture_preview_screenshot',
+      'start_preview',
+      'stop_preview',
+      'read_preview_logs',
+      'get_runtime_errors',
+      'inspect_runtime_state',
+      'run_gameplay_test',
+      'change_gameplay_tests',
+    ];
+    for (const toolName of phase6Additions) {
+      expect(BYOK_TOOL_NAMES).toContain(toolName);
+    }
+  });
+
+  it('keeps initialize_project in the no-project set only', () => {
+    expect(BYOK_TOOL_NAMES).not.toContain('initialize_project');
+    expect(BYOK_NO_PROJECT_TOOL_NAMES).toEqual(['initialize_project']);
+  });
+
+  it('does not expose the excluded tools (server stubs, legacy aliases, dupes)', () => {
+    const excludedTools = [
+      'run_edit_agent',
+      'run_explorer_agent',
+      'search_object_asset_store',
+      'search_resource_store',
+      'read_full_docs',
+      'search_docs',
+      'run_tests',
+      'report_fulfilment_problem',
+      'get_game_starter_summary',
+      // Legacy aliases (canonical names only in BYOK).
+      'inspect_object_properties',
+      'change_object_property',
+      'remove_behavior',
+      // Covered by create_or_replace_object.
+      'create_object',
+    ];
+    for (const excludedTool of excludedTools) {
+      expect(BYOK_TOOL_NAMES).not.toContain(excludedTool);
+      expect(BYOK_NO_PROJECT_TOOL_NAMES).not.toContain(excludedTool);
     }
   });
 });
 
-describe('BYOK_V1_TOOL_NAMES', () => {
-  it('is the documented Phase 2 whitelist', () => {
-    expect(BYOK_V1_TOOL_NAMES).toEqual([
-      'describe_instances',
-      'inspect_variables',
-      'read_scene_events',
-      'read_game_project_json',
-      'read_full_docs',
-      'search_docs',
-      'create_scene',
-      'create_or_replace_object',
-      'add_behavior',
-      'change_behavior_property',
-      'add_or_edit_variable',
-      'put_2d_instances',
-      'add_scene_events',
-      'create_or_update_plan',
+describe('advertisement and dispatchability', () => {
+  it('advertises initialize_project only while no project is open', () => {
+    const withProject = getByokAdvertisedToolNames({ hasOpenedProject: true });
+    const withoutProject = getByokAdvertisedToolNames({
+      hasOpenedProject: false,
+    });
+
+    expect(withProject).toEqual(BYOK_TOOL_NAMES);
+    expect(withoutProject).toEqual([
+      ...BYOK_TOOL_NAMES,
+      ...BYOK_NO_PROJECT_TOOL_NAMES,
     ]);
+    expect(withoutProject).toContain('initialize_project');
   });
 
-  it('does not expose the excluded tools (sub-agents, scripts, store, gameplay tests)', () => {
-    const excludedTools = [
-      'run_script',
-      'run_edit_agent',
-      'run_explorer_agent',
-      'generate_events',
-      'search_object_asset_store',
-      'search_resource_store',
-      'run_gameplay_test',
-      'change_gameplay_tests',
-      'run_tests',
-    ];
-    for (const excludedTool of excludedTools) {
-      expect(BYOK_V1_TOOL_NAMES).not.toContain(excludedTool);
-    }
+  it('dispatches the unadvertised generate_events alias too', () => {
+    const dispatchable = getByokDispatchableToolNames();
+    expect(dispatchable).toContain('generate_events');
+    expect(
+      getByokAdvertisedToolNames({ hasOpenedProject: true })
+    ).not.toContain('generate_events');
   });
 });
 
 describe('getByokToolSchemas', () => {
   const schemas = getByokToolSchemas();
 
-  it('has exactly one schema per whitelisted tool', () => {
-    expect(schemas.map(schema => schema.name)).toEqual(BYOK_V1_TOOL_NAMES);
+  it('has exactly one schema per whitelisted tool (default + no-project sets)', () => {
+    expect(schemas.map(schema => schema.name).sort()).toEqual(
+      [...BYOK_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES].sort()
+    );
   });
 
   it('gives every schema a name, a description and object parameters', () => {
@@ -88,6 +210,14 @@ describe('getByokToolSchemas', () => {
     }
   });
 
+  it('filters the schemas by the advertised names', () => {
+    const advertised = getByokAdvertisedToolNames({ hasOpenedProject: true });
+    const filtered = getByokToolSchemasForNames(advertised);
+    expect(filtered.map(schema => schema.name).sort()).toEqual(
+      advertised.slice().sort()
+    );
+  });
+
   it('requires exactly what create_scene extracts (spot check)', () => {
     const createSceneSchema = schemas.find(
       schema => schema.name === 'create_scene'
@@ -100,6 +230,197 @@ describe('getByokToolSchemas', () => {
     expect(Object.keys(createSceneSchema.parameters.properties).sort()).toEqual(
       ['background_color', 'include_ui_layer', 'is_first_scene', 'scene_name']
     );
+  });
+
+  it('requires exactly what run_script reads', () => {
+    const runScriptSchema = schemas.find(
+      schema => schema.name === 'run_script'
+    );
+    if (!runScriptSchema) throw new Error('run_script schema not found');
+
+    expect(runScriptSchema.parameters.required).toEqual(['js_code']);
+    expect(Object.keys(runScriptSchema.parameters.properties).sort()).toEqual([
+      'js_code',
+      'title',
+    ]);
+  });
+
+  it('requires exactly what initialize_project reads (template_slug is required upstream)', () => {
+    const initializeSchema = schemas.find(
+      schema => schema.name === 'initialize_project'
+    );
+    if (!initializeSchema) throw new Error('initialize_project not found');
+
+    expect(initializeSchema.parameters.required).toEqual([
+      'project_name',
+      'template_slug',
+    ]);
+    expect(Object.keys(initializeSchema.parameters.properties).sort()).toEqual([
+      'also_read_existing_events',
+      'project_name',
+      'template_slug',
+    ]);
+  });
+
+  it('pins the add_scene_events batch contract the writer implements', () => {
+    const addEventsSchema = schemas.find(
+      schema => schema.name === 'add_scene_events'
+    );
+    if (!addEventsSchema) throw new Error('add_scene_events not found');
+
+    expect(addEventsSchema.parameters.required).toEqual([
+      'scene_name',
+      'event_batches',
+    ]);
+    const batchProperties =
+      addEventsSchema.parameters.properties.event_batches.items.properties;
+    expect(Object.keys(batchProperties).sort()).toEqual([
+      'event_script',
+      'expected_event_source',
+      'placement_expected_parent_event_id',
+      'placement_relation',
+      'placement_target_event_id',
+    ]);
+    expect(batchProperties.placement_relation.enum).toEqual([
+      'insert_at_end',
+      'insert_and_replace_event',
+      'replace_entire_event_and_sub_events',
+      'replace_event_but_keep_existing_sub_events',
+      'insert_before_event',
+      'insert_after_event',
+      'insert_as_sub_event',
+      'delete_event',
+    ]);
+  });
+
+  it('pins the run_gameplay_test contract (approval distinguishes persist vs probe)', () => {
+    const runTestSchema = schemas.find(
+      schema => schema.name === 'run_gameplay_test'
+    );
+    if (!runTestSchema) throw new Error('run_gameplay_test not found');
+
+    expect(runTestSchema.parameters.required).toEqual(['scope', 'test_name']);
+    const properties = runTestSchema.parameters.properties;
+    expect(Object.keys(properties).sort()).toEqual([
+      'description',
+      'persist',
+      'scope',
+      'screenshots',
+      'source',
+      'test_name',
+      'timeout_ms',
+    ]);
+    expect(properties.screenshots.enum).toEqual(['on-failure', 'off']);
+  });
+
+  it('pins the put_2d_instances property set (16 properties, highest-risk schema)', () => {
+    const put2dSchema = schemas.find(
+      schema => schema.name === 'put_2d_instances'
+    );
+    if (!put2dSchema) throw new Error('put_2d_instances schema not found');
+
+    expect(put2dSchema.parameters.required).toEqual([
+      'scene_name',
+      'layer_name',
+      'brush_kind',
+    ]);
+    expect(Object.keys(put2dSchema.parameters.properties).sort()).toEqual(
+      [
+        'brush_end_position',
+        'brush_kind',
+        'brush_position',
+        'brush_size',
+        'column_count',
+        'existing_instance_ids',
+        'instances_hidden',
+        'instances_opacity',
+        'instances_rotation',
+        'instances_size',
+        'instances_z_order',
+        'new_instances_count',
+        'object_name',
+        'row_count',
+        'scene_name',
+        'layer_name',
+      ].sort()
+    );
+    // The description must not promise a default the implementation does
+    // not have: omitting brush_position fails every placement brush.
+    expect(
+      put2dSchema.parameters.properties.brush_position.description
+    ).not.toContain('scene center when omitted');
+    expect(
+      put2dSchema.parameters.properties.brush_position.description
+    ).toContain('Required when creating instances');
+  });
+
+  it('pins the create_or_replace_object property set (11 properties)', () => {
+    const createObjectSchema = schemas.find(
+      schema => schema.name === 'create_or_replace_object'
+    );
+    if (!createObjectSchema) {
+      throw new Error('create_or_replace_object not found');
+    }
+
+    expect(createObjectSchema.parameters.required).toEqual([
+      'scene_name',
+      'object_name',
+    ]);
+    expect(
+      Object.keys(createObjectSchema.parameters.properties).sort()
+    ).toEqual([
+      'asset_id',
+      'description',
+      'duplicated_object_name',
+      'duplicated_object_scene',
+      'object_name',
+      'object_type',
+      'replace_existing_object',
+      'scene_name',
+      'search_terms',
+      'target_object_scope',
+      'two_dimensional_view_kind',
+    ]);
+  });
+
+  it('pins the add_or_edit_variable nested operation keys', () => {
+    const variablesSchema = schemas.find(
+      schema => schema.name === 'add_or_edit_variable'
+    );
+    if (!variablesSchema) throw new Error('add_or_edit_variable not found');
+
+    const operationItems =
+      variablesSchema.parameters.properties.variables.items;
+    expect(Object.keys(operationItems.properties).sort()).toEqual([
+      'delete_this_variable',
+      'value',
+      'variable_name_or_path',
+      'variable_type',
+    ]);
+  });
+
+  it('pins the plan task contract the orchestrator parses', () => {
+    const planSchema = schemas.find(
+      schema => schema.name === 'create_or_update_plan'
+    );
+    if (!planSchema) throw new Error('plan schema not found');
+
+    expect(planSchema.parameters.required).toEqual(['tasks']);
+    const taskProperties =
+      planSchema.parameters.properties.tasks.items.properties;
+    expect(Object.keys(taskProperties).sort()).toEqual([
+      'depends_on',
+      'description',
+      'id',
+      'status',
+      'title',
+    ]);
+    expect(taskProperties.status.enum).toEqual([
+      'pending',
+      'in_progress',
+      'done',
+      'voided',
+    ]);
   });
 });
 

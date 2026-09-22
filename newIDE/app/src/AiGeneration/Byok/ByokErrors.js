@@ -15,34 +15,40 @@ export type ByokErrorKind =
   | 'server' // 5xx
   | 'network' // the request never got a response
   | 'timeout'
+  | 'cancelled' // aborted locally (e.g. the user pressed Stop)
   | 'unknown';
 
 /**
  * Every failure surfaced by the BYOK modules, ready to be shown to the user
  * as-is. Note that the API key must never end up in `message` — see
- * `redactSecretFromMessage`.
+ * `redactSecretFromMessage`. `retryAfterMs` carries the endpoint's
+ * `Retry-After` hint (when it sent one) so the retry policy can respect it.
  */
 export type ByokError = {|
   kind: ByokErrorKind,
   message: string,
   status: ?number,
+  retryAfterMs: ?number,
 |};
 
 export const makeByokError = (
   kind: ByokErrorKind,
   message: string,
-  status: ?number
+  status: ?number,
+  retryAfterMs: ?number = null
 ): ByokError => ({
   kind,
   message,
   status,
+  retryAfterMs,
 });
 
 /**
  * The human-readable fallback for each kind, used when the server did not
- * provide a readable message of its own.
+ * provide a readable message of its own. Exported so display code can tell a
+ * generic fallback apart from a server-provided (dynamic) message.
  */
-const getGenericMessageForKind = (kind: ByokErrorKind): string => {
+export const getGenericMessageForKind = (kind: ByokErrorKind): string => {
   if (kind === 'authentication') {
     return 'Your API key was rejected by the endpoint (401). Check the API key in the BYOK settings.';
   }
@@ -104,6 +110,32 @@ const getKindForStatus = (status: number): ?ByokErrorKind => {
 };
 
 /**
+ * Read the `Retry-After` header of a 429 response (delay in seconds, or an
+ * HTTP-date), as milliseconds from now. Returns null when the header is
+ * absent or unparseable. The headers come from the axios error: untrusted
+ * wire data.
+ */
+const getRetryAfterMsFromHeaders = (headers: any): ?number => {
+  if (!headers || typeof headers !== 'object') return null;
+
+  const rawRetryAfter = headers['retry-after'];
+  if (typeof rawRetryAfter !== 'string' && typeof rawRetryAfter !== 'number') {
+    return null;
+  }
+
+  const retryAfterSeconds = parseInt(String(rawRetryAfter), 10);
+  if (Number.isFinite(retryAfterSeconds)) {
+    return retryAfterSeconds * 1000;
+  }
+
+  // An HTTP-date ("Tue, 11 Nov 2026 08:00:00 GMT"): the wait is the distance
+  // from now. NaN (unparseable) resolves to null below.
+  const httpDateMs = Date.parse(String(rawRetryAfter));
+  if (Number.isNaN(httpDateMs)) return null;
+  return Math.max(0, httpDateMs - Date.now());
+};
+
+/**
  * Remove a secret (typically the API key) from an error message, so that no
  * thrown or displayed string can ever carry it. A safety net used by the
  * client when it builds its errors: the key travels in headers only, but the
@@ -128,6 +160,7 @@ export const redactSecretFromByokError = (
   kind: error.kind,
   message: redactSecretFromMessage(error.message, secret),
   status: error.status,
+  retryAfterMs: error.retryAfterMs,
 });
 
 /**
@@ -136,6 +169,12 @@ export const redactSecretFromByokError = (
  * always safe to call this on whatever a piece of code threw.
  */
 export const classifyByokError = (error: any): ByokError => {
+  // A request aborted locally (axios Cancel): not an endpoint failure, and
+  // never retried — the caller decides to stop.
+  if (error && error.__CANCEL__ === true) {
+    return makeByokError('cancelled', 'The request was cancelled.', null);
+  }
+
   // Already classified (e.g. a ByokError re-thrown through a retry helper).
   if (
     error &&
@@ -154,22 +193,30 @@ export const classifyByokError = (error: any): ByokError => {
     const kind = getKindForStatus(status) || 'unknown';
     const serverMessage = extractOpenAiErrorMessage(error.response.data);
     const message = serverMessage || getGenericMessageForKind(kind);
-    return makeByokError(kind, message, status);
+    const retryAfterMs =
+      kind === 'rate-limit'
+        ? getRetryAfterMsFromHeaders(error.response.headers)
+        : null;
+    return makeByokError(kind, message, status, retryAfterMs);
   }
 
   // The request was made but never got a response.
+  if (error && error.request && error.code === 'ECONNABORTED') {
+    return makeByokError('timeout', getGenericMessageForKind('timeout'), null);
+  }
   if (error && error.request) {
-    if (error.code === 'ECONNABORTED') {
-      return makeByokError(
-        'timeout',
-        getGenericMessageForKind('timeout'),
-        null
-      );
-    }
     return makeByokError('network', getGenericMessageForKind('network'), null);
   }
 
-  return makeByokError('unknown', getGenericMessageForKind('unknown'), null);
+  // Anything else is a local/unclassified failure: keep the original message
+  // as a detail (it never carries the key — see the redaction safety net).
+  const originalDetail =
+    error instanceof Error && error.message ? ` (${error.message})` : '';
+  return makeByokError(
+    'unknown',
+    `${getGenericMessageForKind('unknown')}${originalDetail}`,
+    null
+  );
 };
 
 /**
@@ -197,4 +244,21 @@ export const describeInvalidRequestForReasoningEffort = (
 ): boolean => {
   if (error.kind !== 'invalid-request') return false;
   return error.message.toLowerCase().includes('reasoning_effort');
+};
+
+/**
+ * True when the endpoint rejected the request specifically because of its
+ * image content (a text-only model asked for vision): the caller can then
+ * degrade to a text-only retry instead of failing the whole chat.
+ */
+export const describeInvalidRequestForImageContent = (
+  error: ByokError
+): boolean => {
+  if (error.kind !== 'invalid-request') return false;
+  const message = error.message.toLowerCase();
+  if (message.includes('image') || message.includes('image_url')) return true;
+  if (message.includes('multimodal') || message.includes('vision')) {
+    return true;
+  }
+  return message.includes('content') && message.includes('type');
 };

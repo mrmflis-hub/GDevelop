@@ -7,6 +7,22 @@
 export type ByokReasoningEffort = 'default' | 'low' | 'medium' | 'high';
 
 /**
+ * Whether the endpoint sees images: 'auto' sends them and degrades to
+ * text-only on a rejection, 'yes' always sends them, 'no' never does (the
+ * perception tools then return textual descriptions only).
+ */
+export type ByokImageSupport = 'auto' | 'yes' | 'no';
+
+export const BYOK_IMAGE_SUPPORTS: Array<ByokImageSupport> = [
+  'auto',
+  'yes',
+  'no',
+];
+
+export const isByokImageSupport = (value: mixed): boolean =>
+  BYOK_IMAGE_SUPPORTS.some(support => support === value);
+
+/**
  * The BYOK settings of the user. Note that the API key is intentionally not
  * part of this type: it never enters the preferences blob, it is stored by
  * `ByokKeyStorage` instead.
@@ -20,6 +36,7 @@ export type ByokSettings = {|
   endpointUrl: string,
   modelName: string,
   reasoningEffort: ByokReasoningEffort,
+  imageSupport: ByokImageSupport,
   contextWindowTokens: number,
   contextWindowByModel: { [string]: number },
 |};
@@ -39,6 +56,7 @@ export const DEFAULT_BYOK_SETTINGS: ByokSettings = {
   endpointUrl: '',
   modelName: '',
   reasoningEffort: 'default',
+  imageSupport: 'auto',
   contextWindowTokens: 8192,
   contextWindowByModel: {},
 };
@@ -68,13 +86,24 @@ export type ByokToolCall = {|
 |};
 
 /**
+ * One content part of a multi-part user message (the OpenAI-compatible
+ * vision format): text, or an image referenced by data URL. Re-exported
+ * from ByokImageContent, which owns the image pipeline.
+ */
+export type ByokUserContentItem =
+  | {| type: 'text', text: string |}
+  | {| type: 'image_url', image_url: {| url: string |} |};
+
+/**
  * A message of the OpenAI chat-completions API. This is the contract with
  * the user's endpoint: the internal GDevelop transcript (`AiRequestMessage`)
- * is translated to/from these in `ByokTranscript.js`.
+ * is translated to/from these in `ByokTranscript.js`. A user message
+ * carries either plain text or an array of content parts (strings pass
+ * through unchanged for back-compat).
  */
 export type ByokChatMessage =
   | {| role: 'system', content: string |}
-  | {| role: 'user', content: string |}
+  | {| role: 'user', content: string | Array<ByokUserContentItem> |}
   | {|
       role: 'assistant',
       content: string | null,
@@ -113,6 +142,17 @@ export type ByokUsage = {|
 |};
 
 /**
+ * A cancellation handle for an in-flight request: `token` is the (opaque)
+ * axios cancel token passed with the request, `cancel` aborts it. Created by
+ * `createByokCancellation` in `ByokClient.js` so this module stays free of
+ * the axios import.
+ */
+export type ByokCancellation = {|
+  token: Object,
+  cancel: () => void,
+|};
+
+/**
  * The options of a chat-completions request. `reasoningEffort` is included in
  * the request body only when set (a `'default'` effort from the settings
  * means "do not send the parameter at all").
@@ -123,6 +163,7 @@ export type ByokChatCompletionOptions = {|
   tools?: Array<Object>,
   reasoningEffort?: 'low' | 'medium' | 'high',
   timeoutMs?: number,
+  cancellation?: ByokCancellation,
 |};
 
 /**
@@ -182,6 +223,16 @@ const getContextWindowByModelOrDefault = (
 };
 
 /**
+ * A fresh copy of the default settings — `DEFAULT_BYOK_SETTINGS` itself is a
+ * shared module constant (it seeds the preferences defaults), so callers that
+ * may mutate what they receive must get a copy, never the constant.
+ */
+const makeDefaultByokSettings = (): ByokSettings => ({
+  ...DEFAULT_BYOK_SETTINGS,
+  contextWindowByModel: {},
+});
+
+/**
  * Read the BYOK settings from the preferences values, without ever crashing
  * on missing, partial or corrupted settings (they are read back from
  * localStorage, so they must be treated as untrusted data). Fields are merged
@@ -193,8 +244,8 @@ export const getByokSettings = (values: {
   ...
 }): ByokSettings => {
   const byok = values.byok;
-  if (!byok) return DEFAULT_BYOK_SETTINGS;
-  if (typeof byok !== 'object') return DEFAULT_BYOK_SETTINGS;
+  if (!byok) return makeDefaultByokSettings();
+  if (typeof byok !== 'object') return makeDefaultByokSettings();
 
   return {
     enabled: getBooleanOrDefault(byok.enabled, DEFAULT_BYOK_SETTINGS.enabled),
@@ -209,6 +260,9 @@ export const getByokSettings = (values: {
     reasoningEffort: isByokReasoningEffort(byok.reasoningEffort)
       ? byok.reasoningEffort
       : DEFAULT_BYOK_SETTINGS.reasoningEffort,
+    imageSupport: isByokImageSupport(byok.imageSupport)
+      ? byok.imageSupport
+      : DEFAULT_BYOK_SETTINGS.imageSupport,
     contextWindowTokens: getNumberOrDefault(
       byok.contextWindowTokens,
       DEFAULT_BYOK_SETTINGS.contextWindowTokens

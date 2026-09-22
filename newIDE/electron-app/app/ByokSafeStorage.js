@@ -8,7 +8,8 @@ const isByokEncryptionAvailable = () => {
   try {
     return safeStorage.isEncryptionAvailable();
   } catch (error) {
-    // Some Linux builds have no keyring backend; Windows (DPAPI) always has one.
+    // Some Linux builds have no keyring backend; Windows (DPAPI)
+    // always has one.
     return false;
   }
 };
