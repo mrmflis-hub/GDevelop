@@ -1538,4 +1538,388 @@ describe('ByokOrchestrator: images (Phase 6)', () => {
       ][0].options.messages;
     expect(countImageParts(finalMessages)).toBe(0);
   });
+
+  // ---- Phase 9: watchdog, compaction, routing, snapshot refresh ----
+
+  describe('Phase 9: the stall watchdog', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('posts exactly one in-chat notice per silent window during a hung tool run', async () => {
+      let releaseExecutor: ?() => void = null;
+      const hungExecutor = mockFn(
+        jest.fn(
+          () =>
+            new Promise(resolve => {
+              releaseExecutor = () =>
+                resolve({
+                  results: [
+                    {
+                      status: 'finished',
+                      call_id: 'call-1',
+                      success: true,
+                      output: { message: 'done' },
+                    },
+                  ],
+                  createdSceneNames: [],
+                  createdProject: null,
+                });
+            })
+        )
+      );
+      mockSendByokChatCompletion
+        .mockResolvedValueOnce(
+          makeResponse({
+            toolCalls: [
+              makeToolCall('call-1', 'create_scene', '{"scene_name":"X"}'),
+            ],
+          })
+        )
+        .mockResolvedValueOnce(makeResponse({ text: 'Recovered.' }));
+      const { orchestrator, aiRequest } = makeOrchestrator({
+        executeFunctionCalls: hungExecutor,
+      });
+
+      const runPromise = orchestrator.startNewChat('Do something');
+      // The response arrived, the (hung) tool run started: a gap. One
+      // window of silence → one notice; a second window → one more.
+      await flushMicrotasks();
+      jest.advanceTimersByTime(90000);
+      jest.advanceTimersByTime(90000);
+      await flushMicrotasks();
+      const stallNotices = (aiRequest.output || []).filter(
+        (message: any) =>
+          message.type === 'byok_notice' && message.noticeKind === 'stall'
+      );
+      expect(stallNotices).toHaveLength(2);
+      expect(((stallNotices[0]: any): any).text).toContain('90s');
+
+      if (releaseExecutor) releaseExecutor();
+      await flushMicrotasks();
+      await runPromise;
+      expect(aiRequest.status).toBe('ready');
+    });
+
+    it('never fires when the toggle is off', async () => {
+      const liveSettings = {
+        ...DEFAULT_BYOK_SETTINGS,
+        modelName: 'test-model',
+        stallWatchdogEnabled: false,
+        stallWindowSeconds: 90,
+      };
+      mockSendByokChatCompletion
+        .mockResolvedValueOnce(
+          makeResponse({
+            toolCalls: [
+              makeToolCall('call-1', 'create_scene', '{"scene_name":"X"}'),
+            ],
+          })
+        )
+        .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+      const { orchestrator, aiRequest } = makeOrchestrator({
+        executeFunctionCalls: makeFakeExecutor(),
+        getSettings: () => liveSettings,
+      });
+
+      const runPromise = orchestrator.startNewChat('Do something');
+      await flushMicrotasks();
+      jest.advanceTimersByTime(600000);
+      await flushMicrotasks();
+      expect(
+        (aiRequest.output || []).filter(
+          (message: any) => message.type === 'byok_notice'
+        )
+      ).toHaveLength(0);
+
+      await flushMicrotasks();
+      await runPromise;
+      expect(aiRequest.status).toBe('ready');
+    });
+  });
+
+  describe('Phase 9: context compaction', () => {
+    it('compacts at 0.75 of the window before the model call and marks the transcript', async () => {
+      const liveSettings = {
+        ...DEFAULT_BYOK_SETTINGS,
+        modelName: 'test-model',
+        contextWindowTokens: 1000,
+      };
+      // Response #1: the compaction summarizer (fast profile). Response
+      // #2: the main call, which must receive the compacted transcript.
+      mockSendByokChatCompletion
+        .mockResolvedValueOnce(
+          makeResponse({ text: 'The user asked to build a game.' })
+        )
+        .mockResolvedValueOnce(makeResponse({ text: 'Continuing.' }));
+
+      const transcript: Array<any> = [];
+      for (let index = 0; index < 14; index++) {
+        transcript.push({
+          type: 'message',
+          status: 'completed',
+          role: 'user',
+          content: [
+            {
+              type: 'user_request',
+              status: 'completed',
+              text: `old request ${index}`,
+            },
+          ],
+        });
+        transcript.push({
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_text',
+              status: 'completed',
+              text: `old answer ${index}`,
+              annotations: [],
+            },
+          ],
+        });
+      }
+      const { orchestrator, aiRequest } = makeOrchestrator({
+        getSettings: () => liveSettings,
+      });
+      aiRequest.contextStats = { totalTokens: 900, usedPercentage: 0.8 };
+      aiRequest.output = ((transcript: any): any);
+
+      await orchestrator.sendUserMessage('Keep going');
+
+      expect(aiRequest.status).toBe('ready');
+      const notices = (aiRequest.output || []).filter(
+        (message: any) =>
+          message.type === 'byok_notice' &&
+          message.noticeKind === 'context-summarized'
+      );
+      expect(notices).toHaveLength(1);
+      // The summarizer ran (call #1) and the main call (#2) got a shorter
+      // transcript: the old region is gone, the summary text present.
+      expect(mockSendByokChatCompletion).toHaveBeenCalledTimes(2);
+      const mainMessages =
+        mockSendByokChatCompletion.mock.calls[1][0].options.messages;
+      const serialized = JSON.stringify(mainMessages);
+      expect(serialized).not.toContain('old request 3');
+      expect(serialized).toContain('The user asked to build a game.');
+    });
+
+    it('does not compact below the threshold', async () => {
+      const liveSettings = {
+        ...DEFAULT_BYOK_SETTINGS,
+        modelName: 'test-model',
+      };
+      mockSendByokChatCompletion.mockResolvedValueOnce(
+        makeResponse({ text: 'Done.' })
+      );
+      const { orchestrator, aiRequest } = makeOrchestrator({
+        getSettings: () => liveSettings,
+      });
+      aiRequest.contextStats = { totalTokens: 100, usedPercentage: 0.4 };
+      aiRequest.output = [
+        {
+          type: 'message',
+          status: 'completed',
+          role: 'user',
+          content: [{ type: 'user_request', status: 'completed', text: 'hi' }],
+        },
+      ];
+
+      await orchestrator.sendUserMessage('Keep going');
+      expect(
+        (aiRequest.output || []).filter(
+          (message: any) => message.type === 'byok_notice'
+        )
+      ).toHaveLength(0);
+    });
+  });
+
+  describe('Phase 9: the per-round snapshot refresh', () => {
+    it('re-reads the snapshot after a round that edited the project', async () => {
+      const editingExecutor = mockFn(
+        jest.fn(async (functionCalls: Array<any>) => ({
+          results: functionCalls.map((functionCall: any) => ({
+            status: 'finished',
+            call_id: functionCall.call_id,
+            success: true,
+            output: { message: 'edited' },
+            didModifyProject: true,
+          })),
+          createdSceneNames: [],
+          createdProject: null,
+        }))
+      );
+      const getProjectUserContent = mockFn(
+        jest.fn(async () => '{"scenes":["fresh"]}')
+      );
+      mockSendByokChatCompletion
+        .mockResolvedValueOnce(
+          makeResponse({
+            toolCalls: [
+              makeToolCall('call-1', 'create_scene', '{"scene_name":"X"}'),
+            ],
+          })
+        )
+        .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+      const { orchestrator } = makeOrchestrator({
+        executeFunctionCalls: editingExecutor,
+        getProjectUserContent,
+      });
+
+      await orchestrator.startNewChat('Edit something');
+
+      // Turn start + the refresh after the editing round.
+      expect(getProjectUserContent).toHaveBeenCalledTimes(2);
+      const secondCallMessages =
+        mockSendByokChatCompletion.mock.calls[1][0].options.messages;
+      expect(
+        secondCallMessages.some(
+          (message: any) =>
+            typeof message.content === 'string' &&
+            message.content.includes('{"scenes":["fresh"]}')
+        )
+      ).toBe(true);
+    });
+
+    it('degrades to the previous snapshot with a warning line when the refresh fails', async () => {
+      const editingExecutor = mockFn(
+        jest.fn(async (functionCalls: Array<any>) => ({
+          results: functionCalls.map((functionCall: any) => ({
+            status: 'finished',
+            call_id: functionCall.call_id,
+            success: true,
+            output: { message: 'edited' },
+            didModifyProject: true,
+          })),
+          createdSceneNames: [],
+          createdProject: null,
+        }))
+      );
+      const getProjectUserContent = mockFn(jest.fn())
+        .mockResolvedValueOnce('{"scenes":["initial"]}')
+        .mockRejectedValueOnce(new Error('project closed'));
+      mockSendByokChatCompletion
+        .mockResolvedValueOnce(
+          makeResponse({
+            toolCalls: [
+              makeToolCall('call-1', 'create_scene', '{"scene_name":"X"}'),
+            ],
+          })
+        )
+        // The completion gate nudge (edits were made but unverified) and
+        // the honored second claim each take a model call.
+        .mockResolvedValueOnce(makeResponse({ text: 'Still working.' }))
+        .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+      const { orchestrator, aiRequest } = makeOrchestrator({
+        executeFunctionCalls: editingExecutor,
+        getProjectUserContent,
+      });
+
+      await orchestrator.startNewChat('Edit something');
+
+      expect(aiRequest.status).toBe('ready');
+      const notices = (aiRequest.output || []).filter(
+        (message: any) =>
+          message.type === 'byok_notice' &&
+          message.noticeKind === 'snapshot-stale'
+      );
+      expect(notices).toHaveLength(1);
+    });
+  });
+
+  describe('Phase 9: the remembered reasoning_effort degradation', () => {
+    it('sends the configured effort until the capability cache says degraded', async () => {
+      const liveSettings = {
+        ...DEFAULT_BYOK_SETTINGS,
+        modelName: 'test-model',
+        reasoningEffort: 'high',
+      };
+      mockSendByokChatCompletion
+        .mockResolvedValueOnce(makeResponse({ text: 'First answer.' }))
+        .mockResolvedValueOnce(makeResponse({ text: 'Second answer.' }));
+      const { orchestrator, aiRequest } = makeOrchestrator({
+        getSettings: () => liveSettings,
+      });
+
+      await orchestrator.startNewChat('Hello');
+      expect(aiRequest.status).toBe('ready');
+      expect(
+        mockSendByokChatCompletion.mock.calls[0][0].options.reasoningEffort
+      ).toBe('high');
+
+      // The capability cache remembers the degradation (written by the
+      // client callback through onCapabilityUpdate): the parameter is not
+      // sent again, whatever the settings still say.
+      liveSettings.capabilitiesByTargetKey = {
+        'https://api.example.com/v1::test-model': {
+          images: null,
+          effortLevels: null,
+          reasoningEffortDegraded: true,
+          strictSchemas: null,
+          parallelToolCalls: null,
+          updatedAt: '2026-09-23T00:00:00.000Z',
+        },
+      };
+      await orchestrator.sendUserMessage('And again');
+      expect(
+        'reasoningEffort' in mockSendByokChatCompletion.mock.calls[1][0].options
+      ).toBe(false);
+    });
+  });
+
+  describe('Phase 9: multi-provider routing', () => {
+    it('routes the main call through the per-chat dropdown provider', async () => {
+      const liveSettings = {
+        ...DEFAULT_BYOK_SETTINGS,
+        endpointUrl: 'https://legacy.example.com/v1',
+        modelName: 'legacy-model',
+        providers: [
+          {
+            id: 'prov-a',
+            name: 'Alpha',
+            endpointUrl: 'https://alpha.example.com/v1',
+            keyRef: 'prov-a',
+          },
+        ],
+      };
+      mockSendByokChatCompletion.mockResolvedValue(
+        makeResponse({ text: 'Answer.' })
+      );
+      const { orchestrator, aiRequest } = makeOrchestrator({
+        getSettings: () => liveSettings,
+        getApiKeyForProvider: async keyRef =>
+          keyRef === 'prov-a' ? 'sk-alpha' : 'sk-legacy',
+      });
+      (aiRequest: any).byokModelSelection = {
+        providerId: 'prov-a',
+        modelName: 'alpha-model',
+        reasoningEffort: 'default',
+      };
+
+      await orchestrator.startNewChat('Hello');
+
+      const call = mockSendByokChatCompletion.mock.calls[0][0];
+      expect(call.baseUrl).toBe('https://alpha.example.com/v1');
+      expect(call.apiKey).toBe('sk-alpha');
+      expect(call.options.model).toBe('alpha-model');
+      expect(aiRequest.status).toBe('ready');
+    });
+
+    it('uses the injected global connection when no provider resolver exists', async () => {
+      mockSendByokChatCompletion.mockResolvedValue(
+        makeResponse({ text: 'Answer.' })
+      );
+      const { orchestrator } = makeOrchestrator();
+      await orchestrator.startNewChat('Hello');
+      const call = mockSendByokChatCompletion.mock.calls[0][0];
+      expect(call.baseUrl).toBe('https://api.example.com/v1');
+      expect(call.apiKey).toBe('sk-test');
+      expect(call.options.model).toBe('test-model');
+    });
+  });
 });

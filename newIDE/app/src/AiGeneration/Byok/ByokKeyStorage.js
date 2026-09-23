@@ -11,7 +11,14 @@ import optionalRequire from '../../Utils/OptionalRequire';
 //   casual reading of the storage impossible. Stored as `{ version: 2, value }`.
 // The interface below is final: the storage internals changed in Phase 3
 // without the UI or the interface ever changing.
+// Since Phase 9.4 the keys are slotted per provider: the legacy slot
+// (`keyRef: ''`) is provider #1 of the migration; every other provider gets
+// its own item, so one key can never be read for another provider.
 const BYOK_KEY_STORAGE_ITEM = 'gd-byok-key';
+
+/** The storage item of a key slot ('' = the legacy Phase 2 slot). */
+const storageItemForKeyRef = (keyRef: string): string =>
+  keyRef ? `${BYOK_KEY_STORAGE_ITEM}-${keyRef}` : BYOK_KEY_STORAGE_ITEM;
 
 // Renderer-safe Electron access: null on the web build (see Utils/Window.js
 // and PreferencesProvider.js for the pattern).
@@ -209,14 +216,19 @@ const enqueueStorageWrite = <T>(write: () => Promise<T>): Promise<T> => {
 };
 
 /**
- * Save the BYOK API key (encrypted on desktop, obfuscated on web). An empty
- * key clears the entry rather than storing an empty string. Resolves to false
- * when nothing could be written (storage unavailable, quota exceeded), so
+ * Save the BYOK API key (encrypted on desktop, obfuscated on web) into the
+ * slot of a provider (`keyRef: ''` = the legacy slot). An empty key clears
+ * the entry rather than storing an empty string. Resolves to false when
+ * nothing could be written (storage unavailable, quota exceeded), so
  * callers can tell the user instead of silently losing the key.
  */
-const performSaveByokKey = async (key: string): Promise<boolean> => {
+const performSaveByokKey = async (
+  key: string,
+  keyRef: string = ''
+): Promise<boolean> => {
+  const storageItem = storageItemForKeyRef(keyRef);
   if (!key) {
-    return await performClearByokKey();
+    return await performClearByokKey(keyRef);
   }
 
   try {
@@ -226,13 +238,13 @@ const performSaveByokKey = async (key: string): Promise<boolean> => {
       // the obfuscated form rather than losing it — the settings tab's
       // status row keeps telling the user which storage is in use.
       localStorage.setItem(
-        BYOK_KEY_STORAGE_ITEM,
+        storageItem,
         JSON.stringify({ version: 2, value: obfuscate(key) })
       );
       return true;
     }
 
-    localStorage.setItem(BYOK_KEY_STORAGE_ITEM, JSON.stringify(secret));
+    localStorage.setItem(storageItem, JSON.stringify(secret));
     return true;
   } catch (error) {
     console.error('Unable to store the BYOK API key:', error);
@@ -240,13 +252,16 @@ const performSaveByokKey = async (key: string): Promise<boolean> => {
   }
 };
 
-export const saveByokKey = (key: string): Promise<boolean> =>
-  enqueueStorageWrite(() => performSaveByokKey(key));
+export const saveByokKey = (
+  key: string,
+  keyRef: string = ''
+): Promise<boolean> =>
+  enqueueStorageWrite(() => performSaveByokKey(key, keyRef));
 
-/** The raw stored entry, or null when the storage cannot be read. */
-const getStoredSerializedKey = (): ?string => {
+/** The raw stored entry of a slot, or null when the storage cannot be read. */
+const getStoredSerializedKey = (keyRef: string = ''): ?string => {
   try {
-    return localStorage.getItem(BYOK_KEY_STORAGE_ITEM);
+    return localStorage.getItem(storageItemForKeyRef(keyRef));
   } catch (error) {
     console.error('Unable to read the BYOK API key storage:', error);
     return null;
@@ -267,14 +282,16 @@ export type ByokKeyLoadResult =
   | {| status: 'ok', key: string |};
 
 /**
- * Load the BYOK API key as a `ByokKeyLoadResult` (see above). A corrupted
- * value is reported as 'unreadable', never thrown to the caller. Older
- * formats are migrated on read, so they disappear as soon as the key is read
- * once.
+ * Load the BYOK API key of a provider slot as a `ByokKeyLoadResult` (see
+ * above). A corrupted value is reported as 'unreadable', never thrown to
+ * the caller. Older formats are migrated on read, so they disappear as soon
+ * as the key is read once.
  */
-export const loadByokKey = async (): Promise<ByokKeyLoadResult> => {
+export const loadByokKey = async (
+  keyRef: string = ''
+): Promise<ByokKeyLoadResult> => {
   try {
-    const serializedKey = localStorage.getItem(BYOK_KEY_STORAGE_ITEM);
+    const serializedKey = localStorage.getItem(storageItemForKeyRef(keyRef));
     if (!serializedKey) return { status: 'none' };
 
     const parsedKey = JSON.parse(serializedKey);
@@ -290,7 +307,7 @@ export const loadByokKey = async (): Promise<ByokKeyLoadResult> => {
     if (typeof parsedKey.key === 'string' && parsedKey.key) {
       let isMigrationWritten = false;
       await enqueueStorageWrite(async () => {
-        if (getStoredSerializedKey() !== serializedKey) {
+        if (getStoredSerializedKey(keyRef) !== serializedKey) {
           // A newer save replaced the entry while the read was in flight:
           // there is nothing left to migrate.
           isMigrationWritten = true;
@@ -300,7 +317,7 @@ export const loadByokKey = async (): Promise<ByokKeyLoadResult> => {
         // disappears once the write is confirmed. On a failed write the
         // entry is kept (the key is not lost) and the migration is simply
         // retried by the next load.
-        isMigrationWritten = await performSaveByokKey(parsedKey.key);
+        isMigrationWritten = await performSaveByokKey(parsedKey.key, keyRef);
       });
       if (!isMigrationWritten) {
         console.error(
@@ -318,8 +335,8 @@ export const loadByokKey = async (): Promise<ByokKeyLoadResult> => {
     // build this branch is never taken. Same concurrency guard as above.
     if (parsedKey.version === 2 && ipcRenderer) {
       await enqueueStorageWrite(async () => {
-        if (getStoredSerializedKey() !== serializedKey) return;
-        await performSaveByokKey(key);
+        if (getStoredSerializedKey(keyRef) !== serializedKey) return;
+        await performSaveByokKey(key, keyRef);
       });
     }
 
@@ -334,9 +351,9 @@ export const loadByokKey = async (): Promise<ByokKeyLoadResult> => {
  * Remove the stored BYOK API key, if any. Resolves to false when the entry
  * could not be removed.
  */
-const performClearByokKey = async (): Promise<boolean> => {
+const performClearByokKey = async (keyRef: string = ''): Promise<boolean> => {
   try {
-    localStorage.removeItem(BYOK_KEY_STORAGE_ITEM);
+    localStorage.removeItem(storageItemForKeyRef(keyRef));
     return true;
   } catch (error) {
     console.error('Unable to remove the BYOK API key:', error);
@@ -344,8 +361,8 @@ const performClearByokKey = async (): Promise<boolean> => {
   }
 };
 
-export const clearByokKey = (): Promise<boolean> =>
-  enqueueStorageWrite(performClearByokKey);
+export const clearByokKey = (keyRef: string = ''): Promise<boolean> =>
+  enqueueStorageWrite(() => performClearByokKey(keyRef));
 
 /**
  * True when the key can be stored encrypted by the platform: the desktop app
@@ -369,12 +386,14 @@ export const isByokKeyEncryptionAvailable = async (): Promise<boolean> => {
  * could do — so a desktop fallback to obfuscation (a failed encryption) is
  * shown for what it is.
  */
-export const getByokKeyStorageInfo = async (): Promise<{|
+export const getByokKeyStorageInfo = async (
+  keyRef: string = ''
+): Promise<{|
   encrypted: boolean,
   obfuscated: boolean,
 |}> => {
   let storedVersion = 0;
-  const serializedKey = getStoredSerializedKey();
+  const serializedKey = getStoredSerializedKey(keyRef);
   if (serializedKey) {
     try {
       const parsedKey = JSON.parse(serializedKey);

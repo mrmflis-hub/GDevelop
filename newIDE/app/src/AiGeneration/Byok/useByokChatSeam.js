@@ -10,10 +10,17 @@ import {
   archiveByokChat,
   createByokChat,
   deleteByokOrchestrator,
+  deleteByokUsageTracker,
+  flushByokChatPersistence,
   getByokChat,
+  getByokChatPersistence,
+  getByokUsageTracker,
   getByokOrchestrator,
   listByokChats,
+  setByokChatPersistence,
   setByokOrchestrator,
+  byokReattachChat,
+  setByokUsageTracker,
   subscribeByokChats,
   updateByokChat,
 } from './ByokChatStore';
@@ -25,12 +32,34 @@ import { createByokUsageTracker } from './ByokUsageTracker';
 import { createByokSubAgentRunner } from './ByokSubAgents';
 import { dropByokChatSnapshots } from './ByokFork';
 import { loadByokKey, type ByokKeyLoadResult } from './ByokKeyStorage';
+import { getByokImage } from './ByokImageContent';
+import { createByokChatFileStore } from './ByokChatPersistence';
+import { createByokChatFilesBackendForPlatform } from './ByokChatStorageBackends';
 import { makeByokProjectNotesIdentifierFromProjectName } from './ByokProjectNotes';
 import {
   BYOK_GLOBAL_TURN_BUDGET,
   getByokSettings,
   type ByokSettings,
 } from './ByokTypes';
+import {
+  patchByokCapabilityRecord,
+  makeByokCapabilityTargetKey,
+} from './ByokCapabilities';
+import {
+  getByokChatModelSelection,
+  getByokEffortOptions,
+  listByokModelChoices,
+  resolveByokModelTarget,
+  setByokChatModelSelection,
+  type ByokModelChoice,
+} from './ByokModelRouter';
+import {
+  attachByokSuggestions,
+  fetchByokSuggestions,
+  recordByokFeedback,
+} from './ByokSuggestions';
+import { sendByokChatCompletionWithRetries } from './ByokClient';
+import { getCachedByokModels, refreshByokModels } from './ByokModelsCache';
 import {
   APPROVED_CALL_IDS_CAPACITY,
   byokCallRequiresApproval,
@@ -60,6 +89,12 @@ import EventsFunctionsExtensionsContext from '../../EventsFunctionsExtensionsLoa
  */
 
 const gd: libGDevelop = global.gd;
+
+/** The key of a provider slot, for the orchestrator's key resolution. */
+const getByokApiKeyForProvider = async (keyRef: string): Promise<string> => {
+  const storedKey = await loadByokKey(keyRef);
+  return storedKey.status === 'ok' ? storedKey.key : '';
+};
 
 // Reducer of the "BYOK chats changed" force-update signal: its state is
 // never read, the dispatch only exists to re-render the host when the BYOK
@@ -132,6 +167,27 @@ export type ByokChatSeamOptions = {|
   // The preview launcher MainFrame registered (perception tools). Absent in
   // hosts without previews (the tools answer with actionable failures).
   getProjectPreviewLauncher: () => ?any,
+  // Writes the whole BYOK settings blob (capability records, per-chat
+  // routing defaults read back live). Wired by the container to
+  // setMultipleValues.
+  updateByokPreferences: (byokSettings: ByokSettings) => void,
+|};
+
+export type ByokChatHeaderState = {|
+  chatId: string,
+  providerModelLabel: string,
+  usageTotals: ?{|
+    promptTokens: number,
+    completionTokens: number,
+    totalTokens: number,
+    turns: number,
+  |},
+  modelChoices: Array<ByokModelChoice>,
+  selectedModelChoiceKey: string | null,
+  effortOptions: Array<'low' | 'medium' | 'high'>,
+  selectedEffort: string,
+  onSelectModel: (choice: ByokModelChoice | null) => void,
+  onSelectEffort: (effort: 'low' | 'medium' | 'high' | 'default') => void,
 |};
 
 export type ByokChatSeam = {|
@@ -154,6 +210,18 @@ export type ByokChatSeam = {|
   clearApprovedByokEditCallIds: () => void,
   onRetryByokChat: () => Promise<void>,
   getByokLiveProject: () => ?any,
+  // ---- Phase 9 ----
+  // The D5 badge + token row + model/effort dropdowns of the selected chat
+  // (null outside BYOK chats).
+  byokHeaderState: ByokChatHeaderState | null,
+  // Local thumbs (9.6): stored in localStorage only.
+  onSendByokFeedback: (
+    aiRequestId: string,
+    messageIndex: number,
+    feedback: 'like' | 'dislike'
+  ) => Promise<void>,
+  // The history button (9.3): open a saved chat into the session.
+  openSavedByokChat: (chatId: string) => Promise<boolean>,
 |};
 
 /**
@@ -187,6 +255,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     setSelectedAiRequestId,
     resetChatUserInputs,
     getProjectPreviewLauncher,
+    updateByokPreferences,
   } = options;
 
   // Selection is tracked locally: a BYOK chat must never enter
@@ -209,6 +278,35 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
   React.useEffect(() => subscribeByokChats(forceByokChatsUpdate), [
     forceByokChatsUpdate,
   ]);
+  // Live preferences for the getters pattern (routing, capabilities,
+  // watchdog settings are read at turn time, never frozen at creation).
+  const preferencesValuesRef = useStableUpToDateRef(preferencesValues);
+
+  // ---- Durable history (Phase 9.3): install the platform file store once
+  // per session and flush on app closure (best-effort). ----
+  React.useEffect(() => {
+    if (!getByokChatPersistence()) {
+      const backend = createByokChatFilesBackendForPlatform();
+      if (backend) {
+        setByokChatPersistence(createByokChatFileStore(backend, getByokImage));
+      }
+    }
+  }, []);
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onWindowHide = () => {
+      void flushByokChatPersistence();
+    };
+    window.addEventListener('beforeunload', onWindowHide);
+    window.addEventListener('pagehide', onWindowHide);
+    return () => {
+      window.removeEventListener('beforeunload', onWindowHide);
+      window.removeEventListener('pagehide', onWindowHide);
+      // A host unmounting is the last chance to flush in tests and in the
+      // standalone form.
+      void flushByokChatPersistence();
+    };
+  }, []);
   // The orchestrators live in the module-level registry (ByokChatStore):
   // a chat started by the homepage form keeps running when that form
   // unmounts and the Ask AI tab takes over (Phase 8.5).
@@ -222,6 +320,197 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
   const selectedByokChat = selectedByokChatId
     ? getByokChat(selectedByokChatId)
     : null;
+
+  // ---- Phase 9.4: the chat header's model/effort dropdowns ----
+  // The model choices come from each provider's /models (fetched once per
+  // provider set, cached), listed as `provider name/model name`.
+  const [byokModelChoices, setByokModelChoices] = React.useState<
+    Array<ByokModelChoice>
+  >([]);
+  const providersKey = (getByokSettings(preferencesValues).providers || [])
+    .map(provider => provider.id)
+    .join(',');
+  React.useEffect(
+    () => {
+      let isSubscribed = true;
+      const loadChoices = async (): Promise<void> => {
+        const settings = getByokSettings(preferencesValues);
+        const modelsByProviderId: { [providerId: string]: Array<string> } = {};
+        // The legacy/global endpoint's cached models feed the fallback entry.
+        const globalModels = getCachedByokModels(settings.endpointUrl);
+        modelsByProviderId[''] = globalModels
+          ? globalModels.map(model => model.id)
+          : settings.modelName
+          ? [settings.modelName]
+          : [];
+        for (const provider of settings.providers) {
+          try {
+            const models = getCachedByokModels(provider.endpointUrl);
+            if (models) {
+              modelsByProviderId[provider.id] = models.map(model => model.id);
+              continue;
+            }
+            const storedKey = await loadByokKey(provider.keyRef);
+            if (storedKey.status !== 'ok') continue;
+            const fetched = await refreshByokModels({
+              baseUrl: provider.endpointUrl,
+              apiKey: storedKey.key,
+            });
+            modelsByProviderId[provider.id] = fetched.map(model => model.id);
+          } catch (error) {
+            // A provider that cannot be reached right now just contributes no
+            // models; the next mount retries.
+          }
+        }
+        if (isSubscribed) {
+          setByokModelChoices(
+            listByokModelChoices({ settings, modelsByProviderId })
+          );
+        }
+      };
+      loadChoices();
+      return () => {
+        isSubscribed = false;
+      };
+      // Reload when the provider set (or the endpoint) changes.
+    },
+    [providersKey, preferencesValues]
+  );
+
+  // The header state of the selected BYOK chat (D5 badge + token row + the
+  // dropdowns), or null outside BYOK chats.
+  const byokHeaderState = React.useMemo(
+    (): ByokChatHeaderState | null => {
+      // byokChatsUpdateCount is the change signal (see the deps): the usage
+      // totals move with every turn without being a data input.
+      void byokChatsUpdateCount;
+      const settings = getByokSettings(preferencesValues);
+      const chat = selectedByokChat;
+      if (!chat || !isByokAiRequestId(chat.id)) return null;
+
+      const chatSelection = getByokChatModelSelection(chat);
+      const target = resolveByokModelTarget({
+        settings,
+        chatSelection,
+        callKind: 'main',
+      });
+      const provider = settings.providers.find(
+        entry => entry.id === target.providerId
+      );
+      const providerName = provider ? provider.name : 'Default';
+      const usageTracker = getByokUsageTracker(chat.id);
+
+      return {
+        chatId: chat.id,
+        providerModelLabel: `${providerName}/${target.modelName ||
+          settings.modelName}`,
+        usageTotals: usageTracker ? usageTracker.getTotals() : null,
+        modelChoices: byokModelChoices,
+        selectedModelChoiceKey:
+          chatSelection && chatSelection.modelName
+            ? `${chatSelection.providerId}\u0000${chatSelection.modelName}`
+            : null,
+        effortOptions: (() => {
+          const selectedProvider = settings.providers.find(
+            entry =>
+              entry.id === (chatSelection ? chatSelection.providerId : '')
+          );
+          const endpointUrl = selectedProvider
+            ? selectedProvider.endpointUrl
+            : settings.endpointUrl;
+          const modelName = target.modelName || settings.modelName;
+          return getByokEffortOptions(
+            (settings.capabilitiesByTargetKey || {})[
+              makeByokCapabilityTargetKey(endpointUrl, modelName)
+            ] || null
+          );
+        })(),
+        selectedEffort: chatSelection
+          ? chatSelection.reasoningEffort
+          : settings.reasoningEffort,
+        onSelectModel: (choice: ByokModelChoice | null) => {
+          const currentChat = getByokChat(chat.id);
+          if (!currentChat) return;
+          setByokChatModelSelection(
+            currentChat,
+            choice
+              ? {
+                  providerId: choice.providerId,
+                  modelName: choice.modelName,
+                  reasoningEffort:
+                    (chatSelection && chatSelection.reasoningEffort) ||
+                    settings.reasoningEffort,
+                }
+              : null
+          );
+          updateByokChat(currentChat);
+        },
+        onSelectEffort: (effort: 'low' | 'medium' | 'high' | 'default') => {
+          const currentChat = getByokChat(chat.id);
+          if (!currentChat) return;
+          const selection = getByokChatModelSelection(currentChat) || {
+            providerId: '',
+            modelName: target.modelName || settings.modelName,
+            reasoningEffort: 'default',
+          };
+          setByokChatModelSelection(currentChat, {
+            providerId: selection.providerId,
+            modelName: selection.modelName,
+            reasoningEffort: effort,
+          });
+          updateByokChat(currentChat);
+        },
+      };
+      // The chat store notifications (updateByokChat) re-render through
+      // byokChatsUpdateCount; the trackers update with every turn.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [
+      selectedByokChat,
+      byokModelChoices,
+      byokChatsUpdateCount,
+      preferencesValues,
+    ]
+  );
+
+  // ---- Phase 9.6: local thumbs (nothing is sent anywhere) ----
+  const onSendByokFeedback = React.useCallback(
+    async (
+      aiRequestId: string,
+      messageIndex: number,
+      feedback: 'like' | 'dislike'
+    ): Promise<void> => {
+      const chat = getByokChat(aiRequestId);
+      const message = chat && chat.output ? chat.output[messageIndex] : null;
+      recordByokFeedback({
+        chatId: aiRequestId,
+        messageId: (message && message.messageId) || `index-${messageIndex}`,
+        rating: feedback,
+      });
+    },
+    []
+  );
+
+  // ---- Phase 9.3: open a saved chat from the history button ----
+  const openSavedByokChat = React.useCallback(
+    async (chatId: string): Promise<boolean> => {
+      const store = getByokChatPersistence();
+      if (!store) return false;
+      const existing = getByokChat(chatId);
+      if (existing) {
+        setSelectedByokChatId(chatId);
+        return true;
+      }
+      const chat = await store.loadChat(chatId);
+      if (!chat) return false;
+      // A reloaded chat rejoins the session store (marked with its own
+      // updatedAt — never re-marked 'working' by a phantom loop).
+      byokReattachChat(chat);
+      setSelectedByokChatId(chat.id);
+      return true;
+    },
+    []
+  );
 
   // The live values the BYOK orchestrators read through getters, so a chat
   // created before a project existed (or before the current one was opened)
@@ -318,6 +607,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     const orchestrator = getByokOrchestrator(aiRequestId);
     if (orchestrator) orchestrator.suspend();
     deleteByokOrchestrator(aiRequestId);
+    deleteByokUsageTracker(aiRequestId);
     // The chat closes: its restore-point snapshots go with it (no disk
     // growth — Phase 8.6's cap discipline).
     dropByokChatSnapshots(aiRequestId);
@@ -352,6 +642,65 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
   const createByokOrchestratorForChat = React.useCallback(
     (chat: AiRequest, byokSettings: ByokSettings, apiKey: string) => {
       const usageTracker = createByokUsageTracker();
+      setByokUsageTracker(chat.id, usageTracker);
+      // The live settings (routing/capabilities/watchdog), read per turn.
+      const getLiveSettings = (): ByokSettings =>
+        getByokSettings(preferencesValuesRef.current || {});
+      // The capability write-back (remembered degradations, 9.5).
+      const writeCapabilityPatch = (
+        baseUrl: string,
+        modelName: string,
+        patch: Object
+      ) => {
+        const currentSettings = getLiveSettings();
+        updateByokPreferences({
+          ...currentSettings,
+          ...patchByokCapabilityRecord(
+            currentSettings,
+            baseUrl,
+            modelName,
+            patch
+          ),
+        });
+      };
+      // The opt-in follow-up chips (9.6): one extra fast-profile call after
+      // the chat goes ready — outside the loop, best-effort.
+      const maybeFetchSuggestions = async (): Promise<void> => {
+        const currentSettings = getLiveSettings();
+        if (!currentSettings.suggestionsEnabled) return;
+        const chatSelection = getByokChatModelSelection(chat);
+        const target = resolveByokModelTarget({
+          settings: currentSettings,
+          chatSelection,
+          callKind: 'suggestions',
+        });
+        const provider = currentSettings.providers.find(
+          entry => entry.id === target.providerId
+        );
+        const storedKey = await loadByokKey(provider ? provider.keyRef : '');
+        if (storedKey.status !== 'ok') return;
+        const suggestions = await fetchByokSuggestions({
+          enabled: true,
+          transcript: chat.output || [],
+          callModel: async ({ messages }) =>
+            await sendByokChatCompletionWithRetries({
+              baseUrl: target.endpointUrl,
+              apiKey: storedKey.key,
+              options: {
+                model: target.modelName || currentSettings.modelName,
+                messages,
+                temperature:
+                  target.temperature === null ? undefined : target.temperature,
+                maxTokens:
+                  target.maxTokens === null ? undefined : target.maxTokens,
+              },
+            }),
+        });
+        if (!suggestions) return;
+        if (attachByokSuggestions(chat.output || [], suggestions)) {
+          updateByokChat(chat);
+        }
+      };
       // The sub-agents of this chat (Phase 8.1): they share the chat's
       // connection, its usage tracker, and one global model-turn budget
       // with the parent loop, and they build their own read-only executor
@@ -393,6 +742,9 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           }),
         usageTracker,
         sharedTurnBudget: { remaining: BYOK_GLOBAL_TURN_BUDGET },
+        getSettings: getLiveSettings,
+        getApiKeyForProvider: getByokApiKeyForProvider,
+        onCapabilityUpdate: writeCapabilityPatch,
       });
       const orchestrator = createByokOrchestrator({
         connection: {
@@ -494,6 +846,13 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
         usageTracker,
         subAgentRunner,
         onSceneEventsModifiedOutsideEditor,
+        // ---- Phase 9: routing, capabilities, watchdog, suggestions ----
+        getSettings: getLiveSettings,
+        getApiKeyForProvider: getByokApiKeyForProvider,
+        onCapabilityUpdate: writeCapabilityPatch,
+        onChatReady: () => {
+          void maybeFetchSuggestions();
+        },
         // The perception tools' environment hooks (Phase 6): the scene editor
         // canvas of this window, the Electron preview-capture IPC, and the
         // preview launcher MainFrame registered.
@@ -542,6 +901,8 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       executeByokFunctionCalls,
       getIsAutoEditEnabled,
       requestEditApproval,
+      preferencesValuesRef,
+      updateByokPreferences,
       triggerUnsavedChanges,
       onOpenLayout,
       onSceneEventsModifiedOutsideEditor,
@@ -696,5 +1057,8 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     clearApprovedByokEditCallIds,
     onRetryByokChat,
     getByokLiveProject,
+    byokHeaderState,
+    onSendByokFeedback,
+    openSavedByokChat,
   };
 };

@@ -26,24 +26,32 @@ pass. `REVIEW/report.md` is the original architecture survey;
 
 ## 2. Where the project stands — keep this section current
 
-Status as of 2026-09-22 (update at the end of every session):
+Status as of 2026-09-23 (update at the end of every session):
 
 - **Implemented** — Phases 1–7 committed (owner commits `0802d2d21e` and
   `e81697cbe6` on `master`): settings UI, client engine, Electron
   safeStorage integration, client-side agent loop, local EventScript event
   writing + full tool parity, perception, knowledge/prompt composer +
-  skills (`byok-v5`). **Phase 8 implemented 2026-09-22, uncommitted:**
-  the D8 hook extraction (`Byok/useByokChatSeam.js`, also reused by the
-  homepage standalone form), the O3 memo fix, scout/reviewer sub-agents,
-  the completion gate, the build-workflow + extend-with-js skills with
-  auto-suggest, events-based extension authoring (9 tools ported from the
-  upstream v18 surface), Ask-AI context-menu entry points, fork/restore
-  points, and prompt `byok-v6` (48 tools). QA Tasks 9/10 open.
-- **Planned, not started:** Phase 9 (scale, robustness, model economics).
-- **Quality bar at the last full verification:** 164 test suites / 1740 tests
-  green, `lint` 0 warnings, `flow` 0 errors, `check-format` clean in
-  `newIDE\app`; the electron-app `check-format` gate is green too (fully
-  installed + committed `7283b2fc1c`).
+  skills (`byok-v5`). **Phase 8 committed by the owner** (`ddb87ffcb4`):
+  the D8 hook extraction (`Byok/useByokChatSeam.js`), scout/reviewer
+  sub-agents, the completion gate, the build-workflow + extend-with-js
+  skills, events-based extension authoring, Ask-AI context-menu entry
+  points, fork/restore points, prompt `byok-v6` (48 tools). QA Tasks 9/10
+  open. **Phase 9 implemented 2026-09-23, uncommitted** (the owner
+  restarted the project for it in chat): the F2 stall watchdog with
+  in-chat notice rows, context compaction (preserved block + drop order),
+  durable chat history (Markdown + image sidecars; Electron IPC files /
+  IndexedDB; quarantine; 200 MB quota; history button), multi-provider
+  routing with per-chat model/effort dropdowns + the D5 badge/token row,
+  per-provider key slots, capability probing + the 4-task built-in
+  benchmark, opt-in suggestions + local feedback, retry/robustness polish
+  (Retry-After cap, remembered reasoning_effort degradation, per-round
+  snapshot refresh), and the dev-only eval harness
+  (`scripts/run-byok-evals.js`, 30 tasks). Prompt stays `byok-v6` (no
+  behavior-text change). QA Task 11 open.
+- **Planned, not started:** nothing (Phase 1–9 all built; what remains is
+  the human QA list in `usertasks.md`).
+
 - **Audits:** every 2026-09-21 audit B-finding is fixed. The remaining open
   findings are consolidated in `REVIEW/audit2209.md` (full detail) and triaged
   into three actionable docs:
@@ -63,9 +71,10 @@ Status as of 2026-09-22 (update at the end of every session):
   `Phase8.md` step 8.0. Streaming (D2) and the O2 char-estimate stay
   **conditional** in `deferred.md` / `Phase9.md` §4 — no Phase 10 was
   needed.
-- **Project state: PAUSED by owner decision (2026-09-22).** Do not start
-  feature work (Phases 7–9, F1–F3, O-items) until the owner restarts it;
-  doc upkeep and the owner's own QA (usertasks Tasks 1, 2, 6, 7) continue.
+- **Project state: the owner RESTARTED it in chat on 2026-09-23 with the
+  order "implement Phase 9" — Phase 9 is done (above). No further feature
+  work is queued; the remaining work is the owner's QA list
+  (`usertasks.md` Tasks 1, 2, 6, 7, 9–11) and the owner's commit review.
 - Owner-provided local assets: `libgd-2.3.3\` (repo root — import-libGD
   source of truth) and `DOCs\` (the GDevelop-documentation clone, Phase 7
   input).
@@ -233,7 +242,7 @@ and 2026-09-21 (Phases 5–9). If a line number, function name, or structure has
 shifted upstream:
 
 - Re-locate the equivalent spot yourself (search, don't guess).
-- Record the difference in the worklog under "Issues found" with the new
+*Last updated: 2026-09-23.*
   `file:line`.
 - Keep the *intent* of the step (the ACs), not the literal line numbers.
 
@@ -242,4 +251,4 @@ manual in the same session and say so in the worklog.
 
 ---
 
-*Last updated: 2026-09-22.*
+*Last updated: 2026-09-23.*

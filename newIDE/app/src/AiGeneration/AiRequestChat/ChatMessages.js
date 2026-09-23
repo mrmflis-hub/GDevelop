@@ -383,6 +383,17 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
               messageIndex,
               message,
             });
+          } else if ((message: any).type === 'byok_notice') {
+            // A BYOK-local notice row (stall watchdog, "Context summarized",
+            // rate-limit backoff): an info line, never a chat bubble, and
+            // never sent to any model (the BYOK replay skips these items).
+            flushFunctionCallGroup();
+            items.push({
+              type: 'byok_notice',
+              messageIndex,
+              // $FlowFixMe[incompatible-type]
+              message,
+            });
           } else if (
             message.type === 'message' &&
             message.role === 'assistant'
@@ -1289,6 +1300,23 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
                       </LineStackLayout>
                     )}
                   </ColumnStackLayout>
+                </Line>,
+              ];
+            }
+
+            if (item.type === 'byok_notice') {
+              const { messageIndex, message } = item;
+              return [
+                <Line
+                  key={`byok-notice-${messageIndex}`}
+                  justifyContent="center"
+                >
+                  <Text size="body-small" color="secondary" align="center">
+                    {
+                      // $FlowFixMe[incompatible-use]
+                      message.text
+                    }
+                  </Text>
                 </Line>,
               ];
             }

@@ -83,6 +83,8 @@ import {
   shouldUseByokForNewRequest,
 } from './Byok/ByokSeam';
 import { useByokChatSeam } from './Byok/useByokChatSeam';
+import ByokChatHistory from './Byok/ByokChatHistory';
+import { LineStackLayout } from '../UI/Layout';
 import {
   forkByokChat,
   getByokProjectSnapshot,
@@ -520,9 +522,10 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         null
       );
 
-      const { values: preferencesValues } = React.useContext(
-        PreferencesContext
-      );
+      const {
+        values: preferencesValues,
+        setMultipleValues: setPreferencesMultipleValues,
+      } = React.useContext(PreferencesContext);
       const { automaticallyUseCreditsForAiRequests } = preferencesValues;
 
       // ---- BYOK (Bring Your Own Key) chats --------------------------------
@@ -565,6 +568,8 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         setSelectedAiRequestId,
         resetChatUserInputs: resetByokChatUserInputs,
         getProjectPreviewLauncher,
+        updateByokPreferences: byokSettings =>
+          setPreferencesMultipleValues({ byok: byokSettings }),
       });
       const {
         selectedByokChatId,
@@ -1874,6 +1879,18 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           />
           <Paper square background="dark" style={styles.paper}>
             <div style={styles.chatContainer}>
+              {/* The BYOK saved-chat history (Phase 9.3, decision #1):
+                  listed alongside the server-backed AskAiHistory above. */}
+              {selectedByokChat && (
+                <LineStackLayout noMargin justifyContent="flex-end">
+                  <ByokChatHistory
+                    onOpenChat={async chatId => {
+                      await byokChatSeam.openSavedByokChat(chatId);
+                    }}
+                    selectedChatId={selectedByokChatId}
+                  />
+                </LineStackLayout>
+              )}
               <AiRequestChat
                 aiConfigurationPresetsWithAvailability={getAiConfigurationPresetsWithAvailability(
                   { limits, getAiSettings }
@@ -1961,6 +1978,11 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                         const image = getByokImage(imageId);
                         return image ? { dataUrl: image.dataUrl } : null;
                       },
+                      // Phase 9.4 (D5): the BYOK badge, the exact token row
+                      // and the per-chat model/effort dropdowns.
+                      byokHeader: byokChatSeam.byokHeaderState,
+                      // Phase 9.6: the thumbs are stored locally only.
+                      onSendFeedback: byokChatSeam.onSendByokFeedback,
                     }
                   : {
                       // Feedback needs a server-side message to attach to,

@@ -78,7 +78,7 @@ describe('ByokChatStore', () => {
     unsubscribe();
   });
 
-  it('archives a chat: it disappears from the list and from get', () => {
+  it('archives a chat: it disappears from the default list but stays restorable', () => {
     const chat = ByokChatStore.createByokChat();
     expect(ByokChatStore.listByokChats()).toContainEqual(
       expect.objectContaining({ id: chat.id })
@@ -86,24 +86,34 @@ describe('ByokChatStore', () => {
 
     ByokChatStore.archiveByokChat(chat.id);
 
+    // Excluded from the default list (the real archive of Phase 9.3), but
+    // still returned by getByokChat: delete is explicit and separate.
     expect(ByokChatStore.listByokChats().map(c => c.id)).not.toContain(chat.id);
-    expect(ByokChatStore.getByokChat(chat.id)).toBe(null);
+    const archivedChat = ByokChatStore.getByokChat(chat.id);
+    expect(archivedChat).not.toBe(null);
+    expect(archivedChat && archivedChat.archivedAt).toBeTruthy();
+
+    // Restore puts it back into the active list.
+    if (archivedChat) ByokChatStore.restoreByokChat(chat.id);
+    expect(ByokChatStore.listByokChats().map(c => c.id)).toContain(chat.id);
   });
 
-  it('ignores updates after a chat was archived (guards the suspend-on-archive path)', () => {
+  it('keeps the archive marker when an in-flight orchestrator update lands', () => {
     const listener = mockFn(jest.fn());
     const unsubscribe = ByokChatStore.subscribeByokChats(listener);
     const chat = ByokChatStore.createByokChat();
     ByokChatStore.archiveByokChat(chat.id);
     listener.mockClear();
 
-    // An orchestrator that was suspended but still had one update in
-    // flight must not resurrect the archived chat.
+    // The suspended orchestrator's record carries no archive marker: the
+    // stored copy must keep it (the chat was archived, not resurrected).
     chat.status = 'ready';
     ByokChatStore.updateByokChat(chat);
 
-    expect(ByokChatStore.getByokChat(chat.id)).toBe(null);
-    expect(listener).not.toHaveBeenCalled();
+    const storedChat = ByokChatStore.getByokChat(chat.id);
+    expect(storedChat && storedChat.archivedAt).toBeTruthy();
+    expect(ByokChatStore.listByokChats().map(c => c.id)).not.toContain(chat.id);
+    expect(listener).toHaveBeenCalled();
 
     unsubscribe();
   });
@@ -120,8 +130,53 @@ describe('ByokChatStore', () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
-  it('documents the v1 session-only persistence decision', () => {
-    expect(ByokChatStore.BYOK_CHAT_PERSISTENCE_ENABLED).toBe(false);
+  it('documents the durable-history persistence decision (Phase 9.3)', () => {
+    expect(ByokChatStore.BYOK_CHAT_PERSISTENCE_ENABLED).toBe(true);
+  });
+
+  it('saves through the persistence delegate at the contract save points', async () => {
+    const savedChats: Array<string> = [];
+    const fileStore = {
+      listChatMetas: async () => [],
+      loadChat: async () => null,
+      saveChat: async (savedChat: any) => {
+        savedChats.push(`${savedChat.id}:${savedChat.status}`);
+        return `${savedChat.id}.md`;
+      },
+      setArchived: async () => true,
+      renameChat: async () => true,
+      deleteChat: async () => true,
+      getStorageUsage: async () => ({ totalBytes: 0, imageBytes: 0 }),
+      enforceQuota: async () => ({
+        evictedImageChatCount: 0,
+        evictedChatCount: 0,
+      }),
+    };
+
+    ByokChatStore.setByokChatPersistence(((fileStore: any): any));
+    const chat = ByokChatStore.createByokChat();
+    try {
+      // A user message lands with status 'working' → debounced, not yet saved.
+      chat.status = 'working';
+      ByokChatStore.updateByokChat(chat);
+      expect(savedChats).toEqual([]);
+
+      // The AI finishes ('ready') → immediate save ("after the AI finishes").
+      chat.status = 'ready';
+      ByokChatStore.updateByokChat(chat);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(savedChats).toEqual([`${chat.id}:ready`]);
+
+      // Archive saves too (the archive marker must reach the file).
+      ByokChatStore.archiveByokChat(chat.id);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(savedChats.length).toBe(2);
+    } finally {
+      ByokChatStore.setByokChatPersistence(null);
+      await ByokChatStore.deleteByokChat(chat.id);
+    }
   });
 });
 

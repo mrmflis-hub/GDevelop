@@ -43,6 +43,8 @@ import {
   getDefaultAiConfigurationPresetId,
 } from '../AiConfiguration';
 import { ReasoningLevelSelector } from './ReasoningLevelSelector';
+import CompactSelectField from '../../UI/CompactSelectField';
+import SelectOption from '../../UI/SelectOption';
 import {
   AiRequestContext,
   type AiRequestLoadingState,
@@ -208,6 +210,37 @@ type Props = {|
   // (e.g. the standalone form).
   pendingEditApproval?: EditApprovalRequest | null,
   onResolveEditApproval?: (accepted: boolean) => void,
+  // The BYOK chat header (Phase 9.4, decisions #5/#6): the BYOK badge with
+  // the active provider/model, the exact token row, and the per-chat
+  // model/effort dropdowns. Absent on server chats.
+  byokHeader?: ?{|
+    chatId: string,
+    providerModelLabel: string,
+    usageTotals: ?{|
+      promptTokens: number,
+      completionTokens: number,
+      totalTokens: number,
+      turns: number,
+    |},
+    modelChoices: Array<{|
+      providerId: string,
+      providerName: string,
+      modelName: string,
+      label: string,
+    |}>,
+    selectedModelChoiceKey: string | null,
+    effortOptions: Array<'low' | 'medium' | 'high'>,
+    selectedEffort: string,
+    onSelectModel: (
+      choice: null | {|
+        providerId: string,
+        providerName: string,
+        modelName: string,
+        label: string,
+      |}
+    ) => void,
+    onSelectEffort: (effort: 'low' | 'medium' | 'high' | 'default') => void,
+  |},
 |};
 
 export type AiRequestChatInterface = {|
@@ -255,6 +288,7 @@ export const AiRequestChat: React.ComponentType<{
       pendingEditApproval,
       onResolveEditApproval,
       onRetryAfterError,
+      byokHeader,
     }: Props,
     ref
   ) => {
@@ -1007,6 +1041,62 @@ export const AiRequestChat: React.ComponentType<{
           [classes.aiRequestChatContainer]: true,
         })}
       >
+        {byokHeader && (
+          <LineStackLayout noMargin alignItems="center">
+            {/* D5 (decision #5): the badge names the active provider/model,
+                with the exact token counts of the chat beside it. */}
+            <Text size="body-small" color="secondary" noMargin>
+              <Trans>BYOK</Trans> · {byokHeader.providerModelLabel}
+              {byokHeader.usageTotals
+                ? ` · ${byokHeader.usageTotals.totalTokens} tokens (${
+                    byokHeader.usageTotals.turns
+                  })`
+                : ''}
+            </Text>
+            <CompactSelectField
+              value={byokHeader.selectedModelChoiceKey || ''}
+              onChange={(value: string) => {
+                if (value === '') {
+                  byokHeader.onSelectModel(null);
+                  return;
+                }
+                const choice = byokHeader.modelChoices.find(
+                  candidate =>
+                    `${candidate.providerId}\u0000${candidate.modelName}` ===
+                    value
+                );
+                if (choice) byokHeader.onSelectModel(choice);
+              }}
+            >
+              <SelectOption value="" label={t`Model from settings`} />
+              {byokHeader.modelChoices.map(choice => (
+                <SelectOption
+                  key={choice.label}
+                  value={`${choice.providerId}\u0000${choice.modelName}`}
+                  label={choice.label}
+                />
+              ))}
+            </CompactSelectField>
+            <CompactSelectField
+              value={byokHeader.selectedEffort || 'default'}
+              onChange={(value: string) => {
+                if (
+                  value === 'low' ||
+                  value === 'medium' ||
+                  value === 'high' ||
+                  value === 'default'
+                ) {
+                  byokHeader.onSelectEffort(value);
+                }
+              }}
+            >
+              <SelectOption value="default" label={t`Default effort`} />
+              {byokHeader.effortOptions.map(effort => (
+                <SelectOption key={effort} value={effort} label={effort} />
+              ))}
+            </CompactSelectField>
+          </LineStackLayout>
+        )}
         <ScrollView
           ref={scrollViewRef}
           style={styles.chatScrollView}

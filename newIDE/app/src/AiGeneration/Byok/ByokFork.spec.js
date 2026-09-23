@@ -215,6 +215,8 @@ describe('the snapshot lifecycle through the chat store', () => {
     dropByokChatSnapshots(chat.id);
     archiveByokChat(chat.id);
     expect(listByokProjectSnapshots(chat.id)).toEqual([]);
-    expect(getByokChat(chat.id)).toBe(null);
+    // Archived since Phase 9.3: out of the default list, but restorable.
+    const archivedChat = getByokChat(chat.id);
+    expect(archivedChat && archivedChat.archivedAt).toBeTruthy();
   });
 });

@@ -136,6 +136,14 @@ beforeEach(() => {
   });
 });
 
+// Since Phase 9 the tab renders three RaisedButtons in tree order:
+// Fetch models, Test connection, Run the benchmark.
+function findTestConnectionButton(component: any): any {
+  const raisedButtons = component.root.findAllByType(RaisedButton);
+  expect(raisedButtons.length).toBeGreaterThanOrEqual(2);
+  return raisedButtons[1];
+}
+
 describe('ByokSettingsTab', () => {
   it('mounts and shows the BYOK title', async () => {
     const { component } = renderTab();
@@ -274,10 +282,11 @@ describe('ByokSettingsTab', () => {
     await act(async () => {
       await flushPromises();
     });
-    // The Clear button is the only FlatButton of the tab.
+    // Phase 9 added more FlatButtons after it (Add a provider, Export
+    // feedback), but the Clear button is still the first in tree order.
     const FlatButton = require('../../UI/FlatButton').default;
     const flatButtons = component.root.findAllByType(FlatButton);
-    expect(flatButtons).toHaveLength(1);
+    expect(flatButtons.length).toBeGreaterThanOrEqual(1);
 
     await act(async () => {
       flatButtons[0].props.onClick({});
@@ -528,7 +537,8 @@ describe('ByokSettingsTab: models fetching', () => {
 
     const { component } = renderTab();
     const fetchModelsButton = getRaisedButtons(component)[0];
-    expect(getRaisedButtons(component)).toHaveLength(2);
+    // Fetch models, Test connection and (Phase 9.5) the benchmark button.
+    expect(getRaisedButtons(component)).toHaveLength(3);
 
     await act(async () => {
       fetchModelsButton.props.onClick({});
@@ -688,8 +698,7 @@ describe('ByokSettingsTab: per-model context windows', () => {
 describe('ByokSettingsTab: test connection', () => {
   const renderTabAndClickTest = async () => {
     const { component, setMultipleValues } = renderTab();
-    const raisedButtons = component.root.findAllByType(RaisedButton);
-    const testConnectionButton = raisedButtons[raisedButtons.length - 1];
+    const testConnectionButton = findTestConnectionButton(component);
 
     await act(async () => {
       testConnectionButton.props.onClick({});
@@ -730,8 +739,7 @@ describe('ByokSettingsTab: test connection', () => {
     };
 
     const { component } = renderTab(settings);
-    const raisedButtons = component.root.findAllByType(RaisedButton);
-    const testConnectionButton = raisedButtons[raisedButtons.length - 1];
+    const testConnectionButton = findTestConnectionButton(component);
     await act(async () => {
       testConnectionButton.props.onClick({});
       await flushPromises();

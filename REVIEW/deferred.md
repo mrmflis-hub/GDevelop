@@ -106,3 +106,36 @@ them.
 - **When to tackle:** Phase 7/8 polish (unchanged recommendation; not
   explicitly answered in the 2026-09-22 round) — placed in the step 7.0
   chat-UX batch in `Phase7.md`.
+
+---
+
+## 2026-09-23 — Phase 9 leftovers (deliberate, small)
+
+### Eval harness: the LLM-as-judge pass is a reserved flag, not implemented
+
+- **What:** `scripts/run-byok-evals.js` accepts `--judge-model` and prints
+  it in the report header, but no actual judge call runs — the mechanical
+  scorers are the only scoring today.
+- **Why deferred:** the phase text makes the judge optional ("LLM-as-judge
+  optional, flagged as such in the report"); every current task scores
+  mechanically, and a judge pass doubles the token cost without changing any
+  decision we make today. The flag is wired so enabling it later is one
+  function, not a redesign.
+- **When to tackle:** when tasks appear whose quality is genuinely hard to
+  assert mechanically (open-ended design critique, narrative quality) — i.e.
+  when we would otherwise eyeball scores by hand.
+- **Standing proposal to the owner:** leave as-is; revisit only if a future
+  eval category needs subjective scoring.
+
+### Benchmark results are shown as text, not persisted per model
+
+- **What:** the settings tab prints the benchmark report text; results are
+  not stored per model for a persistent side-by-side ranking (the phase
+  doc's "shown next to the model dropdown" is satisfied by re-running, which
+  is cheap).
+- **Why deferred:** persistence wants a home (settings blob vs the chat
+  storage quota) and the benchmark takes ~2 min anyway — the re-run gives
+  fresher numbers than a stored one.
+- **When to tackle:** if the owner benchmarks many models regularly and
+  wants the history.
+- **Standing proposal to the owner:** fine to keep as text output for now.

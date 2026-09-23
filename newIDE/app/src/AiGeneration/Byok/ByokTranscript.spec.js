@@ -7,6 +7,8 @@ import {
   createByokAiRequestShell,
   getByokSurvivingImageIds,
   getByokTranscriptImageIds,
+  isByokNoticeMessage,
+  makeByokNotice,
   userRequestToByokMessage,
 } from './ByokTranscript';
 import { getFunctionCallsToProcess } from '../AiRequestUtils';
@@ -515,5 +517,37 @@ describe('byokToolResultToFunctionCallOutput with images', () => {
       '{"success":true}'
     );
     expect(message.images).toBeUndefined();
+  });
+
+  // ---- Phase 9: the byok_notice transcript rows ----
+  describe('byok notice rows', () => {
+    it('replay to nothing (they are never sent to any model)', () => {
+      const notice = ((makeByokNotice(
+        'stall',
+        'No activity for 90s.'
+      ): any): AiRequestMessage);
+      expect(byokMessagesForTranscriptItem(notice)).toEqual([]);
+    });
+
+    it('are recognized by the type guard and carry kind + text', () => {
+      const notice = makeByokNotice(
+        'context-summarized',
+        'Context summarized.'
+      );
+      expect(isByokNoticeMessage(notice)).toBe(true);
+      expect(isByokNoticeMessage({ type: 'message', role: 'user' })).toBe(
+        false
+      );
+      expect(notice.noticeKind).toBe('context-summarized');
+      expect(notice.status).toBe('completed');
+    });
+
+    it('do not break the surviving-image computation', () => {
+      const notice = ((makeByokNotice(
+        'rate-limited',
+        'waiting'
+      ): any): AiRequestMessage);
+      expect(getByokTranscriptImageIds([notice])).toEqual([]);
+    });
   });
 });

@@ -114,3 +114,44 @@ setting as the chat-facing surface:
 | Duplicate `onOpenAskAi` key in `AskAiEditorContainer`'s Props type (an older `{\| aiRequestId, paneIdentifier \|}` shape at ~line 228 and the current `(?OpenAskAiOptions) => void` at ~line 234 — the second silently wins). Pre-existing; noticed while wiring the Phase 8 entry points. | `src/AiGeneration/AskAiEditorContainer.js` Props | None — one-line cleanup at the file's next churn. |
 | In-place BYOK restore refreshes the project under open editors, but deeply-held views (scene editors) may show stale content until their next interaction or reopen. v1 accepts this (the phase's full-fidelity-restore disclaimer); a full editor refresh (like `onCheckoutVersion`'s project reload) would remove it. | `src/AiGeneration/AskAiEditorContainer.js` (`onRestoreByokChat`) | A design decision on how hard to refresh (reopening editors is disruptive mid-session). |
 | Repeated in-place project restores inside ONE jest/WASM instance are flaky (embind `null function or function signature mismatch` on the second restore of the same project). The production path does one restore per user action; the ByokFork tool test mocks the restore and the round-trip test covers the real path once. | `src/AiGeneration/Byok/ByokFork.spec.js` | Unknown WASM/embind lifetime cause; affects tests only. |
+
+---
+
+## 2026-09-23 session record — bugs found during Phase 9 (all fixed in-session)
+
+Per the session instruction ("NO-SILENT-LANDMINES"), the bugs surfaced while
+implementing Phase 9 are recorded here as well as in `worklog.md`. **Every
+item below is already fixed and covered by a test** — they are listed for the
+audit trail, not as pending work; nothing here needs action.
+
+1. **Archive marker lost on an in-flight orchestrator update** —
+   `ByokChatStore.updateByokChat` copied the incoming record verbatim, so the
+   suspended loop's next persist (whose record carries no `archivedAt`)
+   silently un-archived an archived chat. Fixed by preserving the stored
+   marker unless the update carries one explicitly (restore passes `null`).
+   Covered by `ByokChatStore.spec.js` ("keeps the archive marker…").
+2. **Quota last-resort eviction emptied the whole store** — the
+   `enforceQuota` loop deleted whole chats without re-reading `totalBytes`
+   between deletions, so a slightly-over cap evicted everything instead of
+   the oldest chats. Fixed (re-read per iteration). Covered by the
+   persistence spec's last-resort test.
+3. **Markdown reload silently skipped every other message** — the parser
+   iterated the message blocks with `index += 2` over a `split('```json')`
+   (every segment after the first holds a message), so a 2-message chat
+   reloaded as 1 and the count mismatch quarantined the file. Fixed
+   (`index += 1`). Covered by the round-trip tests.
+4. **Markdown envelope injection** — a transcript message containing a
+   ``` fence (e.g. an assistant quoting a ```json block) broke the file
+   format on the next reload. Fixed by escaping backticks as `\u0060` in the
+   serialized JSON (lossless) and stripping backticks from the preview
+   lines. Covered by the "quotes markdown fences" round-trip test.
+5. **Compaction could orphan tool outputs** — the first region split could
+   summarize an assistant `tool_calls` message while keeping its output (or
+   vice versa), which strict endpoints reject as a protocol violation. Fixed:
+   call+output pairs are compacted in place, only payload text is one-lined,
+   and only user/plain-assistant text goes to the summarizer. Covered by the
+   compactor spec's pair-preservation test.
+6. **Stale-cache masked test failures** (tooling, not product) — Jest's
+   transform cache served pre-edit files twice during the session; `--no-cache`
+   and direct `@babel/parser` checks were used to separate real failures from
+   cache ghosts.

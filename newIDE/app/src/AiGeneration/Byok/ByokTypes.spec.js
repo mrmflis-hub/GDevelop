@@ -27,6 +27,24 @@ describe('DEFAULT_BYOK_SETTINGS', () => {
       onlineDocsEnabled: false,
       customInstructions: '',
       buildWorkflowAutoSuggest: true,
+      stallWatchdogEnabled: true,
+      stallWindowSeconds: 90,
+      suggestionsEnabled: false,
+      providers: [],
+      routingMode: 'automatic',
+      fastProfile: {
+        providerId: '',
+        modelName: '',
+        temperature: null,
+        maxTokens: null,
+      },
+      strongProfile: {
+        providerId: '',
+        modelName: '',
+        temperature: null,
+        maxTokens: null,
+      },
+      capabilitiesByTargetKey: {},
     });
   });
 });

@@ -210,6 +210,15 @@ export type ByokSubAgentRunnerDeps = {|
   usageTracker: ByokUsageTracker,
   // Shared with the children: any loop finding it exhausted stops.
   sharedTurnBudget: ByokSharedTurnBudget,
+  // ---- Multi-provider routing (Phase 9.4): scouts ride the fast profile,
+  // reviewers the strong one. The passthroughs mirror the parent's. ----
+  getSettings?: () => ByokSettings,
+  getApiKeyForProvider?: (keyRef: string) => Promise<string>,
+  onCapabilityUpdate?: (
+    baseUrl: string,
+    modelName: string,
+    patch: Object
+  ) => void,
 |};
 
 let subAgentCounter = 0;
@@ -280,6 +289,10 @@ export const createByokSubAgentRunner = (
         systemPrompt: buildByokSubAgentSystemPrompt({ kind, toolNames }),
         maxToolRounds: BYOK_SUB_AGENT_MAX_ROUNDS[kind],
         sharedTurnBudget: deps.sharedTurnBudget,
+        callKind: kind === 'scout' ? 'scout' : 'reviewer',
+        getSettings: deps.getSettings,
+        getApiKeyForProvider: deps.getApiKeyForProvider,
+        onCapabilityUpdate: deps.onCapabilityUpdate,
       });
       activeChildren.add(child);
       try {

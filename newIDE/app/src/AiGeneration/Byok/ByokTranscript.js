@@ -180,11 +180,44 @@ export const userRequestToByokMessage = (text: string): ByokChatMessage => ({
 });
 
 /**
+ * A BYOK-local transcript row for orchestrator notices (Phase 9): the stall
+ * watchdog's in-chat message (9.1), the "Context summarized" compaction row
+ * (9.2), the rate-limit backoff line (9.7). It renders as a subtle info row
+ * in the chat UI and is NEVER replayed to the model — it is not part of the
+ * conversation, only of what the user sees.
+ */
+export type ByokNoticeKind =
+  | 'stall'
+  | 'context-summarized'
+  | 'rate-limited'
+  | 'snapshot-stale';
+
+export type ByokNoticeMessage = {|
+  type: 'byok_notice',
+  status: 'completed',
+  noticeKind: ByokNoticeKind,
+  text: string,
+|};
+
+export const isByokNoticeMessage = (message: any): boolean =>
+  message && message.type === 'byok_notice';
+
+export const makeByokNotice = (
+  noticeKind: ByokNoticeKind,
+  text: string
+): ByokNoticeMessage => ({
+  type: 'byok_notice',
+  status: 'completed',
+  noticeKind,
+  text,
+});
+
+/**
  * Map one internal transcript item to the OpenAI messages of the request
  * body. Tool outputs referencing images add a following `user` message
  * carrying `[tool result image]` plus the surviving image parts (older
  * images get a one-line placeholder, per the eviction rule) — with images
- * disabled, no part is ever emitted.
+ * disabled, no part is ever emitted. Notice rows replay to nothing.
  */
 export const byokMessagesForTranscriptItem = (
   aiRequestMessage: AiRequestMessage,
@@ -194,6 +227,8 @@ export const byokMessagesForTranscriptItem = (
     getImage?: (id: string) => ?ByokImageInfo,
   |}
 ): Array<ByokChatMessage> => {
+  if (isByokNoticeMessage(aiRequestMessage)) return [];
+
   const imagesEnabled = options ? options.imagesEnabled !== false : true;
   const survivingImageIds =
     options && options.survivingImageIds

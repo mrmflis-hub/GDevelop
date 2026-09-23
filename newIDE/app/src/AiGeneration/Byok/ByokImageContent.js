@@ -63,6 +63,34 @@ export const registerByokImage = (image: {|
   return info;
 };
 
+/**
+ * Re-register a stored image under its original id (the durable history
+ * 9.3): the transcript references must resolve again after a reload.
+ * Untrusted data: only well-shaped entries are accepted.
+ */
+export const restoreByokImage = (image: any): ?ByokImageInfo => {
+  if (!image || typeof image !== 'object') return null;
+  if (typeof image.id !== 'string' || !image.id) return null;
+  if (typeof image.dataUrl !== 'string' || !isImageDataUrl(image.dataUrl)) {
+    return null;
+  }
+  if (typeof image.width !== 'number' || typeof image.height !== 'number') {
+    return null;
+  }
+  const info: ByokImageInfo = {
+    id: image.id,
+    dataUrl: image.dataUrl,
+    width: image.width,
+    height: image.height,
+    approxTokens:
+      typeof image.approxTokens === 'number'
+        ? image.approxTokens
+        : estimateByokImageTokens(image.width, image.height),
+  };
+  byokImagesById.set(info.id, info);
+  return info;
+};
+
 /** The registered image of this id, or null (evicted or reloaded away). */
 export const getByokImage = (id: string): ByokImageInfo | null =>
   byokImagesById.get(id) || null;

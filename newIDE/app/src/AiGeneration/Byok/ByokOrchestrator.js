@@ -9,6 +9,7 @@ import {
   getFunctionCallsToProcess,
   getFunctionCallOutputsFromEditorFunctionCallResults,
   getLastMessagesFromAiRequestOutput,
+  getLatestActivePlan,
 } from '../AiRequestUtils';
 import type { ByokSubAgentRunner } from './ByokSubAgents';
 import {
@@ -62,13 +63,17 @@ import {
   byokToolResultToFunctionCallOutput,
   getByokSurvivingImageIds,
   makeByokMessageId,
+  makeByokNotice,
+  type ByokNoticeKind,
 } from './ByokTranscript';
 import { getByokImage, makeDefaultByokImageStore } from './ByokImageContent';
 import {
   type ByokCancellation,
+  type ByokCapabilityRecord,
   type ByokSettings,
   type ByokSharedTurnBudget,
   BYOK_GLOBAL_TURN_BUDGET,
+  DEFAULT_STALL_WINDOW_SECONDS,
 } from './ByokTypes';
 import {
   getCachedByokModels,
@@ -79,6 +84,18 @@ import {
   usageFromResponse,
   type ByokUsageTracker,
 } from './ByokUsageTracker';
+import { createByokWatchdog, buildByokStallNoticeText } from './ByokWatchdog';
+import {
+  BYOK_COMPACTION_CONTEXT_RATIO,
+  compactByokTranscript,
+} from './ByokCompactor';
+import {
+  resolveByokModelTarget,
+  resolveByokReasoningEffort,
+  getByokChatModelSelection,
+  type ByokCallKind,
+} from './ByokModelRouter';
+import { getByokCapabilityRecord } from './ByokCapabilities';
 
 /**
  * The client-side agent loop — the BYOK replacement of GDevelop's
@@ -263,6 +280,27 @@ export type ByokOrchestratorOptions = {|
     project: any,
     extension: any
   ) => void,
+  // ---- Multi-provider routing, capabilities, watchdog (Phase 9) ----
+  // Live settings, read at turn time (the getters pattern): routing
+  // changes and capability records written mid-chat apply from the next
+  // round. Absent: the settings frozen at creation are used.
+  getSettings?: () => ByokSettings,
+  // Resolves the API key of a provider key slot (ByokKeyStorage). Absent:
+  // the injected `connection.apiKey` is used for every target.
+  getApiKeyForProvider?: (keyRef: string) => Promise<string>,
+  // Writes a capability record patch (remembered degradation). Absent: the
+  // degradations apply to the current turn only.
+  onCapabilityUpdate?: (
+    baseUrl: string,
+    modelName: string,
+    patch: Partial<ByokCapabilityRecord>
+  ) => void,
+  // The call kind this loop routes as ('main' for chats; sub-agents pass
+  // their own kind — scout/reviewer).
+  callKind?: ByokCallKind,
+  // Called once the chat reaches 'ready' (the seam fetches the opt-in
+  // suggestion chips there, outside the loop).
+  onChatReady?: () => void,
 |};
 
 export type ByokOrchestrator = {|
@@ -373,6 +411,17 @@ export const createByokOrchestrator = (
     getOutput().push(message);
   };
 
+  /**
+   * Append a BYOK-local notice row (stall, compaction, rate-limit): built
+   * through any because the notice type is deliberately not part of the
+   * upstream transcript union — the chat UI renders it, the replay skips it.
+   */
+  const pushNotice = (noticeKind: ByokNoticeKind, text: string): void => {
+    pushTranscriptMessage(
+      ((makeByokNotice(noticeKind, text): any): AiRequestMessage)
+    );
+  };
+
   const persistUpdate = (): void => {
     onAiRequestUpdated(aiRequest);
   };
@@ -407,6 +456,71 @@ export const createByokOrchestrator = (
     return userMessage;
   };
 
+  // ---- Phase 9 state ----
+  // The stall watchdog of the turn in flight (armed per turn, disarmed on
+  // stop/suspend/ready); the loop pauses it while a model call is in flight
+  // (a long call is the client timeout's business) and holds it while the
+  // user is deciding on an approval row. Typed any: the reference is
+  // re-assigned by armWatchdogForTurn from inside closures, which defeats
+  // Flow's narrowing on every guarded call.
+  let watchdog: any = null;
+  // The transcript length at the last compaction: a ratio still ≥ the
+  // threshold right after a compaction must not re-summarize every round.
+  let lastCompactedOutputLength = -1;
+  // Whether edits happened since the project snapshot was last refreshed
+  // (the per-round snapshot refresh of Phase 9.7).
+  let editsSinceSnapshotRefresh = false;
+  // Whether the rate-limit notice was already posted this turn (one per
+  // turn, whatever the number of backoffs).
+  let rateLimitNoticePostedThisTurn = false;
+
+  /** The live settings (getters pattern), or the frozen ones. */
+  const getCurrentSettings = (): ByokSettings =>
+    options.getSettings ? options.getSettings() : settings;
+
+  /**
+   * Resolve where a call of this kind goes (per-chat override > profile
+   * policy > global fallback) and the API key of its provider. Throws a
+   * ByokError-shaped failure when the target is misconfigured: a better
+   * message now than a 404 from a half-configured provider.
+   */
+  const resolveConnectionForCallKind = async (
+    callKind: ByokCallKind
+  ): Promise<{| baseUrl: string, apiKey: string, modelName: string |}> => {
+    const currentSettings = getCurrentSettings();
+    const chatSelection = getByokChatModelSelection(aiRequest);
+    const target = resolveByokModelTarget({
+      settings: currentSettings,
+      chatSelection,
+      callKind,
+    });
+
+    const provider = currentSettings.providers.find(
+      entry => entry.id === target.providerId
+    );
+    const keyRef = provider ? provider.keyRef : '';
+    if (options.getApiKeyForProvider) {
+      const apiKey = await options.getApiKeyForProvider(keyRef);
+      if (!apiKey) {
+        throw new Error(
+          `No API key is stored for the provider of ${target.modelName ||
+            'this model'} — add it in Preferences > BYOK.`
+        );
+      }
+      return {
+        baseUrl: target.endpointUrl,
+        apiKey,
+        modelName: target.modelName,
+      };
+    }
+    // No provider resolver injected: only the global connection exists.
+    return {
+      baseUrl: connection.baseUrl,
+      apiKey: connection.apiKey,
+      modelName: target.modelName || settings.modelName,
+    };
+  };
+
   /**
    * The context window of this chat's model, following the fallback chain
    * of resolveContextWindowTokens: what the server reported → what the user
@@ -414,11 +528,13 @@ export const createByokOrchestrator = (
    * turn so a models fetch made mid-chat is picked up.
    */
   const resolveChatContextWindowTokens = (): number => {
+    const currentSettings = getCurrentSettings();
     const cachedModels = getCachedByokModels(connection.baseUrl);
+    const modelName = settings.modelName;
     const modelInfo = cachedModels
-      ? cachedModels.find(model => model.id === settings.modelName) || null
+      ? cachedModels.find(model => model.id === modelName) || null
       : null;
-    return resolveContextWindowTokens(settings, modelInfo, settings.modelName);
+    return resolveContextWindowTokens(currentSettings, modelInfo, modelName);
   };
 
   /**
@@ -537,16 +653,36 @@ export const createByokOrchestrator = (
   };
 
   const callModel = async (): Promise<any> => {
+    const currentSettings = getCurrentSettings();
+    const { baseUrl, apiKey, modelName } = await resolveConnectionForCallKind(
+      options.callKind || 'main'
+    );
+    const capabilityRecord = getByokCapabilityRecord(
+      currentSettings,
+      baseUrl,
+      modelName
+    );
+    const chatSelection = getByokChatModelSelection(aiRequest);
     const messages = await buildMessagesForModel();
     const chatOptions: any = {
-      model: settings.modelName,
+      model: modelName,
       messages,
       tools: toOpenAiToolsFormat(
         getByokToolSchemasForNames(getAdvertisedToolNames())
       ),
     };
-    if (settings.reasoningEffort !== 'default') {
-      chatOptions.reasoningEffort = settings.reasoningEffort;
+    // The remembered degradation wins (no per-turn 400-dance): a model that
+    // once rejected `reasoning_effort` never sees the parameter again.
+    const reasoningEffort = resolveByokReasoningEffort({
+      settings: currentSettings,
+      chatSelection,
+      capabilityRecord,
+    });
+    if (reasoningEffort) {
+      chatOptions.reasoningEffort = reasoningEffort;
+    }
+    if (capabilityRecord && capabilityRecord.parallelToolCalls === false) {
+      chatOptions.parallelToolCalls = false;
     }
     if (activeCancellation) {
       chatOptions.cancellation = activeCancellation;
@@ -554,14 +690,34 @@ export const createByokOrchestrator = (
 
     try {
       return await sendByokChatCompletionWithRetries({
-        baseUrl: connection.baseUrl,
-        apiKey: connection.apiKey,
+        baseUrl,
+        apiKey,
         options: chatOptions,
+        onReasoningEffortDegraded: () => {
+          if (options.onCapabilityUpdate) {
+            options.onCapabilityUpdate(baseUrl, modelName, {
+              reasoningEffortDegraded: true,
+            });
+          }
+        },
+        onRateLimitWait: waitMs => {
+          if (rateLimitNoticePostedThisTurn) return;
+          rateLimitNoticePostedThisTurn = true;
+          pushNotice(
+            'rate-limited',
+            `[byok-notice] The endpoint is rate-limiting the requests — waiting ${Math.round(
+              waitMs / 1000
+            )}s before retrying.`
+          );
+          persistUpdate();
+        },
       });
     } catch (error) {
       // The endpoint may not see images at all (a text-only model): in
       // auto mode, degrade the chat to text-only and retry once — the
-      // mirror of the reasoning_effort degraded-retry.
+      // mirror of the reasoning_effort degraded-retry. The outcome is
+      // remembered per model (the capability cache), so no future chat has
+      // to rediscover it.
       const byokError = classifyByokError(error);
       const shouldDegrade =
         settings.imageSupport === 'auto' &&
@@ -571,6 +727,9 @@ export const createByokOrchestrator = (
       if (!shouldDegrade) throw error;
 
       imagesDisabledForChat = true;
+      if (options.onCapabilityUpdate) {
+        options.onCapabilityUpdate(baseUrl, modelName, { images: false });
+      }
       console.info(
         'BYOK orchestrator: the endpoint rejected image content — continuing this chat text-only.'
       );
@@ -579,8 +738,8 @@ export const createByokOrchestrator = (
         messages: await buildMessagesForModel(),
       };
       return await sendByokChatCompletionWithRetries({
-        baseUrl: connection.baseUrl,
-        apiKey: connection.apiKey,
+        baseUrl,
+        apiKey,
         options: degradedOptions,
       });
     }
@@ -1023,7 +1182,14 @@ export const createByokOrchestrator = (
 
     const modifyingCalls = proceedingCalls.filter(doesCallRequireApproval);
     if (modifyingCalls.length > 0) {
+      // While the user decides, they are not witnessing a stall: holding
+      // the watchdog (the approval request itself was the last activity).
+      if (watchdog) watchdog.holdForApproval();
       const approved = await onRequestEditApproval(modifyingCalls);
+      if (watchdog) {
+        watchdog.releaseApproval();
+        watchdog.notifyActivity('approval-released');
+      }
       // The user may have pressed stop while the approval row was open: an
       // approved batch must not run after a suspension either.
       if (isSuspended) {
@@ -1073,6 +1239,7 @@ export const createByokOrchestrator = (
     let createdSceneNames: Array<string> = [];
     let createdProject: any = null;
 
+    if (watchdog) watchdog.notifyActivity('tool-executing');
     for (const extraToolCall of extraToolCalls) {
       const result = await runExtraToolCall(extraToolCall);
       if (result) executedResults.push(result);
@@ -1131,6 +1298,7 @@ export const createByokOrchestrator = (
     }
 
     persistUpdate();
+    if (watchdog) watchdog.notifyActivity('tool-output-posted');
 
     // Completion-gate tracking (Phase 8.2): a verify-type call in the batch
     // clears the "edits since last verification" flag, a modifying result
@@ -1147,6 +1315,7 @@ export const createByokOrchestrator = (
       chatMadeEdits = true;
       turnMadeEdits = true;
       hasEditsSinceLastVerification = true;
+      editsSinceSnapshotRefresh = true;
     }
 
     if (onFunctionCallsExecuted) {
@@ -1172,6 +1341,219 @@ export const createByokOrchestrator = (
       latestProjectContent = await getProjectUserContent();
     }
     return true;
+  };
+
+  /**
+   * The preserved block of a compaction (Phase 9.2): rebuilt from explicit
+   * sources, never from the model's memory of itself — the durable project
+   * notes, the current plan, the open problems (recent failed tool
+   * outputs), a fresh object/scene slice, the loaded skills and the latest
+   * verification summary.
+   */
+  const buildPreservedBlock = async (): Promise<string> => {
+    const transcript = getOutput();
+    const sections: Array<string> = [];
+
+    const notesIdentifier = options.getProjectNotesIdentifier
+      ? options.getProjectNotesIdentifier()
+      : null;
+    if (notesIdentifier) {
+      try {
+        const notes = await loadByokProjectNotes(notesIdentifier);
+        const noteLines: Array<string> = [];
+        if (notes.conventions) {
+          noteLines.push(`Conventions: ${notes.conventions}`);
+        }
+        if (notes.inProgress) {
+          noteLines.push(`In progress: ${notes.inProgress}`);
+        }
+        if (notes.decisions) {
+          noteLines.push(`Decisions: ${notes.decisions}`);
+        }
+        if (noteLines.length > 0) {
+          sections.push(
+            `Project notes (design intent):\n${noteLines.join('\n')}`
+          );
+        }
+      } catch (error) {
+        // Notes are best-effort context.
+      }
+    }
+
+    const plan = getLatestActivePlan(
+      (({ output: transcript }: any): AiRequest)
+    );
+    if (plan) {
+      const planLines = plan.tasks.map(
+        task => `- [${task.status}] ${task.title}`
+      );
+      sections.push(`Current plan:\n${planLines.join('\n')}`);
+    }
+
+    const openProblems: Array<string> = [];
+    for (const message of transcript.slice(-30)) {
+      if (message.type !== 'function_call_output') continue;
+      try {
+        const output = JSON.parse(message.output);
+        if (output && output.success === false && output.message) {
+          openProblems.push(`- ${String(output.message).slice(0, 200)}`);
+        }
+      } catch (error) {
+        // Not a JSON output: not a problem report.
+      }
+      if (openProblems.length >= 10) break;
+    }
+    if (openProblems.length > 0) {
+      sections.push(
+        `Open problems (recent failures):\n${openProblems.join('\n')}`
+      );
+    }
+
+    // A fresh object/scene slice, capped: the full snapshot is folded into
+    // the last user message anyway.
+    try {
+      const freshSnapshot = await getProjectUserContent();
+      if (freshSnapshot) {
+        sections.push(
+          `Current project state (simplified, first characters):\n${freshSnapshot.slice(
+            0,
+            4000
+          )}`
+        );
+      }
+    } catch (error) {
+      // No project open (or the fetch failed): the block simply omits it.
+    }
+
+    const loadedSkills: Array<string> = [];
+    for (const message of transcript) {
+      if (message.type !== 'message' || message.role !== 'assistant') continue;
+      for (const item of message.content) {
+        if (item.type !== 'function_call' || item.name !== 'load_skill') {
+          continue;
+        }
+        try {
+          const args = JSON.parse(item.arguments);
+          if (args && typeof args.skillName === 'string') {
+            loadedSkills.push(args.skillName);
+          }
+        } catch (error) {
+          // Unparsable arguments: skip.
+        }
+      }
+    }
+    if (loadedSkills.length > 0) {
+      sections.push(
+        `Loaded skills (reload with load_skill when needed): ${Array.from(
+          new Set(loadedSkills)
+        ).join(', ')}`
+      );
+    }
+
+    // The latest verification summary: what the last check of the work said.
+    for (let index = transcript.length - 1; index >= 0; index--) {
+      const message = transcript[index];
+      if (message.type !== 'function_call_output') continue;
+      if (message.output.includes('"success":true')) {
+        sections.push(
+          `Latest tool verification result:\n${message.output.slice(0, 400)}`
+        );
+        break;
+      }
+    }
+
+    if (sections.length === 0) {
+      return 'No durable context was recorded for this chat yet.';
+    }
+    return sections.join('\n\n');
+  };
+
+  /** The `fast`-profile summarizer call of a compaction. */
+  const buildCompactionSummarizer = (): ((
+    digest: string
+  ) => Promise<string>) => async (digest: string): Promise<string> => {
+    const { baseUrl, apiKey, modelName } = await resolveConnectionForCallKind(
+      'compaction'
+    );
+    const response = await sendByokChatCompletionWithRetries({
+      baseUrl,
+      apiKey,
+      options: {
+        model: modelName,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You summarize the earlier part of a game-creation AI conversation. Keep every decision, name, path and unfinished task — drop pleasantries and repetition. Answer with the summary only.',
+          },
+          { role: 'user', content: digest },
+        ],
+      },
+    });
+    const choice = response.choices[0];
+    const message = choice ? choice.message : null;
+    return message && typeof message.content === 'string'
+      ? message.content
+      : '';
+  };
+
+  /**
+   * The compaction hook: at ≥ 75% of the context window, before the next
+   * model call, summarize the old transcript half and prepend the
+   * preserved block. Never fires mid-tool-batch (called at loop top, where
+   * every dispatched batch already has its outputs) and never twice on an
+   * unchanged transcript.
+   */
+  const maybeCompactTranscript = async (): Promise<void> => {
+    const usedPercentage = aiRequest.contextStats
+      ? aiRequest.contextStats.usedPercentage
+      : 0;
+    if (usedPercentage < BYOK_COMPACTION_CONTEXT_RATIO) return;
+    if (getOutput().length === lastCompactedOutputLength) return;
+
+    const outcome = await compactByokTranscript({
+      transcript: getOutput(),
+      summarizer: buildCompactionSummarizer(),
+      preservedBlockText: await buildPreservedBlock(),
+    });
+    if (!outcome) return;
+
+    lastCompactedOutputLength = outcome.transcript.length + 1;
+    aiRequest.output = outcome.transcript;
+    pushNotice(
+      'context-summarized',
+      `[byok-notice] Context summarized: ${
+        outcome.summarizedMessageCount
+      } earlier message(s) condensed, ${
+        outcome.droppedImageCount
+      } old image(s) and ${
+        outcome.summarizedToolOutputCount
+      } old tool output(s) dropped to fit the model's window. The recent conversation continues below.`
+    );
+    persistUpdate();
+  };
+
+  /**
+   * The per-round snapshot refresh (Phase 9.7): after a round that edited
+   * the project, the next model call sees the state as it is now — the
+   * prompt's "may be slightly stale" caveat becomes the rare truth. A
+   * failing refresh degrades to the previous snapshot with a chat-visible
+   * warning.
+   */
+  const maybeRefreshProjectSnapshot = async (): Promise<void> => {
+    if (!editsSinceSnapshotRefresh) return;
+    try {
+      const freshContent = await getProjectUserContent();
+      if (freshContent) latestProjectContent = freshContent;
+      editsSinceSnapshotRefresh = false;
+    } catch (error) {
+      pushNotice(
+        'snapshot-stale',
+        '[byok-notice] The project state could not be re-read after your last edits — the snapshot below may be slightly stale.'
+      );
+      persistUpdate();
+      editsSinceSnapshotRefresh = false;
+    }
   };
 
   const runLoop = async (): Promise<void> => {
@@ -1200,7 +1582,23 @@ export const createByokOrchestrator = (
       }
       sharedTurnBudget.remaining--;
 
-      const response = await callModel();
+      // Phase 9 hooks, before the model call: compaction at ~75% of the
+      // window, then the snapshot refresh when the previous round edited
+      // the project.
+      await maybeCompactTranscript();
+      await maybeRefreshProjectSnapshot();
+      if (isSuspended) return;
+
+      // The model call itself is the client timeout's business: the
+      // watchdog watches gaps, not the call.
+      if (watchdog) watchdog.pause();
+      let response;
+      try {
+        response = await callModel();
+      } finally {
+        if (watchdog) watchdog.resume();
+      }
+      if (watchdog) watchdog.notifyActivity('response-arrived');
       recordAssistantTurn(response);
 
       const pendingToolCalls = collectPendingToolCalls();
@@ -1235,6 +1633,7 @@ export const createByokOrchestrator = (
           appendCompletionGateBlock(gateResult);
         }
         markReady();
+        if (options.onChatReady) options.onChatReady();
         return;
       }
 
@@ -1289,6 +1688,31 @@ export const createByokOrchestrator = (
     markError(byokError.kind, byokError.message);
   };
 
+  /** Arm the watchdog for a turn (when the user kept stall warnings on). */
+  const armWatchdogForTurn = (): void => {
+    if (watchdog) watchdog.dispose();
+    const currentSettings = getCurrentSettings();
+    if (currentSettings.stallWatchdogEnabled === false) {
+      watchdog = null;
+      return;
+    }
+    // Settings objects saved by older builds carry no window value: fall
+    // back to the default instead of scheduling on NaN.
+    const stallWindowSeconds =
+      typeof currentSettings.stallWindowSeconds === 'number' &&
+      currentSettings.stallWindowSeconds > 0
+        ? currentSettings.stallWindowSeconds
+        : DEFAULT_STALL_WINDOW_SECONDS;
+    watchdog = createByokWatchdog({
+      windowMs: stallWindowSeconds * 1000,
+      onStall: () => {
+        pushNotice('stall', buildByokStallNoticeText(stallWindowSeconds));
+        persistUpdate();
+      },
+    });
+    watchdog.arm();
+  };
+
   const runWithUserMessage = async (text: string): Promise<void> => {
     if (isRunning) {
       console.info('BYOK orchestrator: a message is already being processed.');
@@ -1297,6 +1721,8 @@ export const createByokOrchestrator = (
     isRunning = true;
     isSuspended = false;
     turnMadeEdits = false;
+    rateLimitNoticePostedThisTurn = false;
+    armWatchdogForTurn();
     try {
       // The very first user message decides the build-intent heuristic
       // (a later message never re-triggers the auto-suggested skill).
@@ -1328,6 +1754,7 @@ export const createByokOrchestrator = (
       handleLoopError(error);
     } finally {
       isRunning = false;
+      if (watchdog) watchdog.dispose();
     }
   };
 
@@ -1344,6 +1771,8 @@ export const createByokOrchestrator = (
     }
     isRunning = true;
     isSuspended = false;
+    rateLimitNoticePostedThisTurn = false;
+    armWatchdogForTurn();
     try {
       // Same single 'working' persist per turn start as a user message: the
       // status was 'error', the transcript is unchanged.
@@ -1354,6 +1783,7 @@ export const createByokOrchestrator = (
       handleLoopError(error);
     } finally {
       isRunning = false;
+      if (watchdog) watchdog.dispose();
     }
   };
 
@@ -1367,6 +1797,8 @@ export const createByokOrchestrator = (
       // Sub-agents of this chat are stopped too: suspending the parent
       // must never leave a child spending the user's endpoint alone.
       if (options.subAgentRunner) options.subAgentRunner.suspendAll();
+      // Stop watching: nothing is in flight anymore.
+      if (watchdog) watchdog.disarm();
       // Abort the in-flight model request (see runLoop).
       if (activeCancellation) activeCancellation.cancel();
       markSuspended();

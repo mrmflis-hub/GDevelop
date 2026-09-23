@@ -84,6 +84,22 @@ export type ToolResultImagesRenderItem = {|
   imageIds: Array<string>,
 |};
 
+/**
+ * A BYOK-local orchestrator notice (stall watchdog, "Context summarized",
+ * rate-limit backoff): rendered as a centered info line, never sent to any
+ * model.
+ */
+export type ByokNoticeRenderItem = {|
+  type: 'byok_notice',
+  messageIndex: number,
+  message: {|
+    type: 'byok_notice',
+    status: 'completed',
+    noticeKind: string,
+    text: string,
+  |},
+|};
+
 export type RenderItem =
   | UserMessageRenderItem
   | MessageContentRenderItem
@@ -91,7 +107,8 @@ export type RenderItem =
   | SaveRenderItem
   | SuggestionsRenderItem
   | OrchestratorPlanRenderItem
-  | ToolResultImagesRenderItem;
+  | ToolResultImagesRenderItem
+  | ByokNoticeRenderItem;
 
 /**
  * Whether the user can pay for one more AI request right now: either their AI

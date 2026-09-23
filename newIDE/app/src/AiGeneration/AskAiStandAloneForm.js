@@ -209,7 +209,10 @@ export const AskAiStandAloneForm = ({
   const { openCreditsPackageDialog } = React.useContext(
     CreditsPackageStoreContext
   );
-  const { values: preferencesValues } = React.useContext(PreferencesContext);
+  const {
+    values: preferencesValues,
+    setMultipleValues: setPreferencesMultipleValues,
+  } = React.useContext(PreferencesContext);
   const automaticallyUseCreditsForAiRequests =
     preferencesValues.automaticallyUseCreditsForAiRequests;
   const {
@@ -241,6 +244,8 @@ export const AskAiStandAloneForm = ({
   }, []);
   const byokChatSeam = useByokChatSeam({
     preferencesValues,
+    updateByokPreferences: byokSettings =>
+      setPreferencesMultipleValues({ byok: byokSettings }),
     project,
     fileMetadata,
     i18n,

@@ -403,3 +403,54 @@ open), send exactly:
   work in progress).
 - [ ] Regression: BYOK off → the hosted flows (form, context menus,
   restore) behave exactly as before.
+
+## Task 11 — Phase 9 desktop QA: stamina (watchdog, compaction, history, routing, benchmark)
+
+**Why you:** the Phase 9 gate is desktop-only (long real-endpoint runs,
+restarts, two providers). **Prerequisite:** Task 1 done. **Spec:**
+`Phase9.md` steps 9.1–9.8 + §3. **Added 2026-09-23** (Phase 9 implemented;
+owner ordered the phase in chat, restarting the paused project).
+
+**9.1 + 9.2 — waiting UX and long builds:**
+- [ ] Progress sentences appear per completed to-do during a build (the
+  Phase 7.1 prompt half) — regression of the F2 pair.
+- [ ] Stall notice: park the endpoint (e.g. pause the local server) mid-turn
+  → after the configured window (default 90 s) one `No activity for 90s…`
+  line appears **in the transcript** (a centered notice row, not an error);
+  it repeats at most once per window; any activity ends the sequence; Stop
+  disarms it. Toggle it off in Preferences → BYOK → "While the AI is
+  working" → no notices ever.
+- [ ] 40+-round build session: watch the `Context summarized:` row appear
+  around the 75% context bar and the loop CONTINUE (no `byok-context-full`
+  error unless the window is tiny).
+
+**9.3 — durable history:**
+- [ ] Send a message, let the AI finish, quit the app mid-history →
+  `byok-chats/` under the user-data folder holds readable `.md` files (name
+  = first 5 words + date).
+- [ ] Reopen: the chat window starts clear; the "Chat history" button lists
+  the saved chats (names/dates only); Open reloads the chat with its
+  screenshots still rendering; archive hides from the default list and is
+  restorable; Delete (with confirmation) is permanent.
+- [ ] Settings shows the storage usage line; the feedback export button
+  downloads `byok-ai-feedback.json`.
+
+**9.4 — multi-provider routing + D5:**
+- [ ] Register a second provider (Preferences → BYOK → Providers); per-
+  provider key + "Test this provider".
+- [ ] The chat header shows `BYOK · Provider/model · <n> tokens (<turns>)`;
+  the model dropdown lists `provider name/model name` from each provider's
+  `/models`; a per-chat pick overrides the routing; the effort dropdown
+  offers low/medium/high (or the server-listed levels when probed).
+- [ ] With routing on "automatic" and a fast profile set, the Network tab
+  shows the fast model for compaction/suggestion calls and the strong one
+  for edit turns.
+
+**9.5 — capabilities + benchmark:**
+- [ ] On an endpoint without `reasoning_effort` support: the first turn
+  degrades once; the second turn's request body carries no
+  `reasoning_effort` (DevTools), and no further 400s.
+- [ ] "Run the benchmark (≈2 min)" runs the 4 tasks on a scratch project
+  and prints the pass counts; two models produce a sensible ranking.
+
+**Regression:** hosted AI unaffected; Phase 5–8 scenarios still green.

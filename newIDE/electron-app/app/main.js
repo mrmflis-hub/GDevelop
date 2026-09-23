@@ -53,6 +53,7 @@ const {
   decryptByokSecret,
 } = require('./ByokSafeStorage');
 const { readByokUserSkills } = require('./ByokUserSkills');
+const { registerByokChatFileHandlers } = require('./ByokChatFiles');
 const {
   setWindowFileIdentifier,
   clearWindowFileIdentifier,
@@ -493,6 +494,12 @@ app.on('ready', function() {
   ipcMain.handle('byok-read-user-skills', () =>
     readByokUserSkills(app.getPath('userData'))
   );
+
+  // BYOK durable chat history (Phase 9.3): the Markdown chat files (and
+  // their image sidecars) under <userData>/byok-chats. The renderer owns
+  // the format and the validation (ByokChatPersistence.js) — this side
+  // only moves bytes.
+  registerByokChatFileHandlers(ipcMain, app);
 
   // BYOK perception: capture a screenshot of an open preview window (the
   // last one when no id is given) as base64 PNG — works while the window is

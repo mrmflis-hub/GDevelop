@@ -28,6 +28,14 @@ const RETRY_TIMES = 2;
 const RETRY_BACKOFF_INITIAL_DELAY_MS = 800;
 const RETRY_BACKOFF_FACTOR = 2;
 
+// A rate limit's Retry-After is honored as the backoff delay, capped: an
+// endpoint asking to wait longer than this is not waited on (the error is
+// surfaced instead — hammering it would only extend the limit).
+const RETRY_AFTER_MAX_MS = 30000;
+
+const wait = (ms: number): Promise<void> =>
+  new Promise(resolve => setTimeout(resolve, ms));
+
 /**
  * The base URL of the user's endpoint is used as-is: it already includes
  * `/v1` when their provider uses it (https://api.openai.com/v1, most local
@@ -188,6 +196,18 @@ export const sendByokChatCompletion = async ({
   if (options.tools) {
     body.tools = options.tools;
   }
+  if (options.toolChoice) {
+    body.tool_choice = options.toolChoice;
+  }
+  if (typeof options.parallelToolCalls === 'boolean') {
+    body.parallel_tool_calls = options.parallelToolCalls;
+  }
+  if (typeof options.temperature === 'number') {
+    body.temperature = options.temperature;
+  }
+  if (typeof options.maxTokens === 'number') {
+    body.max_tokens = options.maxTokens;
+  }
   // Only send `reasoning_effort` when the user asked for a specific effort:
   // many OpenAI-compatible servers reject unknown parameters.
   if (
@@ -251,6 +271,18 @@ const stripReasoningEffort = (
   if (options.tools) {
     degradedOptions.tools = options.tools;
   }
+  if (options.toolChoice) {
+    degradedOptions.toolChoice = options.toolChoice;
+  }
+  if (typeof options.parallelToolCalls === 'boolean') {
+    degradedOptions.parallelToolCalls = options.parallelToolCalls;
+  }
+  if (typeof options.temperature === 'number') {
+    degradedOptions.temperature = options.temperature;
+  }
+  if (typeof options.maxTokens === 'number') {
+    degradedOptions.maxTokens = options.maxTokens;
+  }
   if (options.timeoutMs) {
     degradedOptions.timeoutMs = options.timeoutMs;
   }
@@ -264,8 +296,12 @@ const stripReasoningEffort = (
  * Send a chat-completions request with the full retry policy:
  * - a rejection that names `reasoning_effort` is retried once without the
  *   parameter (the endpoint does not support it — degrade instead of fail);
- * - a rate limit asking to wait longer than our backoff budget is not
- *   retried (hammering the endpoint would only extend the limit);
+ *   `onReasoningEffortDegraded` fires the moment that happens, so the caller
+ *   can remember the outcome per model and never send the parameter again
+ *   (Phase 9.7 — the per-turn 400-dance is over);
+ * - a rate limit whose Retry-After fits our budget is honored: the request
+ *   is retried once after exactly that wait, capped at 30s; a longer wait
+ *   is surfaced instead of waited out;
  * - transient failures (server error, rate limit, network, timeout) are
  *   retried with a short backoff;
  * - everything else (authentication, invalid request, a cancelled request,
@@ -279,9 +315,13 @@ export const sendByokChatCompletionWithRetries = async ({
   baseUrl,
   apiKey,
   options,
+  onReasoningEffortDegraded,
+  onRateLimitWait,
 }: {|
   ...ByokConnection,
   options: ByokChatCompletionOptions,
+  onReasoningEffortDegraded?: () => void,
+  onRateLimitWait?: (waitMs: number) => void,
 |}): Promise<ByokChatCompletionResponse> => {
   try {
     return await sendByokChatCompletion({ baseUrl, apiKey, options });
@@ -290,7 +330,9 @@ export const sendByokChatCompletionWithRetries = async ({
 
     if (isInvalidRequestForReasoningEffort(error) && options.reasoningEffort) {
       // Retry once without the reasoning effort: the endpoint does not
-      // support the parameter.
+      // support the parameter. Tell the caller first, so the degraded state
+      // is remembered even if the retry fails for another reason.
+      if (onReasoningEffortDegraded) onReasoningEffortDegraded();
       return await sendByokChatCompletion({
         baseUrl,
         apiKey,
@@ -298,12 +340,26 @@ export const sendByokChatCompletionWithRetries = async ({
       });
     }
 
+    const retryAfterMs = error.retryAfterMs;
     if (
       error.kind === 'rate-limit' &&
-      typeof error.retryAfterMs === 'number' &&
-      error.retryAfterMs > RETRY_BACKOFF_INITIAL_DELAY_MS
+      typeof retryAfterMs === 'number' &&
+      retryAfterMs > 0 &&
+      retryAfterMs <= RETRY_AFTER_MAX_MS
     ) {
-      // The endpoint explicitly asked for a longer wait than our backoff:
+      // The endpoint told us how long to wait, and the wait is bearable:
+      // honor it exactly, with a single retry.
+      if (onRateLimitWait) onRateLimitWait(retryAfterMs);
+      await wait(retryAfterMs);
+      return await sendByokChatCompletion({ baseUrl, apiKey, options });
+    }
+
+    if (
+      error.kind === 'rate-limit' &&
+      typeof retryAfterMs === 'number' &&
+      retryAfterMs > RETRY_AFTER_MAX_MS
+    ) {
+      // The endpoint explicitly asked for a longer wait than we honor:
       // surface the error instead of retrying into the rate limit.
       throw error;
     }

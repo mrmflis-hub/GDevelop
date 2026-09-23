@@ -16,12 +16,16 @@ import {
   BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS,
   BYOK_IMAGE_SUPPORTS,
   BYOK_REASONING_EFFORTS,
+  BYOK_ROUTING_MODES,
+  BYOK_CHAT_STORAGE_QUOTA_BYTES,
   DEFAULT_BYOK_SETTINGS,
+  DEFAULT_STALL_WINDOW_SECONDS,
   MAX_CONTEXT_WINDOW_TOKENS,
   MIN_CONTEXT_WINDOW_TOKENS,
   getByokSettings,
   type ByokChatCompletionOptions,
   type ByokModelInfo,
+  type ByokProvider,
   type ByokSettings,
 } from './ByokTypes';
 import {
@@ -42,6 +46,21 @@ import {
   refreshByokModels,
 } from './ByokModelsCache';
 import { sendByokChatCompletionWithRetries } from './ByokClient';
+import {
+  buildLegacyMigrationProviders,
+  makeByokProviderId,
+  removeByokProvider,
+} from './ByokModelRouter';
+import { exportByokFeedbackJson } from './ByokSuggestions';
+import { getByokChatPersistence } from './ByokChatStore';
+import {
+  formatByokBenchmarkReport,
+  runByokBenchmark,
+  type ByokBenchmarkProjectSnapshot,
+  type ByokBenchmarkReport,
+} from './ByokBenchmark';
+import { editorFunctions } from '../../EditorFunctions';
+import { findByNameokExtraTool } from './ByokExtraTools';
 
 /**
  * Keep the context window in a range every provider accepts: below the
@@ -180,9 +199,132 @@ type ContextWindowRow = {|
   isAutoFromServer: boolean,
 |};
 
+// ---- The benchmark's bridge to the real tools (Phase 9.5) ----
+// The benchmark module is pure (executor + snapshot injected); these two
+// helpers adapt the editor registry and libGDevelop to it. They run on a
+// scratch project, never on the user's.
+
+/**
+ * Read the scratch project back into the plain shape the scorers run on.
+ */
+const snapshotProjectForBenchmark = (
+  project: any
+): ByokBenchmarkProjectSnapshot => {
+  const gd: libGDevelop = global.gd;
+  const scenes = [];
+  for (let index = 0; index < project.getLayoutsCount(); index++) {
+    const scene = project.getLayoutAt(index);
+    const objectNames = [];
+    const objects = scene.getObjects();
+    for (
+      let objectIndex = 0;
+      objectIndex < objects.getObjectsCount();
+      objectIndex++
+    ) {
+      objectNames.push(objects.getObjectAt(objectIndex).getName());
+    }
+    let eventsSource = null;
+    try {
+      eventsSource = gd.Serializer.toJSON(scene.getEvents());
+    } catch (error) {
+      // An unreadable events list scores as "no events written".
+    }
+    scenes.push({
+      name: scene.getName(),
+      objectNames,
+      eventsSource,
+    });
+  }
+  return ({
+    scenes,
+    firstSceneName:
+      project.getLayoutsCount() > 0 ? project.getLayoutAt(0).getName() : null,
+  }: any);
+};
+
+/**
+ * Execute the benchmark model's tool calls against the scratch project:
+ * the intercepted BYOK tools first (the local event writer), then the
+ * editor registry's launch functions. Results are tool-message shaped.
+ */
+const executeByokBenchmarkCalls = async ({
+  calls,
+  project,
+}: {|
+  calls: Array<{| name: string, arguments: string |}>,
+  project: any,
+|}) => {
+  const results = [];
+  for (const call of calls) {
+    const extraTool = findByNameokExtraTool(call.name);
+    if (extraTool) {
+      try {
+        const { output } = await extraTool.run(JSON.parse(call.arguments), {
+          getProject: () => project,
+          onSceneEventsModifiedOutsideEditor: () => {},
+        });
+        results.push({
+          call_id: call.name,
+          success: !!output.success,
+          output: JSON.stringify(output),
+        });
+      } catch (error) {
+        results.push({
+          call_id: call.name,
+          success: false,
+          output: JSON.stringify({
+            success: false,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        });
+      }
+      continue;
+    }
+
+    const editorFunction = editorFunctions[call.name] || null;
+    if (!editorFunction || !editorFunction.launchFunction) {
+      results.push({
+        call_id: call.name,
+        success: false,
+        output: JSON.stringify({
+          success: false,
+          message: `The tool "${
+            call.name
+          }" is not available for the benchmark.`,
+        }),
+      });
+      continue;
+    }
+    try {
+      const output = await editorFunction.launchFunction(
+        ({
+          project,
+          args: JSON.parse(call.arguments),
+        }: any)
+      );
+      results.push({
+        call_id: call.name,
+        success: !(output && output.success === false),
+        output: JSON.stringify(output || { success: true }),
+      });
+    } catch (error) {
+      results.push({
+        call_id: call.name,
+        success: false,
+        output: JSON.stringify({
+          success: false,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      });
+    }
+  }
+  return results;
+};
+
 const ByokSettingsTab = (): React.Node => {
   const { values, setMultipleValues } = React.useContext(PreferencesContext);
   const byokSettings = getByokSettings(values);
+  const gd: libGDevelop = global.gd;
   // The API key lives in its own storage (see `saveByokKey`), never in the
   // preferences: it is held here in local state until the field is left.
   const [apiKey, setApiKey] = React.useState<string>('');
@@ -377,6 +519,222 @@ const ByokSettingsTab = (): React.Node => {
     savePromise.then(() => {
       if (isSubscribedRef.current) refreshKeyStorageState();
     });
+  };
+
+  // ---- Phase 9: providers, routing, watchdog, suggestions, benchmark ----
+
+  // The legacy single endpoint migrates into provider #1 on first visit
+  // (9.4): it keeps keyRef '' — the legacy key slot — so nothing is lost.
+  React.useEffect(
+    () => {
+      const migration = buildLegacyMigrationProviders(byokSettings);
+      if (migration) updateByokSetting({ providers: migration });
+    },
+    // Runs once per visit of the tab: the migration is idempotent anyway.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  // Per-provider API keys live in their own slots; the draft state here
+  // mirrors the key field pattern of the global key above (commit on blur,
+  // only when edited).
+  const [providerKeyDrafts, setProviderKeyDrafts] = React.useState<{|
+    [providerId: string]: string,
+  |}>({});
+  const [editedProviderKeyIds, setEditedProviderKeyIds] = React.useState<
+    Set<string>
+  >(new Set());
+  const [providerTestResults, setProviderTestResults] = React.useState<{|
+    [providerId: string]: ConnectionTestResult | null,
+  |}>({});
+  const [providerUnderTestId, setProviderUnderTestId] = React.useState<
+    string | null
+  >(null);
+
+  const commitProviderKeyField = (provider: ByokProvider) => {
+    if (!editedProviderKeyIds.has(provider.id)) return;
+    setEditedProviderKeyIds(previous => {
+      const next = new Set(previous);
+      next.delete(provider.id);
+      return next;
+    });
+    const key = providerKeyDrafts[provider.id] || '';
+    const savePromise = saveByokKey(key, provider.keyRef).then(saved => {
+      if (key) clearByokModels();
+      return saved;
+    });
+    savePromise.then(() => {
+      if (isSubscribedRef.current) refreshKeyStorageState();
+    });
+  };
+
+  const onAddProvider = () => {
+    const providerId = makeByokProviderId();
+    const provider: ByokProvider = {
+      id: providerId,
+      name: `Provider ${byokSettings.providers.length + 1}`,
+      endpointUrl: '',
+      keyRef: providerId,
+    };
+    updateByokSetting({
+      providers: [...byokSettings.providers, provider],
+    });
+  };
+
+  const onRemoveProvider = (provider: ByokProvider) => {
+    updateByokSetting({
+      providers: removeByokProvider(byokSettings.providers, provider.id),
+    });
+    void clearByokKey(provider.keyRef);
+    clearByokModels();
+  };
+
+  const onTestProviderConnection = async (provider: ByokProvider) => {
+    setProviderUnderTestId(provider.id);
+    setProviderTestResults(previous => ({ ...previous, [provider.id]: null }));
+
+    const options: ByokChatCompletionOptions = {
+      model: byokSettings.modelName,
+      messages: [{ role: 'user', content: 'ping' }],
+      timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
+    };
+
+    try {
+      const draftKey = providerKeyDrafts[provider.id];
+      const storedKey = await loadByokKey(provider.keyRef);
+      const apiKey =
+        draftKey || (storedKey.status === 'ok' ? storedKey.key : '');
+      const endpointUrl = provider.endpointUrl || byokSettings.endpointUrl;
+      await sendByokChatCompletionWithRetries({
+        baseUrl: endpointUrl,
+        apiKey,
+        options,
+      });
+      if (!isSubscribedRef.current) return;
+      setProviderTestResults(previous => ({
+        ...previous,
+        [provider.id]: {
+          ok: true,
+          message: <Trans>Connection successful!</Trans>,
+        },
+      }));
+    } catch (rawError) {
+      if (!isSubscribedRef.current) return;
+      const byokError = classifyByokError(rawError);
+      setProviderTestResults(previous => ({
+        ...previous,
+        [provider.id]: {
+          ok: false,
+          message: renderByokErrorMessage(byokError),
+        },
+      }));
+    } finally {
+      if (isSubscribedRef.current) setProviderUnderTestId(null);
+    }
+  };
+
+  const updateProfile = (
+    profileName: 'fastProfile' | 'strongProfile',
+    partial: {|
+      providerId?: string,
+      modelName?: string,
+      temperature?: ?number,
+      maxTokens?: ?number,
+    |}
+  ) => {
+    const profile = byokSettings[profileName];
+    updateByokSetting(({ [profileName]: { ...profile, ...partial } }: any));
+  };
+
+  // The built-in benchmark (9.5): four fixed tasks against a scratch
+  // project, so the user gets evidence about a model before committing a
+  // long build session to it.
+  const [isBenchmarkRunning, setIsBenchmarkRunning] = React.useState<boolean>(
+    false
+  );
+  const [benchmarkReportText, setBenchmarkReportText] = React.useState<
+    string | null
+  >(null);
+
+  const onRunBenchmark = async () => {
+    setIsBenchmarkRunning(true);
+    setBenchmarkReportText(null);
+    try {
+      const storedKey = await loadByokKey();
+      if (storedKey.status !== 'ok') {
+        setBenchmarkReportText('Add an API key first, then run the benchmark.');
+        return;
+      }
+      // eslint-disable-next-line no-new-wrappers
+      const scratchProject = new (gd: any).ProjectHelper.createNewGDJSProject();
+      const connection = {
+        baseUrl: byokSettings.endpointUrl,
+        apiKey: storedKey.key,
+      };
+      const benchmarkConnection = connection;
+      const report: ByokBenchmarkReport = await runByokBenchmark({
+        modelName: byokSettings.modelName,
+        scratchProject,
+        sendCompletion: async ({ messages }) =>
+          await sendByokChatCompletionWithRetries({
+            ...benchmarkConnection,
+            options: {
+              model: byokSettings.modelName,
+              messages,
+              timeoutMs: 60000,
+            },
+          }),
+        executeToolCalls: async ({ calls, scratchProject: project }) =>
+          await executeByokBenchmarkCalls({ calls, project }),
+        snapshotProject: project => snapshotProjectForBenchmark(project),
+        isVisionEnabled: () => byokSettings.imageSupport !== 'no',
+      });
+      setBenchmarkReportText(formatByokBenchmarkReport(report));
+    } catch (rawError) {
+      const byokError = classifyByokError(rawError);
+      setBenchmarkReportText(
+        ((renderByokErrorMessage(byokError): any): string)
+      );
+    } finally {
+      if (isSubscribedRef.current) setIsBenchmarkRunning(false);
+    }
+  };
+
+  // The durable history's storage usage line (9.3).
+  const [storageUsageText, setStorageUsageText] = React.useState<string | null>(
+    null
+  );
+  React.useEffect(() => {
+    const readUsage = async () => {
+      const store = getByokChatPersistence();
+      if (!store) return;
+      try {
+        const usage = await store.getStorageUsage();
+        const megaBytes = usage.totalBytes / (1000 * 1000);
+        const capMegaBytes = BYOK_CHAT_STORAGE_QUOTA_BYTES / (1000 * 1000);
+        if (isSubscribedRef.current) {
+          setStorageUsageText(
+            `${megaBytes.toFixed(
+              1
+            )} MB of ${capMegaBytes} MB used for chat history.`
+          );
+        }
+      } catch (error) {
+        // The usage line is informational only.
+      }
+    };
+    readUsage();
+  }, []);
+
+  const onExportFeedback = () => {
+    const json = exportByokFeedbackJson();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'byok-ai-feedback.json';
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
 
   /**
@@ -805,6 +1163,307 @@ const ByokSettingsTab = (): React.Node => {
           </Text>
         </Line>
       )}
+      <Text size="block-title">
+        <Trans>Providers</Trans>
+      </Text>
+      <Text>
+        <Trans>
+          Register several OpenAI-compatible providers and pick, per chat, which
+          model answers. The first provider is your previously configured
+          endpoint (its stored key was kept).
+        </Trans>
+      </Text>
+      {byokSettings.providers.map(provider => (
+        <ColumnStackLayout key={provider.id} noMargin>
+          <LineStackLayout noMargin alignItems="center">
+            <Column noMargin expand>
+              <TextField
+                name={`byok-provider-name-${provider.id}`}
+                floatingLabelText={<Trans>Provider name</Trans>}
+                value={provider.name}
+                onChange={(event, text) =>
+                  updateByokSetting({
+                    providers: byokSettings.providers.map(entry =>
+                      entry.id === provider.id
+                        ? { ...entry, name: text }
+                        : entry
+                    ),
+                  })
+                }
+              />
+            </Column>
+            <Column noMargin>
+              <FlatButton
+                label={<Trans>Remove</Trans>}
+                onClick={() => onRemoveProvider(provider)}
+              />
+            </Column>
+          </LineStackLayout>
+          <TextField
+            name={`byok-provider-url-${provider.id}`}
+            floatingLabelText={<Trans>Endpoint base URL</Trans>}
+            hintText="https://api.openai.com/v1"
+            value={provider.endpointUrl}
+            onChange={(event, text) =>
+              updateByokSetting({
+                providers: byokSettings.providers.map(entry =>
+                  entry.id === provider.id
+                    ? { ...entry, endpointUrl: text }
+                    : entry
+                ),
+              })
+            }
+          />
+          <TextField
+            name={`byok-provider-key-${provider.id}`}
+            type="password"
+            autoComplete="off"
+            floatingLabelText={<Trans>API key for this provider</Trans>}
+            value={providerKeyDrafts[provider.id] || ''}
+            onChange={(event, text) => {
+              setProviderKeyDrafts(previous => ({
+                ...previous,
+                [provider.id]: text,
+              }));
+              setEditedProviderKeyIds(
+                previous => new Set([...previous, provider.id])
+              );
+            }}
+            onBlur={() => commitProviderKeyField(provider)}
+          />
+          <LineStackLayout noMargin alignItems="center">
+            <Column noMargin>
+              <RaisedButton
+                label={
+                  providerUnderTestId === provider.id ? (
+                    <Trans>Testing…</Trans>
+                  ) : (
+                    <Trans>Test this provider</Trans>
+                  )
+                }
+                onClick={() => onTestProviderConnection(provider)}
+                disabled={providerUnderTestId === provider.id}
+              />
+            </Column>
+            {providerTestResults[provider.id] && (
+              <Column noMargin expand>
+                <Text
+                  size="body2"
+                  color={
+                    providerTestResults[provider.id].ok ? 'secondary' : 'error'
+                  }
+                >
+                  {providerTestResults[provider.id].message}
+                </Text>
+              </Column>
+            )}
+          </LineStackLayout>
+        </ColumnStackLayout>
+      ))}
+      <Line noMargin>
+        <FlatButton
+          label={<Trans>Add a provider</Trans>}
+          onClick={onAddProvider}
+        />
+      </Line>
+      <Text size="block-title">
+        <Trans>Model routing</Trans>
+      </Text>
+      <LineStackLayout noMargin alignItems="center">
+        <Column noMargin expand>
+          <Text noMargin>
+            <Trans>Routing</Trans>
+          </Text>
+        </Column>
+        <Column noMargin expand>
+          <CompactSelectField
+            value={byokSettings.routingMode}
+            onChange={(value: string) => {
+              const mode = BYOK_ROUTING_MODES.find(
+                candidate => candidate === value
+              );
+              if (!mode) return;
+              updateByokSetting({ routingMode: mode });
+            }}
+          >
+            <SelectOption
+              value="automatic"
+              label={t`Route automatically (fast models for simple calls)`}
+            />
+            <SelectOption
+              value="always-strong"
+              label={t`Always use the strong model`}
+            />
+          </CompactSelectField>
+        </Column>
+      </LineStackLayout>
+      {(['strongProfile', 'fastProfile']: Array<
+        'strongProfile' | 'fastProfile'
+      >).map(profileName => {
+        const profile = byokSettings[profileName];
+        const isFast = profileName === 'fastProfile';
+        return (
+          <ColumnStackLayout key={profileName} noMargin>
+            <Text noMargin>
+              {isFast ? (
+                <Trans>Fast model (scouting, summaries, suggestions)</Trans>
+              ) : (
+                <Trans>Strong model (edits and generation)</Trans>
+              )}
+            </Text>
+            <TextField
+              name={`byok-${profileName}-model`}
+              floatingLabelText={<Trans>Model name</Trans>}
+              hintText={isFast ? 'e.g. gpt-4o-mini' : 'e.g. gpt-4.1'}
+              value={profile.modelName}
+              onChange={(event, text) =>
+                updateProfile(profileName, { modelName: text })
+              }
+            />
+            <LineStackLayout noMargin>
+              <Column noMargin expand>
+                <TextField
+                  name={`byok-${profileName}-temperature`}
+                  type="number"
+                  floatingLabelText={
+                    <Trans>Temperature (empty = default)</Trans>
+                  }
+                  value={
+                    profile.temperature === null
+                      ? ''
+                      : String(profile.temperature)
+                  }
+                  onChange={(event, text) =>
+                    updateProfile(profileName, {
+                      temperature: text.trim() === '' ? null : parseFloat(text),
+                    })
+                  }
+                />
+              </Column>
+              <Column noMargin expand>
+                <TextField
+                  name={`byok-${profileName}-max-tokens`}
+                  type="number"
+                  floatingLabelText={
+                    <Trans>
+                      Max tokens (empty = omitted; recommended for small local
+                      models)
+                    </Trans>
+                  }
+                  value={
+                    profile.maxTokens === null ? '' : String(profile.maxTokens)
+                  }
+                  onChange={(event, text) =>
+                    updateProfile(profileName, {
+                      maxTokens: text.trim() === '' ? null : parseInt(text, 10),
+                    })
+                  }
+                />
+              </Column>
+            </LineStackLayout>
+          </ColumnStackLayout>
+        );
+      })}
+      <Text size="block-title">
+        <Trans>While the AI is working</Trans>
+      </Text>
+      <Checkbox
+        checked={byokSettings.stallWatchdogEnabled}
+        onCheck={(event, checked) =>
+          updateByokSetting({ stallWatchdogEnabled: checked })
+        }
+        label={
+          <Trans>
+            Warn me in the chat when nothing happens for a while (the model may
+            be stuck)
+          </Trans>
+        }
+      />
+      <LineStackLayout noMargin alignItems="center">
+        <Column noMargin expand>
+          <Text noMargin>
+            <Trans>Stall warning delay (seconds)</Trans>
+          </Text>
+        </Column>
+        <Column noMargin expand>
+          <TextField
+            name="byok-stall-window"
+            type="number"
+            value={String(
+              byokSettings.stallWindowSeconds || DEFAULT_STALL_WINDOW_SECONDS
+            )}
+            min={10}
+            max={600}
+            onChange={(event, value) =>
+              updateByokSetting({
+                stallWindowSeconds:
+                  parseInt(value, 10) || DEFAULT_STALL_WINDOW_SECONDS,
+              })
+            }
+          />
+        </Column>
+      </LineStackLayout>
+      <Checkbox
+        checked={byokSettings.suggestionsEnabled}
+        onCheck={(event, checked) =>
+          updateByokSetting({ suggestionsEnabled: checked })
+        }
+        label={
+          <Trans>
+            Suggest follow-up messages when the AI finishes (uses a few extra
+            tokens on your endpoint)
+          </Trans>
+        }
+      />
+      <Text size="block-title">
+        <Trans>Test this model</Trans>
+      </Text>
+      <Text>
+        <Trans>
+          Run 4 short game-building tasks with the configured model, on a
+          scratch project, and see how many pass (about 2 minutes).
+        </Trans>
+      </Text>
+      <Line noMargin>
+        <RaisedButton
+          label={
+            isBenchmarkRunning ? (
+              <Trans>Benchmark running…</Trans>
+            ) : (
+              <Trans>Run the benchmark (≈2 min)</Trans>
+            )
+          }
+          onClick={onRunBenchmark}
+          disabled={
+            isBenchmarkRunning ||
+            !byokSettings.endpointUrl ||
+            !byokSettings.modelName
+          }
+        />
+      </Line>
+      {benchmarkReportText && (
+        <Line noMargin>
+          <Text size="body2" color="secondary">
+            {benchmarkReportText}
+          </Text>
+        </Line>
+      )}
+      <Text size="block-title">
+        <Trans>Chat history storage</Trans>
+      </Text>
+      {storageUsageText && (
+        <Line noMargin>
+          <Text size="body2" color="secondary">
+            {storageUsageText}
+          </Text>
+        </Line>
+      )}
+      <Line noMargin>
+        <FlatButton
+          label={<Trans>Export AI feedback (JSON)</Trans>}
+          onClick={onExportFeedback}
+        />
+      </Line>
     </ColumnStackLayout>
   );
 };

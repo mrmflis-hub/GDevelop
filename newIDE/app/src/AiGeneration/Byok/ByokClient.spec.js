@@ -172,7 +172,7 @@ describe('sendByokChatCompletion', () => {
     // the jest preset resets implementations before each test anyway).
     mockAxios.CancelToken.source.mockImplementation(() => ({
       token: { __fakeCancelToken: true },
-      cancel: jest.fn(),
+      cancel: (jest.fn(): any),
     }));
   });
 
@@ -644,5 +644,161 @@ describe('sendByokChatCompletionWithRetries', () => {
 
     expect(thrownError.kind).toBe('invalid-request');
     expect(mockAxios.post).toHaveBeenCalledTimes(1);
+  });
+
+  // ---- Phase 9.7: retry and robustness polish ----
+
+  describe('Phase 9: Retry-After honoring', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('honors a Retry-After within the 30s cap: waits exactly that, once', async () => {
+      mockAxios.post
+        .mockRejectedValueOnce(
+          makeResponseError(
+            429,
+            { error: { message: 'Slow down' } },
+            { 'retry-after': '2' }
+          )
+        )
+        .mockResolvedValueOnce({ data: makeChatResponse() });
+
+      const onRateLimitWait = (jest.fn(): any);
+      const runPromise = sendByokChatCompletionWithRetries({
+        ...CONNECTION,
+        options: makeChatOptions(),
+        onRateLimitWait,
+      });
+      // Not retried before the requested delay elapsed: the backoff timer
+      // is scheduled (the callback fired) but nothing else happens.
+      for (let index = 0; index < 5; index++) {
+        // eslint-disable-next-line no-await-in-loop
+        await Promise.resolve();
+      }
+      expect(onRateLimitWait).toHaveBeenCalledWith(2000);
+      expect(mockAxios.post).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1999);
+      expect(mockAxios.post).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1);
+      for (let index = 0; index < 10; index++) {
+        // eslint-disable-next-line no-await-in-loop
+        await Promise.resolve();
+      }
+      const result = await runPromise;
+
+      expect(result).toEqual(makeChatResponse());
+      expect(mockAxios.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('surfaces a rate limit asking for more than the 30s cap', async () => {
+      mockAxios.post.mockRejectedValueOnce(
+        makeResponseError(
+          429,
+          { error: { message: 'Too many requests' } },
+          { 'retry-after': '60' }
+        )
+      );
+
+      let thrownError: any = null;
+      try {
+        await sendByokChatCompletionWithRetries({
+          ...CONNECTION,
+          options: makeChatOptions(),
+        });
+      } catch (error) {
+        thrownError = error;
+      }
+      expect(thrownError.kind).toBe('rate-limit');
+      expect(thrownError.retryAfterMs).toBe(60000);
+      expect(mockAxios.post).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Phase 9: the degraded reasoning_effort callback', () => {
+    it('fires the moment the strip-retry engages', async () => {
+      mockAxios.post
+        .mockRejectedValueOnce(
+          makeResponseError(400, {
+            error: {
+              message:
+                "Unknown parameter: 'reasoning_effort' is not supported.",
+            },
+          })
+        )
+        .mockResolvedValueOnce({ data: makeChatResponse() });
+
+      const onReasoningEffortDegraded = (jest.fn(): any);
+      await sendByokChatCompletionWithRetries({
+        ...CONNECTION,
+        options: makeChatOptions({ reasoningEffort: 'high' }),
+        onReasoningEffortDegraded,
+      });
+
+      expect(onReasoningEffortDegraded).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Phase 9: the new request body fields', () => {
+    it('omits the optional profile fields when unset', async () => {
+      mockAxios.post.mockResolvedValueOnce({ data: makeChatResponse() });
+      await sendByokChatCompletion({
+        ...CONNECTION,
+        options: makeChatOptions(),
+      });
+      const body = mockAxios.post.mock.calls[0][1];
+      expect('temperature' in body).toBe(false);
+      expect('max_tokens' in body).toBe(false);
+      expect('tool_choice' in body).toBe(false);
+      expect('parallel_tool_calls' in body).toBe(false);
+    });
+
+    it('sends the profile fields when set', async () => {
+      mockAxios.post.mockResolvedValueOnce({ data: makeChatResponse() });
+      await sendByokChatCompletion({
+        ...CONNECTION,
+        options: makeChatOptions({
+          temperature: 0.3,
+          maxTokens: 512,
+          parallelToolCalls: false,
+        }),
+      });
+      const body = mockAxios.post.mock.calls[0][1];
+      expect(body.temperature).toBe(0.3);
+      expect(body.max_tokens).toBe(512);
+      expect(body.parallel_tool_calls).toBe(false);
+    });
+
+    it('keeps the advanced fields on the degraded (stripped) retry', async () => {
+      mockAxios.post
+        .mockRejectedValueOnce(
+          makeResponseError(400, {
+            error: {
+              message:
+                "Unknown parameter: 'reasoning_effort' is not supported.",
+            },
+          })
+        )
+        .mockResolvedValueOnce({ data: makeChatResponse() });
+
+      await sendByokChatCompletionWithRetries({
+        ...CONNECTION,
+        options: makeChatOptions({
+          reasoningEffort: 'high',
+          temperature: 0.3,
+          maxTokens: 512,
+          parallelToolCalls: false,
+        }),
+      });
+
+      const retryBody = mockAxios.post.mock.calls[1][1];
+      expect('reasoning_effort' in retryBody).toBe(false);
+      expect(retryBody.temperature).toBe(0.3);
+      expect(retryBody.max_tokens).toBe(512);
+      expect(retryBody.parallel_tool_calls).toBe(false);
+    });
   });
 });

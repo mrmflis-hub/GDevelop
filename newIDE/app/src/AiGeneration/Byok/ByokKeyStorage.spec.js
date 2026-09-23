@@ -579,4 +579,41 @@ describe('obfuscate / deobfuscate', () => {
   it('returns null when deobfuscating a value that was never obfuscated', () => {
     expect(deobfuscate('sk-test-1234567890')).toBe(null);
   });
+
+  // ---- Phase 9.4: per-provider key slots ----
+  describe('per-provider key slots', () => {
+    const keyStorage = require('./ByokKeyStorage');
+    it('store and load keys per provider without cross-talk', async () => {
+      expect(await keyStorage.saveByokKey('sk-legacy', '')).toBe(true);
+      expect(
+        await keyStorage.saveByokKey('sk-provider-two', 'provider-two')
+      ).toBe(true);
+
+      const legacy = await keyStorage.loadByokKey('');
+      const two = await keyStorage.loadByokKey('provider-two');
+      expect(legacy).toEqual({ status: 'ok', key: 'sk-legacy' });
+      expect(two).toEqual({ status: 'ok', key: 'sk-provider-two' });
+    });
+
+    it('clears only the targeted slot', async () => {
+      await keyStorage.saveByokKey('sk-a', 'prov-a');
+      await keyStorage.saveByokKey('sk-b', 'prov-b');
+
+      await keyStorage.clearByokKey('prov-a');
+
+      expect(await keyStorage.loadByokKey('prov-a')).toEqual({
+        status: 'none',
+      });
+      expect(await keyStorage.loadByokKey('prov-b')).toEqual({
+        status: 'ok',
+        key: 'sk-b',
+      });
+    });
+
+    it('reports no key for an untouched slot', async () => {
+      expect(await keyStorage.loadByokKey('never-used')).toEqual({
+        status: 'none',
+      });
+    });
+  });
 });
