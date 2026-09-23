@@ -83,12 +83,17 @@ const jsonContainsFragment = (value, fragment) => {
 
 // ---- Event-logic tasks (10): the model writes event batches. ----
 
-const eventBatchHasStandardEvent = (args, conditionFragment, actionFragment) => {
-  const batches = args && Array.isArray(args.event_batches)
-    ? args.event_batches
-    : args && args.events
-    ? args.events
-    : null;
+const eventBatchHasStandardEvent = (
+  args,
+  conditionFragment,
+  actionFragment
+) => {
+  const batches =
+    args && Array.isArray(args.event_batches)
+      ? args.event_batches
+      : args && args.events
+      ? args.events
+      : null;
   if (!batches) return fail('No event_batches found in the arguments.');
   const serialized = JSON.stringify(batches);
   if (conditionFragment && !serialized.includes(conditionFragment)) {
@@ -114,9 +119,7 @@ const eventLogicScorers = {
     const args = parseArgs(collectToolCall(result, 'add_scene_events'));
     if (!args) return fail('No add_scene_events call found.');
     const check = eventBatchHasStandardEvent(args, 'Force', null);
-    return check.passed
-      ? pass('Forces applied for movement.')
-      : check;
+    return check.passed ? pass('Forces applied for movement.') : check;
   },
   'enemy-patrol-left-right': result => {
     const args = parseArgs(collectToolCall(result, 'add_scene_events'));
@@ -200,7 +203,9 @@ const scoreGridPlacement = (result, expected, spacingTolerance = 0.01) => {
   if (!instances) return fail('No instances/positions list in arguments.');
   if (instances.length !== expected.rows * expected.columns) {
     return fail(
-      `Expected ${expected.rows * expected.columns} instances, got ${instances.length}.`
+      `Expected ${expected.rows * expected.columns} instances, got ${
+        instances.length
+      }.`
     );
   }
   const sortedX = instances
@@ -209,7 +214,9 @@ const scoreGridPlacement = (result, expected, spacingTolerance = 0.01) => {
   const distinctX = [...new Set(sortedX)];
   if (distinctX.length !== expected.columns) {
     return fail(
-      `Expected ${expected.columns} distinct x positions, got ${distinctX.length}.`
+      `Expected ${expected.columns} distinct x positions, got ${
+        distinctX.length
+      }.`
     );
   }
   for (let index = 1; index < distinctX.length; index++) {
@@ -242,13 +249,33 @@ const scoreGridPlacement = (result, expected, spacingTolerance = 0.01) => {
 
 const layoutScorers = {
   'grid-5x5-platform': result =>
-    scoreGridPlacement(result, { rows: 5, columns: 5, spacingX: 128, spacingY: 128 }),
+    scoreGridPlacement(result, {
+      rows: 5,
+      columns: 5,
+      spacingX: 128,
+      spacingY: 128,
+    }),
   'wall-of-3x8-bricks': result =>
-    scoreGridPlacement(result, { rows: 8, columns: 3, spacingX: 64, spacingY: 64 }),
+    scoreGridPlacement(result, {
+      rows: 8,
+      columns: 3,
+      spacingX: 64,
+      spacingY: 64,
+    }),
   'row-of-6-lamps': result =>
-    scoreGridPlacement(result, { rows: 1, columns: 6, spacingX: 200, spacingY: 0 }),
+    scoreGridPlacement(result, {
+      rows: 1,
+      columns: 6,
+      spacingX: 200,
+      spacingY: 0,
+    }),
   'two-by-two-turrets': result =>
-    scoreGridPlacement(result, { rows: 2, columns: 2, spacingX: 300, spacingY: 300 }),
+    scoreGridPlacement(result, {
+      rows: 2,
+      columns: 2,
+      spacingX: 300,
+      spacingY: 300,
+    }),
   'stairs-of-4-platforms': result => {
     const call = collectToolCall(result, 'put_2d_instances');
     const args = parseArgs(call);
@@ -266,7 +293,9 @@ const layoutScorers = {
       .sort((a, b) => a.x - b.x);
     for (let index = 1; index < sorted.length; index++) {
       if (sorted[index].y >= sorted[index - 1].y) {
-        return fail('Each platform must be higher (smaller y) than the previous one.');
+        return fail(
+          'Each platform must be higher (smaller y) than the previous one.'
+        );
       }
     }
     return pass('Four ascending platforms.');
@@ -279,7 +308,9 @@ const scoreVariable = (result, predicate, successReason) => {
   const call = collectToolCall(result, 'add_or_edit_variable');
   const args = parseArgs(call);
   if (!args) return fail('No add_or_edit_variable call found.');
-  return predicate(args) ? pass(successReason) : fail('Variable arguments do not match the request.');
+  return predicate(args)
+    ? pass(successReason)
+    : fail('Variable arguments do not match the request.');
 };
 
 const variableScorers = {
@@ -294,13 +325,16 @@ const variableScorers = {
   'scene-health-variable': result =>
     scoreVariable(
       result,
-      args => args.variable_name === 'Health' && Number(args.initial_value) === 3,
+      args =>
+        args.variable_name === 'Health' && Number(args.initial_value) === 3,
       'Health starts at 3.'
     ),
   'player-structure-variable': result =>
     scoreVariable(
       result,
-      args => args.variable_name === 'Inventory' && args.variable_type === 'structure',
+      args =>
+        args.variable_name === 'Inventory' &&
+        args.variable_type === 'structure',
       'An Inventory structure.'
     ),
   'object-ammo-variable': result =>
@@ -314,7 +348,9 @@ const variableScorers = {
       result,
       args =>
         args.variable_name === 'HasKey' &&
-        (args.initial_value === true || args.initial_value === 'true' || args.initial_value === 1),
+        (args.initial_value === true ||
+          args.initial_value === 'true' ||
+          args.initial_value === 1),
       'HasKey is truthy by default.'
     ),
 };
@@ -324,7 +360,8 @@ const variableScorers = {
 const scoreJsCode = (result, requiredFragments) => {
   const text = result.answerText || '';
   const runScript = collectToolCall(result, 'run_script');
-  const code = text + (runScript ? JSON.stringify(parseArgs(runScript) || '') : '');
+  const code =
+    text + (runScript ? JSON.stringify(parseArgs(runScript) || '') : '');
   for (const fragment of requiredFragments) {
     if (!code.includes(fragment)) {
       return fail(`The code misses "${fragment}".`);
@@ -342,8 +379,7 @@ const jsScorers = {
     scoreJsCode(result, ['runtimeScene', 'getSceneStack', 'push']),
   'extension-action-with-expression': result =>
     scoreJsCode(result, ['extension', 'addAction']),
-  'js-camera-follow': result =>
-    scoreJsCode(result, ['getCamera', 'setX']),
+  'js-camera-follow': result => scoreJsCode(result, ['getCamera', 'setX']),
 };
 
 // ---- Perception-repair tasks (5): overlapping HUD fixtures. ----
@@ -371,7 +407,8 @@ const scoreHudRepair = (result, target) => {
   const overlaps =
     Math.abs(x - target.overlappingWith.x) < target.size &&
     Math.abs(y - target.overlappingWith.y) < target.size;
-  if (overlaps) return fail('The new position still overlaps the other HUD object.');
+  if (overlaps)
+    return fail('The new position still overlaps the other HUD object.');
   return pass(`The HUD object moved clear of the overlap.`);
 };
 
@@ -417,7 +454,9 @@ const ALL_SCORERS = {
 };
 
 const tasks = Object.keys(ALL_SCORERS)
-  .map(category => Object.keys(ALL_SCORERS[category]).map(id => ({ id, category })))
+  .map(category =>
+    Object.keys(ALL_SCORERS[category]).map(id => ({ id, category }))
+  )
   .reduce((all, entries) => all.concat(entries), [])
   .map(({ id, category }) =>
     makeTask(id, category, buildPromptForTask(id, category), result =>
@@ -471,6 +510,97 @@ function parseEvalAnswer(answerText) {
 }
 
 /**
+ * Parse a judge answer (strict JSON envelope, fence-tolerant): whether the
+ * judge considers the failed outcome acceptable, plus a one-sentence reason.
+ */
+function parseJudgeAnswer(answerText) {
+  let text = String(answerText || '').trim();
+  const fenceMatch = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
+  if (fenceMatch) text = fenceMatch[1].trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    if (typeof parsed.acceptable !== 'boolean') return null;
+    return {
+      acceptable: parsed.acceptable,
+      reason:
+        typeof parsed.reason === 'string'
+          ? parsed.reason.slice(0, 300)
+          : '(no reason given)',
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * The optional LLM-as-judge pass (Phase 9.8 leftover, closed 2026-09-23):
+ * one chat call per FAILED task asking a second model whether the outcome
+ * was nonetheless acceptable. Advisory only — the mechanical score stays
+ * the source of truth, a judge failure never fails the run.
+ */
+async function runJudgePass({ results, judgeModel, sendJudgeCompletion }) {
+  const judged = [];
+  for (const result of results) {
+    if (result.passed) continue;
+    try {
+      const response = await sendJudgeCompletion({
+        model: judgeModel,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are an impartial judge for GDevelop game-building tasks. ' +
+              'A mechanical scorer marked the task as failed. Answer with ' +
+              'strict JSON only: {"acceptable": true|false, "reason": "<one sentence>"}.',
+          },
+          {
+            role: 'user',
+            content:
+              `Task ${result.taskId} (${result.category}) failed: ${
+                result.reason
+              }. ` +
+              `Rounds used: ${result.rounds}, tool calls: ${
+                result.toolCalls
+              }. ` +
+              'Was the outcome nonetheless acceptable for the user?',
+          },
+        ],
+      });
+      const content =
+        response &&
+        response.choices &&
+        response.choices[0] &&
+        response.choices[0].message &&
+        response.choices[0].message.content;
+      const parsed = parseJudgeAnswer(content);
+      if (!parsed) {
+        judged.push({
+          taskId: result.taskId,
+          verdict: 'unparseable',
+          reason: 'The judge answer was not the expected JSON envelope.',
+        });
+        continue;
+      }
+      judged.push({
+        taskId: result.taskId,
+        verdict: parsed.acceptable ? 'acceptable' : 'not-acceptable',
+        reason: parsed.reason,
+      });
+    } catch (error) {
+      judged.push({
+        taskId: result.taskId,
+        verdict: 'unavailable',
+        reason: String((error && error.message) || error).slice(0, 300),
+      });
+    }
+  }
+  return judged;
+}
+
+/**
  * Run one task against an endpoint. `sendCompletion` is injected so the
  * suite is testable without a network; the CLI builds it on axios.
  */
@@ -511,11 +641,17 @@ async function runEvalTask(task, sendCompletion) {
  * both score correctly (this is what the Jest suite exercises).
  */
 function makeSelfCheckTasks() {
-  const passing = makeTask('self-check-pass', 'event-logic', 'always pass', () =>
-    pass('by construction')
+  const passing = makeTask(
+    'self-check-pass',
+    'event-logic',
+    'always pass',
+    () => pass('by construction')
   );
-  const failing = makeTask('self-check-fail', 'event-logic', 'always fail', () =>
-    fail('by construction')
+  const failing = makeTask(
+    'self-check-fail',
+    'event-logic',
+    'always fail',
+    () => fail('by construction')
   );
   return { passing, failing };
 }
@@ -542,7 +678,9 @@ function formatReport(modelName, results, options) {
   lines.push(`# BYOK eval report — ${modelName} — ${ranAt}`);
   if (options && options.judgeModel) {
     lines.push(
-      `> LLM-as-judge enabled (${options.judgeModel}) — subjective signal, the mechanical score above is the source of truth.`
+      `> LLM-as-judge enabled (${
+        options.judgeModel
+      }) — subjective signal, the mechanical score above is the source of truth.`
     );
   }
   const passCount = results.filter(result => result.passed).length;
@@ -554,14 +692,37 @@ function formatReport(modelName, results, options) {
   );
   const categories = [...new Set(results.map(result => result.category))];
   for (const category of categories) {
-    const categoryResults = results.filter(result => result.category === category);
-    const categoryPasses = categoryResults.filter(result => result.passed).length;
+    const categoryResults = results.filter(
+      result => result.category === category
+    );
+    const categoryPasses = categoryResults.filter(result => result.passed)
+      .length;
     lines.push('');
     lines.push(`## ${category} (${categoryPasses}/${categoryResults.length})`);
     lines.push('');
     for (const result of categoryResults) {
       lines.push(
-        `- ${result.passed ? '✅' : '❌'} **${result.taskId}** — ${result.reason} (rounds: ${result.rounds}, tool calls: ${result.toolCalls}, tokens: ${result.tokens})`
+        `- ${result.passed ? '✅' : '❌'} **${result.taskId}** — ${
+          result.reason
+        } (rounds: ${result.rounds}, tool calls: ${result.toolCalls}, tokens: ${
+          result.tokens
+        })`
+      );
+    }
+  }
+  if (options && options.judgeResults) {
+    lines.push('');
+    lines.push(
+      `## LLM-as-judge (advisory, ${options.judgeModel ||
+        'judge'}) — the mechanical scores above are the source of truth`
+    );
+    lines.push('');
+    if (options.judgeResults.length === 0) {
+      lines.push('- No failed tasks to judge.');
+    }
+    for (const judged of options.judgeResults) {
+      lines.push(
+        `- **${judged.taskId}** — ${judged.verdict}: ${judged.reason}`
       );
     }
   }
@@ -582,7 +743,8 @@ async function main() {
   const key = readArg('key');
   const model = readArg('model');
   const judgeModel = readArg('judge-model');
-  const outDir = readArg('out') || path.join(__dirname, '..', '..', '..', 'REVIEW', 'evals');
+  const outDir =
+    readArg('out') || path.join(__dirname, '..', '..', '..', 'REVIEW', 'evals');
 
   if (!endpoint || !model) {
     console.error(
@@ -597,10 +759,14 @@ async function main() {
 
   const sendCompletion = async ({ messages }) => {
     const body = { model, messages };
-    const response = await axios.post(`${endpoint.replace(/\/+$/, '')}/chat/completions`, body, {
-      headers: key ? { Authorization: `Bearer ${key}` } : {},
-      timeout: 120000,
-    });
+    const response = await axios.post(
+      `${endpoint.replace(/\/+$/, '')}/chat/completions`,
+      body,
+      {
+        headers: key ? { Authorization: `Bearer ${key}` } : {},
+        timeout: 120000,
+      }
+    );
     return response.data;
   };
 
@@ -611,7 +777,9 @@ async function main() {
       const result = await runEvalTask(task, sendCompletion);
       results.push(result);
       console.log(
-        `${result.passed ? 'PASS' : 'FAIL'} ${result.taskId} (${result.tokens} tokens)`
+        `${result.passed ? 'PASS' : 'FAIL'} ${result.taskId} (${
+          result.tokens
+        } tokens)`
       );
     } catch (error) {
       results.push({
@@ -624,13 +792,39 @@ async function main() {
         tokens: 0,
         error: String((error && error.message) || error),
       });
-      console.error(`ERROR ${task.id}: ${String((error && error.message) || error)}`);
+      console.error(
+        `ERROR ${task.id}: ${String((error && error.message) || error)}`
+      );
     }
   }
 
-  const report = formatReport(model, results, { judgeModel });
+  let judgeResults = null;
+  if (judgeModel) {
+    console.log(`Running the LLM-as-judge pass on ${judgeModel}…`);
+    const sendJudgeCompletion = async ({ messages }) => {
+      const response = await axios.post(
+        `${endpoint.replace(/\/+$/, '')}/chat/completions`,
+        { model: judgeModel, messages },
+        {
+          headers: key ? { Authorization: `Bearer ${key}` } : {},
+          timeout: 120000,
+        }
+      );
+      return response.data;
+    };
+    judgeResults = await runJudgePass({
+      results,
+      judgeModel,
+      sendJudgeCompletion,
+    });
+  }
+
+  const report = formatReport(model, results, { judgeModel, judgeResults });
   fs.mkdirSync(outDir, { recursive: true });
-  const fileName = `eval-${model.replace(/[^a-zA-Z0-9._-]+/g, '_')}-${Date.now()}.md`;
+  const fileName = `eval-${model.replace(
+    /[^a-zA-Z0-9._-]+/g,
+    '_'
+  )}-${Date.now()}.md`;
   const outPath = path.join(outDir, fileName);
   fs.writeFileSync(outPath, report, 'utf8');
   console.log(`Report written to ${outPath}`);
@@ -647,7 +841,9 @@ module.exports = {
   tasks,
   makeTask,
   parseEvalAnswer,
+  parseJudgeAnswer,
   runEvalTask,
+  runJudgePass,
   makeSelfCheckTasks,
   runSelfCheck,
   formatReport,

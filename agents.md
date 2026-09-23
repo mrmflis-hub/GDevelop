@@ -48,8 +48,25 @@ Status as of 2026-09-23 (update at the end of every session):
   (Retry-After cap, remembered reasoning_effort degradation, per-round
   snapshot refresh), and the dev-only eval harness
   (`scripts/run-byok-evals.js`, 30 tasks). Prompt stays `byok-v6` (no
-  behavior-text change). QA Task 11 open.
-- **Planned, not started:** nothing (Phase 1–9 all built; what remains is
+  behavior-text change). QA Task 11 open. **Phase 10 implemented
+  2026-09-23, uncommitted** (owner ordered it in chat; decisions D10-1…D10-5
+  answered as recommended): the GDevelop MCP server — loopback HTTP endpoint
+  in the Electron main (`electron-app/app/ByokMcpServer.js`: Bearer token,
+  ephemeral port, discovery file `<userData>\gdevelop-mcp-endpoint.json`,
+  focused-window routing, second-instance refusal, 150 s forward timeout),
+  the zero-dependency stdio adapter
+  (`scripts/gdevelop-mcp-stdio.js` over the plain-CJS, tested
+  `Byok/Mcp/ByokMcpStdioAdapterCore.js`), the renderer protocol core pinned
+  to MCP revision `2026-07-28` (`Byok/Mcp/ByokMcpProtocol.js`), tool
+  mapping + the read-only/read-write access gate
+  (`Byok/Mcp/ByokMcpTools.js`), the serialized tool host with activity ring
+  (`Byok/Mcp/ByokMcpToolHost.js`), the seam-registered executor bridge, the
+  `MainFrame`-mounted endpoint hook, and the settings card. Also closed in
+  this session: the eval-harness LLM-as-judge pass, benchmark report
+  persistence (`ByokBenchmarkStore.js`), the notes-identifier live ref, the
+  `Utils/Serializer.js` project-self-unserialization guard, and the
+  duplicate `onOpenAskAi` Props key. QA Task 12 open (MCP desktop QA).
+- **Planned, not started:** nothing (Phases 1–10 all built; what remains is
   the human QA list in `usertasks.md`).
 
 - **Audits:** every 2026-09-21 audit B-finding is fixed. The remaining open
@@ -62,19 +79,25 @@ Status as of 2026-09-23 (update at the end of every session):
   - `REVIEW/usertasks.md` — the answered decision record + human QA
     (Tasks 1, 2, 6, 7 open).
 - **Owner decisions:** all 16 decisions of 2026-09-22 are **answered**
-  (canonical record in `usertasks.md`; dispositions in the triage docs).
+  (canonical record in `usertasks.md`; dispositions in the triage docs), as
+  are the 5 Phase 10 decisions (D10-1…D10-5, answered 2026-09-23 by the
+  "implement this" order on the presented recommendations).
   Every approved/queued item now has a committed phase home: the fixes
   batch is `Phase7.md` step 7.0 (D10, O1, O4, O5–O11, O13), F2's halves
   are `Phase7.md` step 7.1 + `Phase9.md` step 9.1, the owner's
   persistence + multi-provider designs are `Phase9.md` steps 9.3/9.4
   (with D5), and the Phase 8 prep (D8 hook + O3 memo fix) is
   `Phase8.md` step 8.0. Streaming (D2) and the O2 char-estimate stay
-  **conditional** in `deferred.md` / `Phase9.md` §4 — no Phase 10 was
-  needed.
+  **conditional** in `deferred.md` / `Phase9.md` §4 (that §4 line's "no
+  Phase 10 was needed" meant leftovers only — Phase 10 now exists as the
+  owner-ordered MCP phase).
 - **Project state: the owner RESTARTED it in chat on 2026-09-23 with the
-  order "implement Phase 9" — Phase 9 is done (above). No further feature
-  work is queued; the remaining work is the owner's QA list
-  (`usertasks.md` Tasks 1, 2, 6, 7, 9–11) and the owner's commit review.
+  order "implement Phase 9", then ordered Phase 10 (MCP server) the same
+  day — both are done (above). `outofscoped.md` is empty (the owner closed
+  the backlog with the Phase 10 order); `deferred.md` holds only
+  owner-answered by-design items and accepted limitations. The remaining
+  work is the owner's QA list (`usertasks.md` Tasks 1, 2, 6, 7, 9–12) and
+  the owner's commit review.
 - Owner-provided local assets: `libgd-2.3.3\` (repo root — import-libGD
   source of truth) and `DOCs\` (the GDevelop-documentation clone, Phase 7
   input).

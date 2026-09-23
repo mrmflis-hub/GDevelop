@@ -54,6 +54,7 @@ const {
 } = require('./ByokSafeStorage');
 const { readByokUserSkills } = require('./ByokUserSkills');
 const { registerByokChatFileHandlers } = require('./ByokChatFiles');
+const { registerByokMcpServer } = require('./ByokMcpServer');
 const {
   setWindowFileIdentifier,
   clearWindowFileIdentifier,
@@ -500,6 +501,11 @@ app.on('ready', function() {
   // the format and the validation (ByokChatPersistence.js) — this side
   // only moves bytes.
   registerByokChatFileHandlers(ipcMain, app);
+
+  // BYOK MCP server (Phase 10): the loopback HTTP endpoint external MCP
+  // clients reach through the stdio adapter. The renderer owns the tools —
+  // this side only validates, forwards and keeps the discovery file.
+  registerByokMcpServer(ipcMain, app);
 
   // BYOK perception: capture a screenshot of an open preview window (the
   // last one when no id is given) as base64 PNG — works while the window is

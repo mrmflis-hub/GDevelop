@@ -454,3 +454,77 @@ owner ordered the phase in chat, restarting the paused project).
   and prints the pass counts; two models produce a sensible ranking.
 
 **Regression:** hosted AI unaffected; Phase 5–8 scenarios still green.
+
+## Phase 10 owner decisions — presented and answered 2026-09-23
+
+The MCP-server phase (`Phase10.md`) was ordered in chat on 2026-09-23 with
+"Fantastic! Please implement this." — given immediately after the five
+recommendations below were presented in chat, this approved them as
+recommended (full reasoning and the affected steps in `Phase10.md` §2).
+They are all reversible constants (a default, a folder, a doc appendix).
+
+1. **D10-1 — Protocol implementation.** Recommend: hand-rolled JSON-RPC/MCP
+   subset (no new dependency). **Answer: APPROVED as recommended** —
+   hand-rolled (`Byok/Mcp/ByokMcpProtocol.js`); no `@modelcontextprotocol/sdk`.
+2. **D10-2 — Default access mode when the MCP server is enabled.** Recommend:
+   read-write (the enable toggle is the consent act; read-only stays one
+   dropdown away, and the activity log audits every call). **Answer: APPROVED
+   as recommended** — `DEFAULT_BYOK_MCP_ACCESS_MODE = 'read-write'`.
+3. **D10-3 — Tool surface over MCP.** Recommend: full parity, including
+   `run_script` and `initialize_project` (the access mode gates them like
+   any modifying tool). **Answer: APPROVED as recommended** — full parity.
+4. **D10-4 — Code location.** Recommend: `Byok\Mcp\` (sibling of the seam
+   and registry it reuses; stays inside the scope rule). **Answer: APPROVED
+   as recommended** — `Byok\Mcp\`.
+5. **D10-5 — Client wiring support in v1.** Recommend: dev-time commands
+   documented in `Phase10.md` Appendix A. **Answer: APPROVED as
+   recommended** — dev-time wiring; the settings card copies a generic JSON
+   config snippet.
+
+## Task 12 — Phase 10 desktop QA: the GDevelop MCP server
+
+**Why you:** the MCP endpoint lives in the Electron main process and needs
+real clients, real ports and real windows. **Prerequisite:** Task 1 done
+(desktop build). **Spec:** `Phase10.md` §4 + Appendix A. **Added 2026-09-23**
+(Phase 10 implemented; owner ordered the phase in chat).
+
+**Lifecycle and security:**
+- [ ] Preferences → BYOK → "MCP server (external agents)": the toggle
+  starts and stops the endpoint; while running, the card shows the
+  `http://127.0.0.1:<port>/mcp` URL and the discovery-file path
+  (`<userData>\gdevelop-mcp-endpoint.json`), and the file exists with
+  `port`/`token`/`pid`; disabling removes it.
+- [ ] `curl`-style rejections (or MCP Inspector misconfigured): wrong/absent
+  Bearer token → 403; `GET /mcp` → 405; a >1 MB body → 413; `GET /health`
+  with the token answers `{ok:true,pid,port,protocolVersion}`.
+- [ ] Start a second GDevelop instance with the server enabled → it refuses
+  (the card shows the "another instance owns the endpoint" message); the
+  first instance is unaffected.
+- [ ] Kill GDevelop (no clean quit) with the server on → the stale
+  discovery file is taken over by the next start.
+
+**End-to-end with real clients (Appendix A has the exact commands):**
+- [ ] MCP Inspector (`npx @modelcontextprotocol/inspector node
+  newIDE\app\scripts\gdevelop-mcp-stdio.js`): initialize → tools/list shows
+  the ~50 tools (+ `get_project_overview`), tools/call
+  `get_project_overview` returns the snapshot of the open project.
+- [ ] Claude Code (or ZCode) connected per Appendix A: it can READ the open
+  project (`read_scene_events`, `describe_instances`); with "Read &
+  write" it makes a small edit that appears live in the editor; in
+  "read-only" mode its write attempts are refused with the message naming
+  the setting to unlock.
+- [ ] The card's activity log lists every call (tool, outcome, whether the
+  project was modified, duration); "Clear the activity log" empties it.
+- [ ] The "open the Ask AI panel once" rule: with the panel never opened in
+  the project window, an external tool call gets the actionable no-host
+  error; after opening the Ask AI tab, calls work. Verify the registration
+  SURVIVES switching tabs (if a tab switch kills it, record it in the
+  worklog — the pre-agreed fallback is lifting the registration to
+  MainFrame level).
+- [ ] Restart GDevelop while a client session is open → the adapter
+  reconnects on the next call (new port + token are re-read from the
+  discovery file); no error beyond the one retried call.
+
+**Regression:** hosted AI and BYOK chat flows unaffected; the settings tab
+renders correctly in the web build (toggle disabled with the desktop-only
+explainer).

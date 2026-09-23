@@ -1,11 +1,15 @@
 // @flow
 import {
   BYOK_IMAGE_SUPPORTS,
+  BYOK_MCP_ACCESS_MODES,
   DEFAULT_BYOK_SETTINGS,
+  DEFAULT_BYOK_MCP_ACCESS_MODE,
   getByokSettings,
   isByokFullyConfigured,
   isByokImageSupport,
+  isByokMcpAccessMode,
   isByokReasoningEffort,
+  makeDefaultByokMcpServerSettings,
   type ByokSettings,
 } from './ByokTypes';
 
@@ -45,6 +49,55 @@ describe('DEFAULT_BYOK_SETTINGS', () => {
         maxTokens: null,
       },
       capabilitiesByTargetKey: {},
+      mcpServer: {
+        enabled: false,
+        accessMode: 'read-write',
+      },
+    });
+  });
+});
+
+describe('ByokMcpServerSettings', () => {
+  it('offers the two documented access modes and rejects the others', () => {
+    for (const mode of BYOK_MCP_ACCESS_MODES) {
+      expect(isByokMcpAccessMode(mode)).toBe(true);
+    }
+    expect(isByokMcpAccessMode('admin')).toBe(false);
+    expect(isByokMcpAccessMode(null)).toBe(false);
+  });
+
+  it('defaults to the server off and writes allowed (decision D10-2)', () => {
+    expect(DEFAULT_BYOK_MCP_ACCESS_MODE).toBe('read-write');
+    const defaults = makeDefaultByokMcpServerSettings();
+    expect(defaults).toEqual({ enabled: false, accessMode: 'read-write' });
+    expect(makeDefaultByokMcpServerSettings()).not.toBe(defaults);
+  });
+
+  it('is read back by getByokSettings, defaulting corrupted values', () => {
+    const valid = getByokSettings({
+      byok: ({
+        mcpServer: { enabled: true, accessMode: 'read-only' },
+      }: any),
+    }).mcpServer;
+    expect(valid).toEqual({ enabled: true, accessMode: 'read-only' });
+
+    const corruptedAccessMode = getByokSettings({
+      byok: ({
+        mcpServer: { enabled: true, accessMode: 'sudo' },
+      }: any),
+    }).mcpServer;
+    expect(corruptedAccessMode).toEqual({
+      enabled: true,
+      accessMode: 'read-write',
+    });
+
+    const garbage = getByokSettings({ byok: ({ mcpServer: 42 }: any) })
+      .mcpServer;
+    expect(garbage).toEqual({ enabled: false, accessMode: 'read-write' });
+
+    expect(getByokSettings(({}: any)).mcpServer).toEqual({
+      enabled: false,
+      accessMode: 'read-write',
     });
   });
 });

@@ -1479,3 +1479,227 @@ noted):**
     CLI writes markdown under `REVIEW/evals/`.
 
 ---
+
+## 2026-09-23 — Phase 10 designed (MCP server; owner ordered the phase in chat)
+
+**Date:** 2026-09-23.
+
+**Actions:** designed `REVIEW/Phase10.md` end to end (no code written —
+this is a design session; the four repo gates were not run because no
+source file changed). The design: a loopback MCP endpoint in the Electron
+main process (Bearer token per session, ephemeral port, discovery file
+`<userData>\gdevelop-mcp-endpoint.json`, focused-ready-window routing,
+150 s request timeout, no CORS, second-instance ownership rule), a
+zero-dependency stdio adapter (`scripts\gdevelop-mcp-stdio.js` over a
+tested `Byok\Mcp\ByokMcpStdioAdapterCore.js`, `-32002` on unreachable IDE,
+re-reads discovery across IDE restarts), renderer-side protocol core
+(MCP revision pinned `2026-07-28`, stateless JSON mode), tool mapping +
+access gate (`read-only`/`read-write` from the same `modifiesProject`
+metadata the approval row uses; 200k-char output cap divergence from the
+chat's 20k, recorded in the doc), a serialized tool host with 120 s
+timeout + 200-entry activity ring, seam-level host registration,
+settings card, and client wiring (Appendix A). Verified the design against
+the current tree before writing: the D8 seam (`useByokChatSeam.js` —
+executor factory + collaborator bags the bridge reuses), `ByokSeam.js`
+executor shape (`{name, arguments, call_id}` → `{results, createdSceneNames,
+createdProject}`), `ByokToolSchema.js` (whitelist + `getByokAdvertisedToolNames`),
+`ByokExtraTools.js` collaborators/result shapes (incl. the `runSubAgent`
+nesting guard the MCP path deliberately omits), `ByokTypes.js` settings
+slice pattern, the electron thin-handler registration pattern
+(`ByokSafeStorage`/`ByokChatFiles` + `main.js`), the
+`optionalRequire('electron')` renderer IPC pattern
+(`ByokChatStorageBackends.js`), and `MainFrame/index.js`
+(`renderAskAiEditorContainer` map — the one-line mount touchpoint). Five
+owner decisions (D10-1…D10-5) opened, presented in chat with
+recommendations, and recorded pending in `usertasks.md`.
+
+**Bugs found:** none (design-only session; nothing ran).
+
+**Issues found:**
+1. Tool-host availability is tied to a seam host being mounted (the
+   executor's outside-editor callbacks live in the container), so the
+   practical rule becomes "open the Ask AI tab once in the target project
+   window". A QA item was added (Phase10.md §4) to verify the container
+   really stays mounted across tab switches; if it does not, lifting the
+   registration to a MainFrame-level effect is the pre-agreed fallback —
+   a worklog escalation, not a silent redesign.
+2. Two enabled GDevelop instances would flip-flop the discovery file the
+   adapter reads — an ownership rule is specified (live foreign pid ⇒
+   refuse to start and surface it in the settings card; dead pid ⇒ take
+   over).
+3. The stdio adapter cannot import `src\` modules (Flow annotations are
+   not Node-parseable), so its logic lives in a tested `Byok\Mcp\` core
+   with the script as a thin stdin/stdout pump — the same discipline as
+   the electron shims.
+4. `Phase9.md` §4's "no Phase 10 was needed" line read stale after the
+   owner's order — clarified in AGENTS.md §2 (per §8, fixed in the same
+   session) and noted in `Phase10.md`'s header. `Phase9.md` itself was
+   left untouched (its history is accurate as of its date).
+
+**Files worked on:** `REVIEW/Phase10.md` (new); `REVIEW/usertasks.md`
+(Phase 10 decisions section, pending); `REVIEW/deferred.md` (Phase 10
+v1-deferrals entry); `AGENTS.md` (§2 status update + stale-clause fix);
+`REVIEW/worklog.md` (this entry).
+
+**Triage:** `no OOS`; one `deferred.md` entry added (MCP v1 deferrals, by
+design); one `usertasks.md` section added (D10-1…D10-5, pending).
+
+---
+
+## 2026-09-23 — Phase 10 implemented (GDevelop MCP server) + backlog closeout
+
+**Date:** 2026-09-23.
+
+**Actions:** implemented all of `Phase10.md` (owner order: "implement
+this"; decisions D10-1…D10-5 taken as recommended — hand-rolled protocol,
+read-write default access mode, full tool parity, `Byok\Mcp\` location,
+dev-time wiring — recorded as answered in `usertasks.md`):
+
+1. **Renderer protocol core** `Byok/Mcp/ByokMcpProtocol.js`: JSON-RPC 2.0
+   framing + the MCP method table (`initialize` with version negotiation,
+   `notifications/initialized`, `notifications/cancelled`, `ping`,
+   `tools/list`, `tools/call`), pinned to spec revision `2026-07-28`;
+   handlers carry the request id so cancellation matches.
+2. **Tool mapping** `Byok/Mcp/ByokMcpTools.js`: descriptors from
+   `getByokAdvertisedToolNames`/`getByokToolSchemasForNames` (schemas pass
+   through verbatim as `inputSchema`) + the MCP-native
+   `get_project_overview`; the read-only gate reads the same
+   `modifiesProject`/`getModifiesProject` metadata as the chat approval
+   row; result mapping reproduces the chat serialization exactly
+   (`{success, ...output}` for registry tools, raw output for extras,
+   synthetic abort failures), images materialized as MCP image parts, the
+   200k output cap (recorded divergence from the chat's 20k), the plan-tool
+   echo with `depends_on → dependsOn`.
+3. **Tool host** `Byok/Mcp/ByokMcpToolHost.js`: module-level registry
+   (identity-safe cleanup, change subscribers), serialized FIFO queue,
+   120 s per-call timeout (queue slot stays occupied), client-cancellation
+   marks (skip-if-not-started), 200-entry activity ring
+   (completed/rejected/failed/timeout/cancelled + didModifyProject).
+4. **Renderer endpoint** `Byok/Mcp/useByokMcpServer.js` +
+   `ByokMcpServerHost`: `MainFrame`-mounted (one import + one JSX element
+   in `MainFrame/index.js` — audited touchpoint); pushes
+   `byok-mcp-set-enabled` and `byok-mcp-host-status`, answers
+   `byok-mcp-request`/`byok-mcp-response`; Electron resolved lazily so the
+   web build is inert.
+5. **Seam bridge**: `useByokChatSeam.js` registers the tool host built from
+   the existing executor and collaborators (no `runSubAgent` — sub-agent
+   tools refuse over MCP; no `byokChatId`); dispatch mirrors the chat loop
+   (`create_or_update_plan` echo, extras via `findByNameokExtraTool`
+   unless `isByokExtensionToolShadowedByRegistry`, registry otherwise).
+6. **Electron main** `electron-app/app/ByokMcpServer.js` +
+   `main.js` (require + `registerByokMcpServer(ipcMain, app)`): loopback
+   listener with Bearer token + Host-header guard + 1 MB body cap +
+   404/405/413 handling, notifications answered 202, focused-ready-window
+   routing, 150 s forward timeout, discovery-file lifecycle with
+   second-instance refusal (live foreign pid) and stale takeover,
+   `before-quit` cleanup, no CORS ever. Built by a delegated subagent to
+   the written contract, then reviewed line-by-line.
+7. **Stdio adapter** `scripts/gdevelop-mcp-stdio.js` requiring the
+   plain-CJS tested core `Byok/Mcp/ByokMcpStdioAdapterCore.js` (the
+   `OptionalRequire.js` no-ESM precedent): flags-wins endpoint resolution
+   over the discovery file, `-32002` on unreachable IDE with one
+   discovery-re-read retry, stdout carries protocol messages only, stays
+   alive across IDE restarts. Smoke-tested (`--help`, dead-port retry,
+   notification silence).
+8. **Settings** : `mcpServer` slice in `ByokTypes.js`
+   (`{enabled, accessMode}`, default read-write per D10-2) +
+   `Byok/Mcp/ByokMcpSettingsCard.js` mounted in `ByokSettingsTab.js`
+   (toggle, access dropdown, running status + endpoint URL + discovery
+   path, copy-config JSON, activity list with clear, web-build degradation).
+
+**Backlog closeout (owner order: nothing outstanding remains outside
+`usertasks.md`):**
+
+- **Eval judge pass implemented** — `scripts/run-byok-evals.js`
+  `--judge-model` now runs one chat call per failed task and renders an
+  advisory "LLM-as-judge" report section; judge failures degrade to
+  `unavailable` rows (`runJudgePass`/`parseJudgeAnswer`, exported).
+  Closes the Phase 9 leftover.
+- **Benchmark persistence implemented** — new `Byok/ByokBenchmarkStore.js`
+  (localStorage per endpoint+model); the settings tab shows the stored
+  report with its timestamp. Closes the second Phase 9 leftover.
+- **Notes identifier live ref** — `useByokChatSeam.js` reads `fileMetadata`
+  through `byokFileMetadataRef` in both `getProjectNotesIdentifier`
+  closures (mid-chat "Save as…" moves the notes identifier). Closes the
+  Phase 7 `outofscoped.md` row.
+- **Serializer guard** — `Utils/Serializer.js` routes
+  `optionalProject === serializable` to the single-argument in-place
+  `unserializeFrom` (the Phase 8 WASM-corruption case); new
+  `Serializer.spec.js` covers all three dispatch branches. Closes the
+  Phase 8 `outofscoped.md` row.
+- **Duplicate `onOpenAskAi` Props key removed** from
+  `AskAiEditorContainer.js`. Closes the last Phase 8 cleanup row.
+- `outofscoped.md` is now EMPTY; `deferred.md` holds only owner-answered
+  by-design items, the two accepted Phase 8 limitations moved there, and
+  the Phase 10 v1 scope boundary (approved with the phase order).
+
+**Gates (all from `newIDE\app`, final run):** 198 suites / 2146 passed +
+1 pre-existing skip; lint 0 warnings; Flow 0 errors; check-format clean.
+`newIDE/electron-app`: `node --check` clean, check-format clean.
+
+**Bugs found during implementation (all fixed in-session, each covered by a
+test):**
+
+1. The protocol dispatcher did not forward the JSON-RPC id to the
+   `callTool` handler — cancellation could never have matched an in-flight
+   call. Fixed (`handlers.callTool(params, id)` + type widened).
+2. `ByokMcpTools.js` used `makeSimplifiedProjectBuilder` without importing
+   it (caught by lint `no-undef` — the gate caught it before runtime).
+3. The first queue tests registered hosts whose fake registries lacked the
+   tool names, so dispatch refused them as unknown before reaching the
+   executor — test fixtures fixed to register names.
+4. Three spec assertions JSON-parsed plain-text error results (refusals are
+   `isError` text, not JSON) — assertions fixed to inspect `content[0].text`.
+5. The `OptionalRequire` electron mock lost its implementation to the Jest
+   `resetMocks: true` default (the known factory-impl trap, hit again) —
+   replaced with a plain closure in the mock factory.
+6. The activity-clear test called the raw bag executor, bypassing the queue
+   where activity is recorded — rerouted through `executeByokMcpToolCall`.
+7. `resolveDefaultDiscoveryPath` tests assumed POSIX separators on a
+   Windows host — expectations now built with `path.join`.
+8. The benchmark store key sanitizes URL-hostile characters (`:`/`/` →
+   `_`); the test expectation was corrected to the designed value.
+9. A comment containing the literal `@flow` made Flow parse a plain-JS spec
+   as Flow (invalid mode) — comment reworded.
+10. The settings card's 5 s status interval leaked past tests without
+    unmount — specs now unmount every rendered card.
+
+**Issues found:**
+
+1. The tool host lives while a seam host is mounted — the "open the Ask AI
+   panel once" rule is enforced by an actionable no-host error, and QA
+   Task 12 verifies the tab-switch-keeps-mounted expectation; the
+   MainFrame-level fallback remains the pre-agreed escalation if it does
+   not hold on desktop.
+2. A status channel (`byok-mcp-status`) was added beyond the phase doc's
+   original IPC list — needed by the card/hook to show running state; noted
+   in `Phase10.md`'s implementation notes.
+3. `ByokMcpStdioAdapterCore.js` is plain CJS inside `src/` (no Flow) so the
+   Node script can require it — the same exception as `OptionalRequire.js`,
+   documented in the file header; its spec also runs without the Flow
+   marker.
+4. `jest` roots are `<rootDir>/src` (CRA), confirming specs cannot live in
+   `scripts/` — the adapter core/spec split follows the Phase 9 eval
+   harness pattern.
+
+**Files worked on:** new — `REVIEW/Phase10.md`,
+`newIDE/app/src/AiGeneration/Byok/Mcp/` (ByokMcpProtocol,
+ByokMcpTools, ByokMcpToolHost, ByokMcpStdioAdapterCore, useByokMcpServer,
+ByokMcpSettingsCard + 6 specs), `newIDE/app/src/AiGeneration/Byok/ByokBenchmarkStore.js`
+(+ spec), `newIDE/app/src/Utils/Serializer.spec.js`,
+`newIDE/app/scripts/gdevelop-mcp-stdio.js`,
+`newIDE/electron-app/app/ByokMcpServer.js`; modified —
+`newIDE/app/src/AiGeneration/Byok/ByokTypes.js` (+spec),
+`ByokSettingsTab.js`, `useByokChatSeam.js` (+spec),
+`Byok/evals/ByokEvalHarness.spec.js`, `scripts/run-byok-evals.js`,
+`src/AiGeneration/AskAiEditorContainer.js`, `src/MainFrame/index.js`,
+`src/Utils/Serializer.js`, `newIDE/electron-app/app/main.js`,
+`REVIEW/usertasks.md`, `REVIEW/outofscoped.md`, `REVIEW/deferred.md`,
+`REVIEW/Phase10.md`, `AGENTS.md`, `REVIEW/worklog.md`.
+
+**Triage:** `no OOS` (`outofscoped.md` emptied — every item fixed and
+verified this session or in earlier phase sessions); `no deferred` new
+items (Phase 9 leftovers closed by implementation; the two Phase 8
+accepted limitations moved from `outofscoped.md` into `deferred.md` as
+by-design); one `usertasks.md` addition (QA Task 12 + the D10-1…D10-5
+answered record).

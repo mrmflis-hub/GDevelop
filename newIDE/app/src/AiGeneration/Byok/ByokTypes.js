@@ -60,6 +60,46 @@ export const isByokRoutingMode = (value: mixed): boolean =>
   BYOK_ROUTING_MODES.some(mode => mode === value);
 
 /**
+ * What external MCP clients (Phase 10) may do with the tools they call:
+ * 'read-only' rejects every project-modifying call, 'read-write' executes
+ * everything the chat loop could do.
+ */
+export type ByokMcpAccessMode = 'read-only' | 'read-write';
+
+export const BYOK_MCP_ACCESS_MODES: Array<ByokMcpAccessMode> = [
+  'read-only',
+  'read-write',
+];
+
+export const isByokMcpAccessMode = (value: mixed): boolean =>
+  BYOK_MCP_ACCESS_MODES.some(mode => mode === value);
+
+/**
+ * The GDevelop MCP server settings (Phase 10): the loopback endpoint that
+ * lets external MCP clients (Claude Code, ZCode, …) call the BYOK tool
+ * registry against the live project. `enabled` starts and stops the
+ * listener; `accessMode` is the consent surface for edits over MCP — there
+ * is no chat approval row to render for an external agent, so the mode plus
+ * the activity log carry that role.
+ */
+export type ByokMcpServerSettings = {|
+  enabled: boolean,
+  accessMode: ByokMcpAccessMode,
+|};
+
+/**
+ * Decision D10-2 (2026-09-23): enabling the token-gated loopback server is
+ * the consent act, so writes are allowed as soon as it is on. Read-only
+ * stays one dropdown away.
+ */
+export const DEFAULT_BYOK_MCP_ACCESS_MODE: ByokMcpAccessMode = 'read-write';
+
+export const makeDefaultByokMcpServerSettings = (): ByokMcpServerSettings => ({
+  enabled: false,
+  accessMode: DEFAULT_BYOK_MCP_ACCESS_MODE,
+});
+
+/**
  * The per-model capability record (Phase 9.5): what the endpoint was probed
  * to support (or to reject), keyed per endpoint+model. `null` means "not
  * probed yet". The remembered `reasoningEffortDegraded` state is what ends
@@ -119,6 +159,8 @@ export type ByokSettings = {|
   strongProfile: ByokModelProfile,
   // The per (endpoint, model) capability cache (9.5).
   capabilitiesByTargetKey: { [string]: ByokCapabilityRecord },
+  // The GDevelop MCP server (Phase 10): off by default.
+  mcpServer: ByokMcpServerSettings,
 |};
 
 export const BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS = 2000;
@@ -190,6 +232,10 @@ export const DEFAULT_BYOK_SETTINGS: ByokSettings = {
     maxTokens: null,
   },
   capabilitiesByTargetKey: {},
+  mcpServer: {
+    enabled: false,
+    accessMode: DEFAULT_BYOK_MCP_ACCESS_MODE,
+  },
 };
 
 /**
@@ -424,6 +470,19 @@ const clampStallWindowSeconds = (value: mixed): number => {
   return Math.round(value);
 };
 
+const getMcpServerOrDefault = (value: mixed): ByokMcpServerSettings => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return makeDefaultByokMcpServerSettings();
+  }
+  const record: Object = value;
+  return {
+    enabled: record.enabled === true,
+    accessMode: isByokMcpAccessMode(record.accessMode)
+      ? record.accessMode
+      : DEFAULT_BYOK_MCP_ACCESS_MODE,
+  };
+};
+
 /**
  * Read the per-model capability records, keeping only the well-shaped ones
  * (the map is read back from the preferences: untrusted data).
@@ -475,6 +534,7 @@ const makeDefaultByokSettings = (): ByokSettings => ({
   fastProfile: makeEmptyModelProfile(),
   strongProfile: makeEmptyModelProfile(),
   capabilitiesByTargetKey: {},
+  mcpServer: makeDefaultByokMcpServerSettings(),
 });
 
 /**
@@ -545,6 +605,7 @@ export const getByokSettings = (values: {
     capabilitiesByTargetKey: getCapabilitiesByTargetKeyOrDefault(
       byok.capabilitiesByTargetKey
     ),
+    mcpServer: getMcpServerOrDefault(byok.mcpServer),
   };
 };
 

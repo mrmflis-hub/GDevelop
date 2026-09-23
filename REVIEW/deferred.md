@@ -109,33 +109,75 @@ them.
 
 ---
 
-## 2026-09-23 — Phase 9 leftovers (deliberate, small)
+## 2026-09-23 — Phase 9 leftovers (CLOSED in the Phase 10 session)
 
-### Eval harness: the LLM-as-judge pass is a reserved flag, not implemented
+### Eval harness: the LLM-as-judge pass — IMPLEMENTED (2026-09-23)
 
-- **What:** `scripts/run-byok-evals.js` accepts `--judge-model` and prints
-  it in the report header, but no actual judge call runs — the mechanical
-  scorers are the only scoring today.
-- **Why deferred:** the phase text makes the judge optional ("LLM-as-judge
-  optional, flagged as such in the report"); every current task scores
-  mechanically, and a judge pass doubles the token cost without changing any
-  decision we make today. The flag is wired so enabling it later is one
-  function, not a redesign.
-- **When to tackle:** when tasks appear whose quality is genuinely hard to
-  assert mechanically (open-ended design critique, narrative quality) — i.e.
-  when we would otherwise eyeball scores by hand.
-- **Standing proposal to the owner:** leave as-is; revisit only if a future
-  eval category needs subjective scoring.
+- **Closed:** the owner ordered every outstanding item closed with the
+  Phase 10 implementation. `scripts/run-byok-evals.js` now runs a real
+  judge pass when `--judge-model` is given: one chat call per FAILED task
+  ("was the outcome nonetheless acceptable?"), verdicts rendered as an
+  advisory section of the markdown report; judge failures degrade to
+  `unavailable` rows and never fail the run. Covered by
+  `ByokEvalHarness.spec.js` ("the LLM-as-judge pass").
 
-### Benchmark results are shown as text, not persisted per model
+### Benchmark results persisted per model — IMPLEMENTED (2026-09-23)
 
-- **What:** the settings tab prints the benchmark report text; results are
-  not stored per model for a persistent side-by-side ranking (the phase
-  doc's "shown next to the model dropdown" is satisfied by re-running, which
-  is cheap).
-- **Why deferred:** persistence wants a home (settings blob vs the chat
-  storage quota) and the benchmark takes ~2 min anyway — the re-run gives
-  fresher numbers than a stored one.
-- **When to tackle:** if the owner benchmarks many models regularly and
-  wants the history.
-- **Standing proposal to the owner:** fine to keep as text output for now.
+- **Closed:** `Byok/ByokBenchmarkStore.js` (localStorage, per
+  endpoint+model key) keeps the last report; the settings tab shows the
+  stored result (with its timestamp) without re-running the ~2-minute
+  benchmark. Covered by `ByokBenchmarkStore.spec.js`.
+
+## 2026-09-23 — Accepted limitations (by design, from the Phase 10 closeout)
+
+### In-place BYOK restore may leave deeply-held views stale until interaction
+
+- **What:** after an in-place restore, open scene editors can show
+  pre-restore content until their next interaction or reopen (recorded in
+  `outofscoped.md` during Phase 8; v1 shipped with the disclaimer).
+- **Why accepted:** a full editor refresh (like `onCheckoutVersion`'s
+  reload) is disruptive mid-session; choosing how hard to refresh is a
+  design decision that was never made.
+- **When to tackle:** if restores become a frequent workflow and users hit
+  stale views; the fix belongs next to `onRestoreByokChat` in
+  `AskAiEditorContainer.js`.
+- **Standing proposal to the owner:** keep the v1 behavior unless restore
+  becomes a primary loop.
+
+### Repeated in-place restores inside ONE jest/WASM instance are flaky
+
+- **What:** a second restore of the same project inside one Jest worker can
+  hit an embind "null function or function signature mismatch" — tests
+  only; production does one restore per user action. Recorded during
+  Phase 8; the ByokFork tool test mocks the restore and the round-trip test
+  covers the real path once.
+- **Why accepted:** unknown embind lifetime cause, no user-facing impact,
+  and the current tests are deterministic as written.
+- **When to tackle:** only if it ever makes a suite flaky in practice (it
+  has not); then investigate the embind object lifetime around
+  `unserializeFrom`/`delete()`.
+- **Standing proposal to the owner:** leave as-is.
+
+## 2026-09-23 — Phase 10 v1 scope (approved by the phase order)
+
+### The GDevelop MCP server ships tools-only, stateless, loopback
+
+- **What:** the Phase 10 MCP server implements only `initialize` / `ping` /
+  `tools/list` / `tools/call` (+ notifications) over loopback HTTP with no
+  SSE half — so no `resources`/`prompts`, no server-push notifications
+  (`tools/list_changed`, progress), no sampling/elicitation, no remote/LAN
+  transport; requests route to the focused project window only; the client
+  wiring is dev-time commands, not a packaged-app story.
+- **Why closed as scope (not deferred work):** the owner ordered
+  "implement this" on 2026-09-23 for the phase whose design declares this
+  exact v1 boundary (`Phase10.md` §5, decisions D10-1…D10-5 taken as
+  recommended). The 2026-07-28 spec revision is stateless-first and the
+  stateless JSON mode covers the entire v1 use case; the loopback +
+  per-session token posture IS the security model — a remote transport
+  would need its own threat model and an explicit owner request.
+- **When to revisit:** `resources`/`prompts` once tools prove the transport
+  in daily use; the SSE half with the first feature that needs server-push;
+  per-project multi-window routing if multi-project agent sessions appear;
+  the packaged-adapter story in a packaging phase.
+- **Standing proposal to the owner:** keep v1 tools-only; revisit the list
+  above only after real client use.

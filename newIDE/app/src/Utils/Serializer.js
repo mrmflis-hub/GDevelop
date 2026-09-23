@@ -181,7 +181,12 @@ export function unserializeFromJSObject(
   optionalProject: ?gdProject = undefined
 ) {
   const serializedElement = gd.Serializer.fromJSObject(object);
-  if (!optionalProject) {
+  if (!optionalProject || optionalProject === serializable) {
+    // The two-argument form is for elements *inside* a project (a layout,
+    // an object…). Passing the project as both the serializable and the
+    // "context" argument corrupts the WASM memory (out-of-bounds access):
+    // a project is unserialized in place, with the single-argument form
+    // (see MainFrame's loadFromSerializedProject).
     serializable[methodName](serializedElement);
   } else {
     // It's not uncommon for unserializeFrom methods of gd.* classes

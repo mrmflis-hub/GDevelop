@@ -10,8 +10,10 @@ const {
   tasks,
   makeSelfCheckTasks,
   parseEvalAnswer,
+  parseJudgeAnswer,
   formatReport,
   runEvalTask,
+  runJudgePass,
 } = require('../../../../scripts/run-byok-evals.js');
 
 describe('Byok eval harness: self-check', () => {
@@ -210,5 +212,105 @@ describe('Byok eval harness: the dev-only build boundary', () => {
     expect(offenders).toEqual([]);
     // The boundary guard itself lives inside the dev-only folder.
     expect(evalsDir).toContain('evals');
+  });
+});
+
+describe('Byok eval harness: the LLM-as-judge pass', () => {
+  const failedResults = [
+    {
+      taskId: 't1',
+      category: 'layout',
+      passed: false,
+      reason: 'uneven grid',
+      rounds: 2,
+      toolCalls: 3,
+      tokens: 90,
+    },
+  ];
+
+  it('parses the strict judge envelope, fences tolerated', () => {
+    expect(
+      parseJudgeAnswer('{"acceptable":true,"reason":"good enough"}')
+    ).toEqual({ acceptable: true, reason: 'good enough' });
+    expect(
+      parseJudgeAnswer('```json\n{"acceptable":false,"reason":"broken"}\n```')
+    ).toEqual({ acceptable: false, reason: 'broken' });
+    expect(parseJudgeAnswer('not json')).toBe(null);
+    expect(parseJudgeAnswer('{"acceptable":"yes"}')).toBe(null);
+  });
+
+  it('judges only the failed tasks and classifies the verdicts', async () => {
+    const sendJudgeCompletion = jest.fn();
+    sendJudgeCompletion.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            content: '{"acceptable":true,"reason":"the grid is usable"}',
+          },
+        },
+      ],
+    });
+    const judged = await runJudgePass({
+      results: [
+        { taskId: 'pass-1', category: 'layout', passed: true },
+        ...failedResults,
+      ],
+      judgeModel: 'judge-model',
+      sendJudgeCompletion,
+    });
+    expect(sendJudgeCompletion).toHaveBeenCalledTimes(1);
+    expect(sendJudgeCompletion.mock.calls[0][0].model).toBe('judge-model');
+    expect(judged).toEqual([
+      {
+        taskId: 't1',
+        verdict: 'acceptable',
+        reason: 'the grid is usable',
+      },
+    ]);
+  });
+
+  it('marks unparseable and failed judge calls without failing the run', async () => {
+    const sendJudgeCompletion = jest
+      .fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'no json' } }] })
+      .mockRejectedValueOnce(new Error('endpoint down'));
+    const judged = await runJudgePass({
+      results: [
+        { taskId: 't1', category: 'layout', passed: false },
+        { taskId: 't2', category: 'layout', passed: false },
+      ],
+      judgeModel: 'judge-model',
+      sendJudgeCompletion,
+    });
+    expect(judged).toEqual([
+      {
+        taskId: 't1',
+        verdict: 'unparseable',
+        reason: 'The judge answer was not the expected JSON envelope.',
+      },
+      { taskId: 't2', verdict: 'unavailable', reason: 'endpoint down' },
+    ]);
+  });
+
+  it('renders the advisory judge section only when results are provided', () => {
+    const base = formatReport('eval-model', failedResults, {
+      judgeModel: null,
+    });
+    expect(base).not.toContain('LLM-as-judge');
+
+    const judged = formatReport('eval-model', failedResults, {
+      judgeModel: 'judge-model',
+      judgeResults: [
+        { taskId: 't1', verdict: 'not-acceptable', reason: 'truly broken' },
+      ],
+    });
+    expect(judged).toContain('LLM-as-judge (advisory, judge-model)');
+    expect(judged).toContain('not-acceptable: truly broken');
+
+    const noFailures = formatReport('eval-model', [], {
+      judgeModel: 'judge-model',
+      judgeResults: [],
+    });
+    expect(noFailures).toContain('No failed tasks to judge.');
   });
 });

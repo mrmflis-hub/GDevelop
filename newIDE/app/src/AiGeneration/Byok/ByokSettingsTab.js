@@ -59,8 +59,13 @@ import {
   type ByokBenchmarkProjectSnapshot,
   type ByokBenchmarkReport,
 } from './ByokBenchmark';
+import {
+  loadByokBenchmarkReport,
+  saveByokBenchmarkReport,
+} from './ByokBenchmarkStore';
 import { editorFunctions } from '../../EditorFunctions';
 import { findByNameokExtraTool } from './ByokExtraTools';
+import ByokMcpSettingsCard from './Mcp/ByokMcpSettingsCard';
 
 /**
  * Keep the context window in a range every provider accepts: below the
@@ -648,13 +653,23 @@ const ByokSettingsTab = (): React.Node => {
 
   // The built-in benchmark (9.5): four fixed tasks against a scratch
   // project, so the user gets evidence about a model before committing a
-  // long build session to it.
+  // long build session to it. The last report per (endpoint, model) stays
+  // in localStorage, so it is visible without re-running the benchmark.
   const [isBenchmarkRunning, setIsBenchmarkRunning] = React.useState<boolean>(
     false
   );
   const [benchmarkReportText, setBenchmarkReportText] = React.useState<
     string | null
-  >(null);
+  >(() => {
+    const stored = loadByokBenchmarkReport({
+      endpointUrl: byokSettings.endpointUrl,
+      modelName: byokSettings.modelName,
+    });
+    if (!stored) return null;
+    return `${stored.reportText}\n\n(Stored result from ${
+      stored.finishedAt
+    } — re-run to refresh.)`;
+  });
 
   const onRunBenchmark = async () => {
     setIsBenchmarkRunning(true);
@@ -689,7 +704,13 @@ const ByokSettingsTab = (): React.Node => {
         snapshotProject: project => snapshotProjectForBenchmark(project),
         isVisionEnabled: () => byokSettings.imageSupport !== 'no',
       });
-      setBenchmarkReportText(formatByokBenchmarkReport(report));
+      const formattedReport = formatByokBenchmarkReport(report);
+      saveByokBenchmarkReport({
+        endpointUrl: byokSettings.endpointUrl,
+        modelName: byokSettings.modelName,
+        reportText: formattedReport,
+      });
+      setBenchmarkReportText(formattedReport);
     } catch (rawError) {
       const byokError = classifyByokError(rawError);
       setBenchmarkReportText(
@@ -1464,6 +1485,14 @@ const ByokSettingsTab = (): React.Node => {
           onClick={onExportFeedback}
         />
       </Line>
+      <ByokMcpSettingsCard
+        mcpServer={byokSettings.mcpServer}
+        onChange={partial =>
+          updateByokSetting({
+            mcpServer: { ...byokSettings.mcpServer, ...partial },
+          })
+        }
+      />
     </ColumnStackLayout>
   );
 };

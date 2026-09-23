@@ -98,6 +98,7 @@ import {
 } from './EditorTabs/EditorTabsRenaming';
 import { renderAskAiEditorContainer } from '../AiGeneration/AskAiEditorContainer';
 import { requestAskAiPrefill } from '../AiGeneration/AskAiPrefill';
+import { ByokMcpServerHost } from '../AiGeneration/Byok/Mcp/useByokMcpServer';
 import { renderResourcesEditorContainer } from './EditorContainers/ResourcesEditorContainer';
 import { renderGlobalEventsSearchEditorContainer } from './EditorContainers/GlobalEventsSearchEditorContainer';
 import { type RenderEditorContainerPropsWithRef } from './EditorContainers/BaseEditor';
@@ -6228,6 +6229,10 @@ const MainFrame = (props: Props): React.MixedElement => {
         hasUnsavedChanges={hasUnsavedChanges}
       />
       {!Window.isRunningCommandFromCli() && <ChangelogDialogContainer />}
+      {/* The GDevelop MCP server transport (Phase 10): renders nothing, is
+          inert in the web build, and drives the loopback endpoint from the
+          BYOK preferences. */}
+      <ByokMcpServerHost />
       {selectedInAppTutorialInfo && (
         <StartInAppTutorialDialog
           open

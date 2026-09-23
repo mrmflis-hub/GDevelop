@@ -66,7 +66,17 @@ import {
   createByokEditorFunctionCallExecutor,
   isByokAiRequestId,
 } from './ByokSeam';
-import { findByNameokExtraTool } from './ByokExtraTools';
+import {
+  findByNameokExtraTool,
+  type ByokExtraToolCollaborators,
+} from './ByokExtraTools';
+import { isByokExtensionToolShadowedByRegistry } from './ByokExtensionTools';
+import { makeDefaultByokImageStore } from './ByokImageContent';
+import {
+  getByokMcpToolHost,
+  makeByokMcpToolHost,
+  setByokMcpToolHost,
+} from './Mcp/ByokMcpToolHost';
 import {
   findLargestVisibleSceneCanvas,
   invokeByokPreviewCapture,
@@ -517,6 +527,13 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
   // still sees the current state on every turn: the project prop of the
   // render that created the orchestrator must never be frozen into it.
   const byokProjectRef = useStableUpToDateRef<?any>(project);
+  // The file identifier is read live too (the Phase 7 follow-up): a project
+  // "Save as…" mid-chat changes the identifier, and the notes must follow
+  // without waiting for the chat to be reopened.
+  const byokFileMetadataRef = useStableUpToDateRef<?{
+    +fileIdentifier?: ?string,
+    ...
+  }>(fileMetadata);
   const byokCreatedProjectRef = React.useRef<?any>(null);
   const byokSawProjectPropRef = React.useRef<boolean>(false);
   /**
@@ -585,6 +602,139 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       onWillDeleteObject,
       onWillInstallExtension,
       onExtensionInstalled,
+    ]
+  );
+
+  // ---- Phase 10: the GDevelop MCP tool host ----
+  // The loopback MCP server executes its tool calls through THIS seam's
+  // executor and collaborators, so an external agent works on exactly what
+  // a BYOK chat would — with the sub-agent runner deliberately absent (the
+  // external agent orchestrates itself; the extra tools refuse nesting) and
+  // with no chat id (nothing keys restore points or transcripts on it).
+  // Registered while a seam host is mounted: the practical rule for the
+  // user is "open the Ask AI panel once in the project window"
+  // (Phase10.md step 10.6).
+  React.useEffect(
+    () => {
+      let internalCallCounter = 0;
+      const executeRegistryTool = async (
+        name: string,
+        argsJson: string,
+        callId: string
+      ) => {
+        const execution = await executeByokFunctionCalls(
+          [{ name, arguments: argsJson, call_id: callId }],
+          {
+            aiRequestId: 'byok-mcp',
+            getRelatedAiRequestLastMessages: () => null,
+          }
+        );
+        return (
+          execution.results[0] || {
+            status: 'finished',
+            call_id: callId,
+            success: false,
+            output: { message: 'The tool did not return a result.' },
+          }
+        );
+      };
+      const makeExtraToolCollaborators = (): ByokExtraToolCollaborators => {
+        const currentSettings = getByokSettings(
+          preferencesValuesRef.current || {}
+        );
+        return {
+          getProject: getByokLiveProject,
+          onSceneEventsModifiedOutsideEditor,
+          runtimeDeps: {
+            getProject: getByokLiveProject,
+            captureSceneCanvas: () => {
+              const canvas = findLargestVisibleSceneCanvas(
+                typeof document !== 'undefined' ? document : null
+              );
+              if (!canvas) return null;
+              return canvas.toDataURL('image/jpeg', 0.7);
+            },
+            invokePreviewCapture: invokeByokPreviewCapture,
+            getPreviewLauncher: getProjectPreviewLauncher,
+            storeImage: makeDefaultByokImageStore(),
+            executeSingleToolCall: async (name, args) => {
+              internalCallCounter += 1;
+              const execution = await executeByokFunctionCalls(
+                [
+                  {
+                    name,
+                    arguments: JSON.stringify(args),
+                    call_id: `mcp-internal-${internalCallCounter}`,
+                  },
+                ],
+                {
+                  aiRequestId: 'byok-mcp',
+                  getRelatedAiRequestLastMessages: () => null,
+                }
+              );
+              return execution.results[0];
+            },
+          },
+          // No runSubAgent: the structural nesting guard makes the sub-agent
+          // tools refuse over MCP, which is the designed behavior.
+          onlineDocsEnabled: currentSettings.onlineDocsEnabled,
+          getProjectNotesIdentifier: () => {
+            const liveProject = getByokLiveProject();
+            if (!liveProject) return null;
+            const liveFileMetadata = byokFileMetadataRef.current;
+            if (liveFileMetadata && liveFileMetadata.fileIdentifier) {
+              return liveFileMetadata.fileIdentifier;
+            }
+            return makeByokProjectNotesIdentifierFromProjectName(
+              liveProject.getName()
+            );
+          },
+          reloadEventsFunctionsExtensions: project =>
+            eventsFunctionsExtensionsState.reloadProjectEventsFunctionsExtensions(
+              project
+            ),
+          reloadEventsFunctionsExtensionMetadata: (project, extension) =>
+            eventsFunctionsExtensionsState.reloadProjectEventsFunctionsExtensionMetadata(
+              project,
+              extension
+            ),
+        };
+      };
+      const host = makeByokMcpToolHost({
+        executeRegistryTool,
+        executeExtraTool: async (name, args) => {
+          const extraTool = findByNameokExtraTool(name);
+          if (!extraTool) throw new Error(`Unknown tool: ${name}`);
+          return extraTool.run(args, makeExtraToolCollaborators());
+        },
+        getExtraTool: name => findByNameokExtraTool(name),
+        isExtraToolShadowedByRegistry: name =>
+          isByokExtensionToolShadowedByRegistry(name),
+        editorFunctions,
+        editorFunctionsWithoutProject,
+        getProject: getByokLiveProject,
+        getSettings: () => getByokSettings(preferencesValuesRef.current || {}),
+      });
+      setByokMcpToolHost(host);
+      return () => {
+        // Unregister only while still the current host: a newer mount (another
+        // window, or a remount) must not be torn down by an older cleanup.
+        if (getByokMcpToolHost() === host) {
+          setByokMcpToolHost(null);
+        }
+      };
+    },
+    [
+      executeByokFunctionCalls,
+      getByokLiveProject,
+      onSceneEventsModifiedOutsideEditor,
+      preferencesValuesRef,
+      editorFunctions,
+      editorFunctionsWithoutProject,
+      fileMetadata,
+      byokFileMetadataRef,
+      getProjectPreviewLauncher,
+      eventsFunctionsExtensionsState,
     ]
   );
 
@@ -783,12 +933,14 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           ),
         // The per-project notes (Phase 7) are keyed on the project's file
         // identifier, with a project-name hash as the fallback for projects
-        // not saved yet.
+        // not saved yet. Read live: a "Save as…" mid-chat must move the
+        // notes to the new identifier.
         getProjectNotesIdentifier: () => {
           const liveProject = getByokLiveProject();
           if (!liveProject) return null;
-          if (fileMetadata && fileMetadata.fileIdentifier) {
-            return fileMetadata.fileIdentifier;
+          const liveFileMetadata = byokFileMetadataRef.current;
+          if (liveFileMetadata && liveFileMetadata.fileIdentifier) {
+            return liveFileMetadata.fileIdentifier;
           }
           return makeByokProjectNotesIdentifierFromProjectName(
             liveProject.getName()
@@ -906,7 +1058,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       triggerUnsavedChanges,
       onOpenLayout,
       onSceneEventsModifiedOutsideEditor,
-      fileMetadata,
+      byokFileMetadataRef,
       getProjectPreviewLauncher,
       editorFunctions,
       editorFunctionsWithoutProject,

@@ -8,6 +8,7 @@ import { saveByokKey } from './ByokKeyStorage';
 import { getByokChat, listByokChats } from './ByokChatStore';
 import { isByokAiRequestId } from './ByokSeam';
 import { useEnsureExtensionInstalled } from '../UseEnsureExtensionInstalled';
+import { getByokMcpToolHost, setByokMcpToolHost } from './Mcp/ByokMcpToolHost';
 
 jest.mock('./ByokClient', () => ({
   sendByokChatCompletionWithRetries: (jest.fn(): any),
@@ -268,5 +269,98 @@ describe('useByokChatSeam', () => {
     });
     expect((capture.current: any).getByokLiveProject()).toBe(fakeProject);
     renderer.unmount();
+  });
+});
+
+describe('useByokChatSeam — the MCP tool host (Phase 10)', () => {
+  const makeFinishedResult = (callId: string) => ({
+    status: 'finished',
+    call_id: callId,
+    success: true,
+    output: { message: 'ok' },
+  });
+
+  beforeEach(() => {
+    // Outside the parent describe: this block needs the same hook stub.
+    mockUseEnsureExtensionInstalled.mockImplementation(() => ({
+      ensureExtensionInstalled: (jest.fn(async () => {}): any),
+    }));
+  });
+
+  afterEach(() => {
+    setByokMcpToolHost(null);
+  });
+
+  it('registers the tool host on mount and unregisters it on unmount', async () => {
+    const { renderer } = renderSeam(makeOptions());
+    await act(async () => {});
+    expect(getByokMcpToolHost()).not.toBe(null);
+
+    await act(async () => {
+      renderer.unmount();
+    });
+    expect(getByokMcpToolHost()).toBe(null);
+  });
+
+  it('an older mount cleanup does not unregister a newer host', async () => {
+    const first = renderSeam(makeOptions());
+    await act(async () => {});
+    const firstHost = getByokMcpToolHost();
+
+    const second = renderSeam(makeOptions());
+    await act(async () => {});
+    expect(getByokMcpToolHost()).not.toBe(firstHost);
+
+    await act(async () => {
+      first.renderer.unmount();
+    });
+    expect(getByokMcpToolHost()).not.toBe(null);
+
+    await act(async () => {
+      second.renderer.unmount();
+    });
+    expect(getByokMcpToolHost()).toBe(null);
+  });
+
+  it('executes a registry tool through the seam executor', async () => {
+    const processEditorFunctionCalls = (jest.fn(): any).mockResolvedValue({
+      results: [makeFinishedResult('mcp-1')],
+      createdSceneNames: [],
+      createdProject: null,
+    });
+    renderSeam(makeOptions({ processEditorFunctionCalls }));
+    await act(async () => {});
+    const host = (getByokMcpToolHost(): any);
+
+    const result = await host.executeRegistryTool(
+      'read_scene_events',
+      '{"sceneName":"Menu"}',
+      'mcp-1'
+    );
+    expect(processEditorFunctionCalls).toHaveBeenCalledWith(
+      expect.objectContaining({
+        functionCalls: [
+          {
+            name: 'read_scene_events',
+            arguments: '{"sceneName":"Menu"}',
+            call_id: 'mcp-1',
+          },
+        ],
+        relatedAiRequestId: 'byok-mcp',
+      })
+    );
+    expect(result.output.message).toBe('ok');
+  });
+
+  it('refuses sub-agent extra tools (no runner is provided over MCP)', async () => {
+    renderSeam(makeOptions());
+    await act(async () => {});
+    const host = (getByokMcpToolHost(): any);
+
+    const extraResult = await host.executeExtraTool('run_explorer_agent', {
+      instructions: 'Explore everything.',
+    });
+    expect(extraResult.output.success).toBe(false);
+    expect(extraResult.output.message).toContain('nested');
   });
 });
