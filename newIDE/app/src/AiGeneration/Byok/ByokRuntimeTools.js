@@ -151,6 +151,22 @@ export const shapeByokGameplayTestOutput = async (
  * Create the perception tools. The preview session is created on first use
  * (one BYOK preview at a time — the v1 rule).
  */
+// The session holder the completion gate reads (see getByokPreviewHasCrashed):
+// the production tools are created once at import time, so exactly one
+// holder exists at runtime. Kept module-level (and not returned) so the
+// tool list's shape stays unchanged.
+const activePreviewSessionHolder: {| session: ?ByokPreviewSession |} = {
+  session: null,
+};
+
+/**
+ * Whether the BYOK preview of this window crashed and was not restarted
+ * since — the completion gate's "no crashed previews pending" check.
+ */
+export const getByokPreviewHasCrashed = (): boolean =>
+  !!activePreviewSessionHolder.session &&
+  activePreviewSessionHolder.session.hasCrashed();
+
 export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
   let previewSession: ?ByokPreviewSession = null;
 
@@ -162,12 +178,14 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
         getPreviewLauncher: deps.getPreviewLauncher,
         getProject: deps.getProject,
       });
+      activePreviewSessionHolder.session = previewSession;
     }
     return previewSession;
   };
 
   const captureSceneScreenshotTool: ByokExtraTool = {
     name: 'capture_scene_screenshot',
+    modifiesProject: false,
     run: async (args, collaborators): Promise<ByokExtraToolResult> => {
       const runtimeDeps = (collaborators.runtimeDeps: ?ByokRuntimeToolDeps);
       if (!runtimeDeps) {
@@ -210,6 +228,7 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
 
   const capturePreviewScreenshotTool: ByokExtraTool = {
     name: 'capture_preview_screenshot',
+    modifiesProject: false,
     run: async (args, collaborators): Promise<ByokExtraToolResult> => {
       const runtimeDeps = (collaborators.runtimeDeps: ?ByokRuntimeToolDeps);
       if (!runtimeDeps) {
@@ -252,6 +271,7 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
 
   const startPreviewTool: ByokExtraTool = {
     name: 'start_preview',
+    modifiesProject: false,
     run: async (args, collaborators): Promise<ByokExtraToolResult> => {
       const runtimeDeps = (collaborators.runtimeDeps: ?ByokRuntimeToolDeps);
       if (!runtimeDeps) {
@@ -279,6 +299,7 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
 
   const stopPreviewTool: ByokExtraTool = {
     name: 'stop_preview',
+    modifiesProject: false,
     run: async (args, collaborators): Promise<ByokExtraToolResult> => {
       const runtimeDeps = (collaborators.runtimeDeps: ?ByokRuntimeToolDeps);
       if (!runtimeDeps) {
@@ -294,6 +315,7 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
 
   const readPreviewLogsTool: ByokExtraTool = {
     name: 'read_preview_logs',
+    modifiesProject: false,
     run: async (args, collaborators): Promise<ByokExtraToolResult> => {
       const runtimeDeps = (collaborators.runtimeDeps: ?ByokRuntimeToolDeps);
       if (!runtimeDeps) {
@@ -329,6 +351,7 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
 
   const getRuntimeErrorsTool: ByokExtraTool = {
     name: 'get_runtime_errors',
+    modifiesProject: false,
     run: async (args, collaborators): Promise<ByokExtraToolResult> => {
       const runtimeDeps = (collaborators.runtimeDeps: ?ByokRuntimeToolDeps);
       if (!runtimeDeps) {
@@ -362,6 +385,7 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
 
   const inspectRuntimeStateTool: ByokExtraTool = {
     name: 'inspect_runtime_state',
+    modifiesProject: false,
     run: async (args, collaborators): Promise<ByokExtraToolResult> => {
       const runtimeDeps = (collaborators.runtimeDeps: ?ByokRuntimeToolDeps);
       if (!runtimeDeps) {
@@ -389,6 +413,7 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
 
   const runGameplayTestTool: ByokExtraTool = {
     name: 'run_gameplay_test',
+    modifiesProject: true,
     run: async (args, collaborators): Promise<ByokExtraToolResult> => {
       const runtimeDeps = (collaborators.runtimeDeps: ?ByokRuntimeToolDeps);
       if (!runtimeDeps) {

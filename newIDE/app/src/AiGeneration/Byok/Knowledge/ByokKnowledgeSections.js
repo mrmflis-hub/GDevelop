@@ -136,7 +136,16 @@ const PLANNING_SECTION_TEXT = `- For multi-step requests, call create_or_update_
 - Every time you complete a to-do item, send the user a one-sentence progress update together with your next batch of tool calls, before starting the next item.
 - A single long answer without a to-do list stays acceptable for simple requests.`;
 
-const SINGLE_AGENT_SECTION_TEXT = `You are a single agent: do the work yourself with the provided tools. There are no sub-agents to delegate to — never ask for one.`;
+const AGENTS_SECTION_TEXT = `You are the main agent of this chat: do the edits yourself, with the provided tools.
+Delegation policy (Phase 8):
+- run_explorer_agent delegates a READ-ONLY scout with a fresh context: use it for broad read-only sweeps (inventory the scenes, find where something is used) that would flood this conversation.
+- run_review_agent delegates a fresh-context reviewer: use it to check the finished work against the original request before claiming done on a multi-step build.
+- Never edit inside sub-agents: they are read-only by design. All edits happen here, in this conversation.
+- There is no edit agent: sequential edits are yours.
+
+Completion rules: claim done ONLY after verifying your work — a screenshot, a booted preview, a green gameplay test, or clean logs AFTER your last edit. The completion gate will nudge you once if you claim done without verification, and your final message carries the verification evidence.
+
+Skills: before building a game from a request, load_skill("build-workflow") and follow its pipeline. When a task needs JavaScript or custom objects/behaviors/functions, load_skill("extend-with-js").`;
 
 const EVENT_SCRIPT_CORE_SECTION_TEXT = `- Read before writing: call read_events_source on the scene and write your batches from what it shows.
 - EventScript syntax: one event per indented block — \`if Timer(2, "SpawnTimer") and once:\` (conditions joined with "and", "not" inverts, Or(...), once), \`always:\`, \`else:\`, \`else if ...:\`, \`while Cond():\`, \`repeat 5 times:\`, \`for each Player:\`, \`for each child in Inventory value Item:\`, \`group "Name":\`, \`comment "text"\`. Actions are the indented lines of a block, one call per line: \`Delete(Player)\`, \`await Wait(1)\`, \`SetNumberVariable(Score, =, +1)\`. Quoted strings use double quotes, empty body is \`pass\`.
@@ -162,9 +171,10 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     id: 'tools',
     title: 'Available tools',
     priority: 20,
-    // The full advertised list (30+ tools with their summaries) must fit:
-    // a truncated tool list would hide tools from the model.
-    budgetTokens: 1400,
+    // The full advertised list (48 tools with their summaries, Phase 8's
+    // surface) must fit: a truncated tool list would hide tools from the
+    // model.
+    budgetTokens: 2100,
     degradable: false,
     build: context => buildToolSectionText(context.toolNames),
   };
@@ -221,11 +231,11 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     50,
     PLANNING_SECTION_TEXT
   );
-  const singleAgentSection = makeSimpleSection(
-    'single-agent',
-    'Single agent',
+  const agentsSection = makeSimpleSection(
+    'agents',
+    'Agents policy',
     60,
-    SINGLE_AGENT_SECTION_TEXT
+    AGENTS_SECTION_TEXT
   );
   const eventScriptCoreSection = makeSimpleSection(
     'eventscript-core',
@@ -296,7 +306,7 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     projectNotesSection,
     outputRulesSection,
     planningSection,
-    singleAgentSection,
+    agentsSection,
     eventScriptCoreSection,
     scriptSection,
     lookVerifySection,

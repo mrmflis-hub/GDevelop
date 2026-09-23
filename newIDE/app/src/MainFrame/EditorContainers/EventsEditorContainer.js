@@ -248,6 +248,7 @@ export class EventsEditorContainer extends React.Component<RenderEditorContainer
         hotReloadPreviewButtonProps={this.props.hotReloadPreviewButtonProps}
         onWillInstallExtension={this.props.onWillInstallExtension}
         onExtensionInstalled={this.props.onExtensionInstalled}
+        onOpenAskAi={this.props.onOpenAskAi}
         onCreateNewExtensionWithBehavior={
           this.props.onCreateNewExtensionWithBehavior
         }

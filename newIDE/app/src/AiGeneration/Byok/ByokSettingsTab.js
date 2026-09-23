@@ -555,6 +555,19 @@ const ByokSettingsTab = (): React.Node => {
           </Trans>
         }
       />
+      <Checkbox
+        checked={byokSettings.buildWorkflowAutoSuggest}
+        onCheck={(event, checked) =>
+          updateByokSetting({ buildWorkflowAutoSuggest: checked })
+        }
+        label={
+          <Trans>
+            Auto-load the build workflow for game requests (the playbook is
+            included from the first turn when a message looks like "make me a
+            game")
+          </Trans>
+        }
+      />
       <Line noMargin>
         <Text size="body2" color="secondary">
           <Trans>

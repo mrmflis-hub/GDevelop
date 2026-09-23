@@ -46,6 +46,9 @@ export type ByokSettings = {|
   // The user's global custom instructions, injected verbatim as the last
   // section of the system prompt (persona, house rules). 2 KB cap.
   customInstructions: string,
+  // When true (Phase 8.3), a first message that looks like a game-build
+  // request auto-includes the build-workflow skill body from turn one.
+  buildWorkflowAutoSuggest: boolean,
 |};
 
 export const BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS = 2000;
@@ -70,6 +73,7 @@ export const DEFAULT_BYOK_SETTINGS: ByokSettings = {
   contextWindowByModel: {},
   onlineDocsEnabled: false,
   customInstructions: '',
+  buildWorkflowAutoSuggest: true,
 };
 
 /**
@@ -289,6 +293,10 @@ export const getByokSettings = (values: {
       byok.customInstructions,
       DEFAULT_BYOK_SETTINGS.customInstructions
     ).slice(0, BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS),
+    buildWorkflowAutoSuggest: getBooleanOrDefault(
+      byok.buildWorkflowAutoSuggest,
+      DEFAULT_BYOK_SETTINGS.buildWorkflowAutoSuggest
+    ),
   };
 };
 
@@ -313,3 +321,16 @@ export const isByokFullyConfigured = (settings: ByokSettings): boolean => {
 
   return true;
 };
+
+/**
+ * The global model-turn budget shared by a parent BYOK chat and all of its
+ * sub-agents (Phase 8.1): every model round of the parent and of every
+ * child decrements `remaining`, and any loop that finds it exhausted stops
+ * — sub-agents multiply the calls made against the user's paid endpoint, so
+ * runaway cost must be impossible. A plain mutable object so parent and
+ * children truly share one counter.
+ */
+export type ByokSharedTurnBudget = {| remaining: number |};
+
+/** The default size of the shared parent+sub-agents turn budget. */
+export const BYOK_GLOBAL_TURN_BUDGET = 150;

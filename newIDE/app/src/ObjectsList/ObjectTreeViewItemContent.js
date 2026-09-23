@@ -41,6 +41,9 @@ export const getObjectTreeViewItemId = (object: gdObject): string => {
 export type ObjectTreeViewItemCallbacks = {|
   onObjectPasted?: gdObject => void,
   onSelectAllInstancesOfObjectInLayout?: string => void,
+  // Opens the Ask AI chat with a prefilled request (Phase 8.5 context
+  // actions). Absent: the menu item is not shown.
+  onOpenAskAi?: ?(options: Object) => void,
   onEditObject: (object: gdObject, initialTab: ?ObjectEditorTab) => void,
   onDeleteObjects: (
     objectWithContext: ObjectWithContext[],
@@ -351,6 +354,7 @@ export class ObjectTreeViewItemContent implements TreeViewItemContent {
       objectsContainer,
       initialInstances,
       onSelectAllInstancesOfObjectInLayout,
+      onOpenAskAi,
       onEditObject,
       onMovedObjectFolderOrObjectToAnotherFolderInSameContainer,
       onAddObjectInstance,
@@ -429,6 +433,15 @@ export class ObjectTreeViewItemContent implements TreeViewItemContent {
         enabled: !isListLocked,
       },
       { type: 'separator' },
+      {
+        label: i18n._(t`Edit ${object.getName()} with AI…`),
+        click: () =>
+          onOpenAskAi &&
+          onOpenAskAi({
+            prefilledUserRequest: `Edit the object "${object.getName()}": `,
+          }),
+        visible: !!onOpenAskAi,
+      },
       {
         label: i18n._(t`Edit object`),
         click: () => onEditObject(object),

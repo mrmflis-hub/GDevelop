@@ -18,7 +18,12 @@ import {
 } from '../Utils/GDevelopServices/Usage';
 import { retryIfFailed } from '../Utils/RetryIfFailed';
 import { CreditsPackageStoreContext } from '../AssetStore/CreditsPackages/CreditsPackageStoreContext';
-import { type EditorCallbacks } from '../EditorFunctions';
+import {
+  editorFunctions,
+  editorFunctionsWithoutProject,
+  type EditorCallbacks,
+} from '../EditorFunctions';
+import { processEditorFunctionCalls } from '../EditorFunctions/EditorFunctionCallRunner';
 import {
   getFunctionCallOutputsFromEditorFunctionCallResults,
   getFunctionCallsToProcess,
@@ -52,6 +57,10 @@ import Text from '../UI/Text';
 import { Trans, t } from '@lingui/macro';
 import IconButton from '../UI/IconButton';
 import PreferencesContext from '../MainFrame/Preferences/PreferencesContext';
+import UnsavedChangesContext from '../MainFrame/UnsavedChangesContext';
+import { useByokChatSeam } from './Byok/useByokChatSeam';
+import { shouldUseByokForNewRequest } from './Byok/ByokSeam';
+import { setPendingByokChatSelection } from './Byok/ByokChatStore';
 import Cross from '../UI/CustomSvgIcons/Cross';
 import useAlertDialog from '../UI/Alert/useAlertDialog';
 
@@ -200,9 +209,9 @@ export const AskAiStandAloneForm = ({
   const { openCreditsPackageDialog } = React.useContext(
     CreditsPackageStoreContext
   );
-  const {
-    values: { automaticallyUseCreditsForAiRequests },
-  } = React.useContext(PreferencesContext);
+  const { values: preferencesValues } = React.useContext(PreferencesContext);
+  const automaticallyUseCreditsForAiRequests =
+    preferencesValues.automaticallyUseCreditsForAiRequests;
   const {
     profile,
     getAuthorizationHeader,
@@ -217,6 +226,46 @@ export const AskAiStandAloneForm = ({
     onRefreshLimits
   );
   const [isSendingUserMessage, setIsSendingUserMessage] = React.useState(false);
+
+  // ---- BYOK (Phase 8.5): the same chat seam the Ask AI editor uses, so
+  // the homepage 'make me a game' flow runs the client-side agent loop. The
+  // orchestrators live in the module registry: the chat keeps running when
+  // this form unmounts and the Ask AI tab takes over.
+  const { triggerUnsavedChanges } = React.useContext(UnsavedChangesContext);
+  const resetByokChatUserInputs = React.useCallback((chatId: string) => {
+    const aiRequestChatRefCurrent = aiRequestChatRef.current;
+    if (aiRequestChatRefCurrent) {
+      aiRequestChatRefCurrent.resetUserInput('');
+      aiRequestChatRefCurrent.resetUserInput(chatId);
+    }
+  }, []);
+  const byokChatSeam = useByokChatSeam({
+    preferencesValues,
+    project,
+    fileMetadata,
+    i18n,
+    editorCallbacks,
+    processEditorFunctionCalls,
+    editorFunctions,
+    editorFunctionsWithoutProject,
+    onSceneEventsModifiedOutsideEditor: () => {},
+    onInstancesModifiedOutsideEditor: () => {},
+    onObjectsModifiedOutsideEditor: () => {},
+    onObjectGroupsModifiedOutsideEditor: () => {},
+    onProjectItemRenamedOutsideEditor: () => {},
+    onWillDeleteScene: async () => {},
+    onWillDeleteGameplayTest: async () => {},
+    onWillDeleteObject: () => {},
+    onWillInstallExtension,
+    onExtensionInstalled,
+    getIsAutoEditEnabled: alwaysAutoEditEnabled,
+    requestEditApproval: alwaysApproveEdit,
+    triggerUnsavedChanges,
+    onOpenLayout,
+    setSelectedAiRequestId,
+    resetChatUserInputs: resetByokChatUserInputs,
+    getProjectPreviewLauncher: () => null,
+  });
 
   const hideAskAi =
     !!limits &&
@@ -251,6 +300,36 @@ export const AskAiStandAloneForm = ({
       (async () => {
         if (!newAiRequestOptions) return;
         console.info('Starting a new AI request...');
+
+        // BYOK chats run entirely client-side (Phase 8.5): no GDevelop
+        // account, no credits, no server request — the same seam as the
+        // Ask AI editor, with the chat handed over to its tab.
+        if (shouldUseByokForNewRequest(preferencesValues)) {
+          const { userRequest } = newAiRequestOptions;
+          startNewAiRequest(null);
+          onCloseAskAi();
+          if (project && closeProject) {
+            await closeProject();
+          }
+          // The loop keeps running in the module-level orchestrator
+          // registry: unmounting this form never stops the chat.
+          await byokChatSeam.startByokChat(userRequest, {
+            onChatCreated: chatId => {
+              setPendingByokChatSelection(chatId);
+              if (onOpenAskAi) {
+                onOpenAskAi({ paneIdentifier: 'center' });
+              }
+            },
+          });
+          setAiRequestIdForForm(null);
+          if (aiRequestChatRef.current) {
+            aiRequestChatRef.current.resetUserInput('');
+          }
+          if (onCloseDialog) {
+            onCloseDialog();
+          }
+          return;
+        }
 
         if (!profile) {
           onOpenCreateAccountDialog();
@@ -413,6 +492,8 @@ export const AskAiStandAloneForm = ({
       onOpenAskAi,
       onCloseDialog,
       closeProject,
+      preferencesValues,
+      byokChatSeam,
     ]
   );
 

@@ -52,6 +52,8 @@ export type SceneEditorsDisplayProps = {|
   }) => void,
   editObjectInPropertiesPanel: (objectName: string) => void,
   onEditObject: (object: gdObject, initialTab: ?ObjectEditorTab) => void,
+  // Opens the Ask AI chat with a prefilled request (Phase 8.5).
+  onOpenAskAi?: ?(options: Object) => void,
   onEffectAdded: () => void,
   onOpenEventBasedObjectEditor: (
     extensionName: string,

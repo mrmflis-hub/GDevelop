@@ -242,6 +242,8 @@ type Props = {|
     extensionName: string,
     eventsBasedObjectName: string
   ) => void,
+  // Opens the Ask AI chat with a prefilled request (Phase 8.5).
+  onOpenAskAi?: ?(options: Object) => void,
   onOpenEventBasedObjectVariantEditor: (
     extensionName: string,
     eventsBasedObjectName: string,
@@ -2612,6 +2614,17 @@ export default class SceneEditor extends React.Component<Props, State> {
         ...this.getContextMenuInstancesWiseItems(i18n),
         { type: 'separator' },
         {
+          label: i18n._(
+            t`Ask AI about this selection of ${shortenString(objectName, 14)}`
+          ),
+          click: () =>
+            this.props.onOpenAskAi &&
+            this.props.onOpenAskAi({
+              prefilledUserRequest: `About the selected instances of object "${objectName}" in the scene: explain or change them as I describe here: `,
+            }),
+          visible: !!this.props.onOpenAskAi,
+        },
+        {
           label: i18n._(t`Edit object ${shortenString(objectName, 14)}`),
           click: () =>
             this.editObjectByName({
@@ -3160,6 +3173,7 @@ export default class SceneEditor extends React.Component<Props, State> {
                     canObjectOrGroupBeGlobal={this.canObjectOrGroupBeGlobal}
                     updateBehaviorsSharedData={this.updateBehaviorsSharedData}
                     onEditObject={this.editObject}
+                    onOpenAskAi={this.props.onOpenAskAi}
                     onOpenEventBasedObjectEditor={
                       this.props.onOpenEventBasedObjectEditor
                     }

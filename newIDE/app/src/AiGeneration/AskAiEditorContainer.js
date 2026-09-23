@@ -27,7 +27,6 @@ import {
   forkAiRequest,
   retryAiRequest,
   getAiRequest,
-  getAiRequestSummary,
   type AiRequest,
   type AiRequestMessage,
   type AiRequestMessageAssistantFunctionCall,
@@ -77,36 +76,22 @@ import {
   editorFunctions,
   editorFunctionsWithoutProject,
 } from '../EditorFunctions';
-import { useEnsureExtensionInstalled } from './UseEnsureExtensionInstalled';
-import {
-  archiveByokChat,
-  createByokChat,
-  getByokChat,
-  listByokChats,
-  subscribeByokChats,
-  updateByokChat,
-} from './Byok/ByokChatStore';
-import {
-  createByokOrchestrator,
-  type ByokOrchestrator,
-} from './Byok/ByokOrchestrator';
-import { createByokUsageTracker } from './Byok/ByokUsageTracker';
-import { loadByokKey, type ByokKeyLoadResult } from './Byok/ByokKeyStorage';
 import { getByokImage } from './Byok/ByokImageContent';
-import { makeByokProjectNotesIdentifierFromProjectName } from './Byok/ByokProjectNotes';
-import { getByokSettings, type ByokSettings } from './Byok/ByokTypes';
 import {
-  APPROVED_CALL_IDS_CAPACITY,
   buildByokChatProps,
-  byokCallRequiresApproval,
-  createByokEditorFunctionCallExecutor,
   isByokAiRequestId,
   shouldUseByokForNewRequest,
 } from './Byok/ByokSeam';
+import { useByokChatSeam } from './Byok/useByokChatSeam';
 import {
-  findLargestVisibleSceneCanvas,
-  invokeByokPreviewCapture,
-} from './Byok/ByokRuntimeTools';
+  forkByokChat,
+  getByokProjectSnapshot,
+  restoreByokProjectFromSnapshot,
+} from './Byok/ByokFork';
+import {
+  consumePendingByokChatSelection,
+  getByokChat,
+} from './Byok/ByokChatStore';
 import { getProjectPreviewLauncher } from '../GameplayTests/GameplayTestRunner';
 import { getAiConfigurationPresetsWithAvailability } from './AiConfiguration';
 import {
@@ -162,13 +147,6 @@ const styles = {
     minWidth: 0,
   },
 };
-
-// Reducer of the "BYOK chats changed" force-update signal: its state is
-// never read, the dispatch only exists to re-render the container when the
-// BYOK chat store notifies (the explicit `void` action pins the reducer's
-// action type for Flow).
-const byokChatsForceUpdateReducer = (count: number, action: void): number =>
-  count + 1;
 
 // BYOK chats have no server-side messages to give feedback on. The render
 // gates now hide the feedback buttons entirely on those chats (the callback
@@ -551,131 +529,74 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
       // A BYOK chat runs a client-side agent loop (ByokOrchestrator) and lives
       // in its own store (ByokChatStore). It must never enter
       // AiRequestContext: that would make it be loaded and polled on
-      // GDevelop's servers. Selection is therefore tracked locally here.
-      const [
+      // GDevelop's servers. The whole wiring lives in the extracted seam hook
+      // (the D8 refactor, Phase 8 step 8.0) — also reused by the standalone
+      // homepage form (step 8.5).
+      const resetByokChatUserInputs = React.useCallback((chatId: string) => {
+        const aiRequestChatRefCurrent = aiRequestChatRef.current;
+        if (aiRequestChatRefCurrent) {
+          aiRequestChatRefCurrent.resetUserInput('');
+          aiRequestChatRefCurrent.resetUserInput(chatId);
+        }
+      }, []);
+      const byokChatSeam = useByokChatSeam({
+        preferencesValues,
+        project,
+        fileMetadata,
+        i18n,
+        editorCallbacks,
+        processEditorFunctionCalls,
+        editorFunctions,
+        editorFunctionsWithoutProject,
+        onSceneEventsModifiedOutsideEditor,
+        onInstancesModifiedOutsideEditor,
+        onObjectsModifiedOutsideEditor,
+        onObjectGroupsModifiedOutsideEditor,
+        onProjectItemRenamedOutsideEditor,
+        onWillDeleteScene,
+        onWillDeleteGameplayTest,
+        onWillDeleteObject,
+        onWillInstallExtension,
+        onExtensionInstalled,
+        getIsAutoEditEnabled,
+        requestEditApproval,
+        triggerUnsavedChanges,
+        onOpenLayout,
+        setSelectedAiRequestId,
+        resetChatUserInputs: resetByokChatUserInputs,
+        getProjectPreviewLauncher,
+      });
+      const {
         selectedByokChatId,
         setSelectedByokChatId,
-      ] = React.useState<?string>(null);
-      // The count is only read as the dependency of the BYOK history
-      // summaries below: the dispatch exists to force a re-render when the
-      // BYOK store changes.
-      const [byokChatsUpdateCount, forceByokChatsUpdate] = React.useReducer(
-        byokChatsForceUpdateReducer,
-        0
-      );
-      React.useEffect(() => subscribeByokChats(forceByokChatsUpdate), [
-        forceByokChatsUpdate,
-      ]);
-      const byokOrchestratorsRef = React.useRef<Map<string, ByokOrchestrator>>(
-        new Map()
-      );
-      // BYOK counterpart of the server flow's approvedEditBatchKeys: once
-      // the user approves a modifying call, a retry of the same batch does
-      // not re-ask. Cleared when auto-edit is toggled (like the server's).
-      const approvedByokEditCallIdsRef = React.useRef<Set<string>>(new Set());
-      const clearApprovedByokEditCallIds = React.useCallback(() => {
-        approvedByokEditCallIdsRef.current.clear();
-      }, []);
-      const selectedByokChat = selectedByokChatId
-        ? getByokChat(selectedByokChatId)
-        : null;
-
-      const { ensureExtensionInstalled } = useEnsureExtensionInstalled({
-        project,
-        i18n,
-      });
-      // The live values the BYOK orchestrators read through getters, so a
-      // chat created before a project existed (or before the current one
-      // was opened) still sees the current state on every turn: the project
-      // prop of the render that created the orchestrator must never be
-      // frozen into it.
-      const byokProjectRef = useStableUpToDateRef<?gdProject>(project);
-      const byokCreatedProjectRef = React.useRef<?gdProject>(null);
-      const byokSawProjectPropRef = React.useRef<boolean>(false);
-      /**
-       * The project the BYOK chats work on: the opened one, or — until the
-       * editor re-renders with it — the one a chat just created with
-       * initialize_project. Once a project prop existed and then
-       * disappeared, the project was closed: the chats are back to "no
-       * project".
-       */
-      const getByokLiveProject = React.useCallback((): ?gdProject => {
-        const openedProject = byokProjectRef.current;
-        if (openedProject) {
-          byokSawProjectPropRef.current = true;
-          return openedProject;
-        }
-        if (byokSawProjectPropRef.current) {
-          byokCreatedProjectRef.current = null;
-          return null;
-        }
-        return byokCreatedProjectRef.current;
-        // The ref objects are stable (they only carry a changing `current`),
-        // so the empty dependency array keeps this callback identity-stable.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, []);
-      const executeByokFunctionCalls = React.useMemo(
-        () =>
-          createByokEditorFunctionCallExecutor({
-            processEditorFunctionCalls,
-            getProject: getByokLiveProject,
-            i18n,
-            editorCallbacks,
-            ensureExtensionInstalled,
-            onSceneEventsModifiedOutsideEditor,
-            onInstancesModifiedOutsideEditor,
-            onObjectsModifiedOutsideEditor,
-            onObjectGroupsModifiedOutsideEditor,
-            onProjectItemRenamedOutsideEditor,
-            onWillDeleteScene,
-            onWillDeleteGameplayTest,
-            onWillDeleteObject,
-            onWillInstallExtension,
-            onExtensionInstalled,
-          }),
-        [
-          getByokLiveProject,
-          i18n,
-          editorCallbacks,
-          ensureExtensionInstalled,
-          onSceneEventsModifiedOutsideEditor,
-          onInstancesModifiedOutsideEditor,
-          onObjectsModifiedOutsideEditor,
-          onObjectGroupsModifiedOutsideEditor,
-          onProjectItemRenamedOutsideEditor,
-          onWillDeleteScene,
-          onWillDeleteGameplayTest,
-          onWillDeleteObject,
-          onWillInstallExtension,
-          onExtensionInstalled,
-        ]
-      );
-
-      const suspendByokChat = React.useCallback((aiRequestId: string) => {
-        const orchestrator = byokOrchestratorsRef.current.get(aiRequestId);
-        if (orchestrator) orchestrator.suspend();
-      }, []);
-
-      // The BYOK chats of the session, as history entries — without them, a
-      // chat told to "continue working" in the background would keep calling
-      // the user's paid endpoint with no way left to watch or stop it.
-      const byokChatSummaries = React.useMemo(
-        () => listByokChats().map(chat => getAiRequestSummary(chat)),
-        // Re-derived whenever the BYOK store notifies (the count is the
-        // change signal, not an input of the computation).
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [byokChatsUpdateCount]
-      );
-      const onArchiveByokChat = React.useCallback((aiRequestId: string) => {
-        const orchestrator = byokOrchestratorsRef.current.get(aiRequestId);
-        if (orchestrator) orchestrator.suspend();
-        byokOrchestratorsRef.current.delete(aiRequestId);
-        archiveByokChat(aiRequestId);
-      }, []);
+        selectedByokChat,
+        byokChatSummaries,
+        onArchiveByokChat,
+        startByokChat,
+        sendByokUserMessage,
+        suspendByokChat,
+        clearApprovedByokEditCallIds,
+        onRetryByokChat,
+      } = byokChatSeam;
 
       // The single suspend entry of the container: BYOK chats are suspended
       // locally (no server request exists for them), server chats through
       // the provider.
+      // A BYOK chat started by the homepage form (Phase 8.5) asks this
+      // editor to select it when the tab opens: consume the request once.
+      React.useEffect(
+        () => {
+          const pendingChatId = consumePendingByokChatSelection();
+          if (pendingChatId && getByokChat(pendingChatId)) {
+            setSelectedAiRequestId(null);
+            setSelectedByokChatId(pendingChatId);
+          }
+        },
+        // Once on mount.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        []
+      );
+
       const suspendAiRequestWithByokSupport = React.useCallback(
         async (aiRequestId: string) => {
           if (!isByokAiRequestId(aiRequestId)) {
@@ -685,240 +606,6 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           suspendByokChat(aiRequestId);
         },
         [suspendAiRequest, suspendByokChat]
-      );
-
-      // The chat-facing guidance for a chat that cannot find its API key.
-      // The two storage statuses need different lines: 'none' means the user
-      // never saved a key, 'unreadable' means one is stored but this
-      // computer can no longer decrypt it (e.g. DPAPI after a Windows
-      // account change) — telling them to "add a key" would be misleading.
-      const getByokMissingKeyError = React.useCallback(
-        (storedKey: ByokKeyLoadResult) => {
-          if (storedKey.status === 'unreadable') {
-            return {
-              code: 'byok-unreadable-key',
-              message: i18n._(
-                t`A BYOK API key is stored, but it cannot be decrypted on this computer anymore. Open Preferences > BYOK, clear the stored key and enter it again, then send your message again.`
-              ),
-            };
-          }
-          return {
-            code: 'byok-missing-key',
-            message: i18n._(
-              t`No API key is stored for BYOK. Add one in Preferences > BYOK, then send your message again.`
-            ),
-          };
-        },
-        [i18n]
-      );
-
-      const createByokOrchestratorForChat = React.useCallback(
-        (chat: AiRequest, byokSettings: ByokSettings, apiKey: string) => {
-          const orchestrator = createByokOrchestrator({
-            connection: {
-              baseUrl: byokSettings.endpointUrl,
-              apiKey,
-            },
-            settings: byokSettings,
-            aiRequest: chat,
-            // Everything below is a getter read per turn: the chat must
-            // never be frozen on the project (or executor) of the render
-            // that created it — a chat that starts without a project and
-            // creates one with initialize_project edits it right away.
-            hasOpenedProject: () => !!getByokLiveProject(),
-            getProject: () => getByokLiveProject(),
-            getExecutor: () => executeByokFunctionCalls,
-            getProjectUserContent: async () => {
-              const liveProject = getByokLiveProject();
-              if (!liveProject) return null;
-              const simplifiedProjectBuilder = makeSimplifiedProjectBuilder(gd);
-              return JSON.stringify(
-                simplifiedProjectBuilder.getSimplifiedProject(liveProject, {})
-              );
-            },
-            onAiRequestUpdated: updatedChat => updateByokChat(updatedChat),
-            // The per-project notes (Phase 7) are keyed on the project's
-            // file identifier, with a project-name hash as the fallback for
-            // projects not saved yet.
-            getProjectNotesIdentifier: () => {
-              const liveProject = getByokLiveProject();
-              if (!liveProject) return null;
-              if (fileMetadata && fileMetadata.fileIdentifier) {
-                return fileMetadata.fileIdentifier;
-              }
-              return makeByokProjectNotesIdentifierFromProjectName(
-                liveProject.getName()
-              );
-            },
-            doesCallRequireApproval: functionCall => {
-              const editorFunction =
-                editorFunctions[functionCall.name] ||
-                editorFunctionsWithoutProject[functionCall.name] ||
-                null;
-              try {
-                return byokCallRequiresApproval(
-                  editorFunction,
-                  JSON.parse(functionCall.arguments)
-                );
-              } catch (error) {
-                // Unparsable arguments: require approval (safe default).
-                return true;
-              }
-            },
-            onRequestEditApproval: async modifyingCalls => {
-              if (getIsAutoEditEnabled()) return true;
-              const unapprovedCalls = modifyingCalls.filter(
-                call => !approvedByokEditCallIdsRef.current.has(call.call_id)
-              );
-              if (unapprovedCalls.length === 0) return true;
-              const accepted = await requestEditApproval({
-                aiRequestId: chat.id,
-                callIds: unapprovedCalls.map(call => call.call_id),
-                label: unapprovedCalls.map(call => call.name).join(', '),
-              });
-              if (accepted) {
-                if (
-                  approvedByokEditCallIdsRef.current.size >=
-                  APPROVED_CALL_IDS_CAPACITY
-                ) {
-                  approvedByokEditCallIdsRef.current.clear();
-                }
-                unapprovedCalls.forEach(call =>
-                  approvedByokEditCallIdsRef.current.add(call.call_id)
-                );
-              }
-              return accepted;
-            },
-            usageTracker: createByokUsageTracker(),
-            onSceneEventsModifiedOutsideEditor,
-            // The perception tools' environment hooks (Phase 6): the scene
-            // editor canvas of this window, the Electron preview-capture
-            // IPC, and the preview launcher MainFrame registered.
-            runtimeDeps: {
-              captureSceneCanvas: () => {
-                const canvas = findLargestVisibleSceneCanvas(
-                  typeof document !== 'undefined' ? document : null
-                );
-                if (!canvas) return null;
-                return canvas.toDataURL('image/jpeg', 0.7);
-              },
-              invokePreviewCapture: invokeByokPreviewCapture,
-              getPreviewLauncher: getProjectPreviewLauncher,
-            },
-            onFunctionCallsExecuted: (
-              results,
-              { createdSceneNames, createdProject }
-            ) => {
-              // The project a chat just created (initialize_project) is
-              // remembered synchronously — the very next round's snapshot
-              // and executor must see it, before React re-renders.
-              if (createdProject) {
-                byokCreatedProjectRef.current = createdProject;
-              }
-              if (
-                results.some(
-                  result =>
-                    result.status === 'finished' && result.didModifyProject
-                )
-              ) {
-                triggerUnsavedChanges();
-              }
-              createdSceneNames.forEach(sceneName => {
-                onOpenLayout(sceneName, {
-                  openEventsEditor: true,
-                  openSceneEditor: true,
-                  focusWhenOpened: 'scene',
-                });
-              });
-            },
-          });
-          byokOrchestratorsRef.current.set(chat.id, orchestrator);
-          return orchestrator;
-        },
-        [
-          getByokLiveProject,
-          executeByokFunctionCalls,
-          getIsAutoEditEnabled,
-          requestEditApproval,
-          triggerUnsavedChanges,
-          onOpenLayout,
-          onSceneEventsModifiedOutsideEditor,
-          fileMetadata,
-        ]
-      );
-
-      /**
-       * Get (or lazily create) the orchestrator of an existing BYOK chat —
-       * this is what makes a chat recoverable after the missing-key error
-       * (the user saved a key, then retries or sends a message again) and
-       * after the editor was remounted. Returns null when the chat is still
-       * working (a live loop must not get a second orchestrator on the same
-       * transcript) or when no key is stored (the chat is then re-marked
-       * with the missing-key error).
-       */
-      const attachByokOrchestrator = React.useCallback(
-        async (chat: AiRequest): Promise<?ByokOrchestrator> => {
-          const existingOrchestrator = byokOrchestratorsRef.current.get(
-            chat.id
-          );
-          if (existingOrchestrator) return existingOrchestrator;
-          if (chat.status === 'working') return null;
-
-          const byokSettings = getByokSettings(preferencesValues);
-          const storedKey = await loadByokKey();
-          if (storedKey.status !== 'ok') {
-            chat.status = 'error';
-            chat.error = getByokMissingKeyError(storedKey);
-            updateByokChat(chat);
-            return null;
-          }
-
-          return createByokOrchestratorForChat(
-            chat,
-            byokSettings,
-            storedKey.key
-          );
-        },
-        [
-          preferencesValues,
-          getByokMissingKeyError,
-          createByokOrchestratorForChat,
-        ]
-      );
-
-      const startByokChat = React.useCallback(
-        async (userRequest: string) => {
-          const byokSettings = getByokSettings(preferencesValues);
-          const chat = createByokChat();
-          setSelectedAiRequestId(null);
-          setSelectedByokChatId(chat.id);
-          const aiRequestChatRefCurrent = aiRequestChatRef.current;
-          if (aiRequestChatRefCurrent) {
-            aiRequestChatRefCurrent.resetUserInput('');
-            aiRequestChatRefCurrent.resetUserInput(chat.id);
-          }
-
-          const storedKey = await loadByokKey();
-          if (storedKey.status !== 'ok') {
-            chat.status = 'error';
-            chat.error = getByokMissingKeyError(storedKey);
-            updateByokChat(chat);
-            return;
-          }
-
-          const orchestrator = createByokOrchestratorForChat(
-            chat,
-            byokSettings,
-            storedKey.key
-          );
-          await orchestrator.startNewChat(userRequest);
-        },
-        [
-          preferencesValues,
-          getByokMissingKeyError,
-          createByokOrchestratorForChat,
-          setSelectedAiRequestId,
-        ]
       );
       // ---- end of BYOK chats ---------------------------------------------
 
@@ -1150,30 +837,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           // BYOK chats continue through their local orchestrator — never the
           // backend (and no GDevelop account is needed).
           if (isByokAiRequestId(aiRequestId)) {
-            if (!userMessage) return;
-
-            const chat = getByokChat(aiRequestId);
-            if (!chat) return;
-            // The orchestrator can be missing (missing-key error, or the
-            // editor was remounted): re-attach instead of dropping the
-            // message — attach re-marks the chat with the missing-key error
-            // when there is still no key, so the user is never left without
-            // feedback.
-            const orchestrator = await attachByokOrchestrator(chat);
-            if (!orchestrator) return;
-
-            const sendPromise = orchestrator.sendUserMessage(userMessage);
-            // Clear the sent message right away — the loop it starts can
-            // run for a while (the server path resets after its single
-            // request; ours must not wait for the whole conversation).
-            if (aiRequestId === selectedByokChatId) {
-              const aiRequestChatRefCurrent = aiRequestChatRef.current;
-              if (aiRequestChatRefCurrent) {
-                aiRequestChatRefCurrent.resetUserInput('');
-                aiRequestChatRefCurrent.resetUserInput(aiRequestId);
-              }
-            }
-            await sendPromise;
+            await sendByokUserMessage(aiRequestId, userMessage);
             return;
           }
 
@@ -1370,8 +1034,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         [
           profile,
           selectedAiRequestId,
-          selectedByokChatId,
-          attachByokOrchestrator,
+          sendByokUserMessage,
           aiRequests,
           isSendingAiRequest,
           quota,
@@ -1694,22 +1357,6 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         ]
       );
 
-      // Re-run a failed BYOK chat's loop without adding anything to the
-      // conversation (the transcript replay is exactly a retry). The
-      // orchestrator is re-attached when missing (missing-key error the user
-      // just fixed by saving a key, or an editor remount) — this is what
-      // makes the Retry row work instead of silently no-op'ing.
-      const onRetryByokChat = React.useCallback(
-        async () => {
-          if (!selectedByokChatId) return;
-          const chat = getByokChat(selectedByokChatId);
-          if (!chat) return;
-          const orchestrator = await attachByokOrchestrator(chat);
-          if (orchestrator) await orchestrator.retryAfterError();
-        },
-        [selectedByokChatId, attachByokOrchestrator]
-      );
-
       const upToDateOnStop = useStableUpToDateRef(onStop);
 
       // Shared confirmation used whenever the user leaves a working AI request —
@@ -1852,6 +1499,98 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
       // other reason (repositioning the tab, switching between the mobile and
       // desktop layouts, re-rendering...) never stops a running request.
 
+      // Restore a BYOK chat to one of its local pre-message snapshots:
+      // confirm, overwrite the project in place, then fork the transcript
+      // up to (excluding) the restored message — the mirror of the server
+      // flow's restore + fork, with the snapshot store instead of the
+      // cloud versions.
+      const onRestoreByokChat = React.useCallback(
+        async ({
+          message,
+          aiRequest,
+        }: {|
+          message: AiRequestMessage,
+          aiRequest: AiRequest,
+        |}) => {
+          if (message.type !== 'message' || message.role !== 'user') {
+            await showAlert({
+              title: t`No project save available`,
+              message: t`No project save is available for this request message.`,
+            });
+            return;
+          }
+          const messageId = ((message: any).messageId: ?string);
+          const snapshot = messageId
+            ? getByokProjectSnapshot(aiRequest.id, messageId)
+            : null;
+          if (!snapshot) {
+            await showAlert({
+              title: t`No project save available`,
+              message: t`No project save is available for this request message.`,
+            });
+            return;
+          }
+          const liveProject = byokChatSeam.getByokLiveProject();
+          if (!liveProject) {
+            await showAlert({
+              title: t`Cannot restore project`,
+              message: t`Open the project associated with this AI request to restore to this state.`,
+            });
+            return;
+          }
+
+          const result = await showConfirmation({
+            title: t`Restore project to this state?`,
+            message: t`Are you sure you want to restore the project to the state saved at this point in the AI conversation? This will overwrite the current project state.`,
+            confirmButtonLabel: t`Restore`,
+            dismissButtonLabel: t`Cancel`,
+            level: 'warning',
+          });
+          if (!result) return;
+
+          try {
+            restoreByokProjectFromSnapshot(liveProject, snapshot);
+          } catch (error) {
+            console.error('Error while restoring a BYOK snapshot:', error);
+            await showAlert({
+              title: t`Error`,
+              message: t`An error occurred while restoring the project version: ${
+                error.message
+              }`,
+            });
+            return;
+          }
+          triggerUnsavedChanges();
+
+          // Continue the conversation from before the restored message:
+          // fork the transcript up to the message preceding it.
+          const output = aiRequest.output || [];
+          const messageIndex = output.findIndex(
+            item => item.messageId === messageId
+          );
+          const previousMessage =
+            messageIndex > 0 ? output[messageIndex - 1] : null;
+          if (previousMessage && previousMessage.messageId) {
+            const fork = forkByokChat(
+              aiRequest.id,
+              ((previousMessage.messageId: any): string)
+            );
+            if (fork) {
+              onStartOrOpenChat({ aiRequestId: fork.id });
+              return;
+            }
+          }
+          onStartOrOpenChat({ aiRequestId: null });
+        },
+        [
+          showAlert,
+          showConfirmation,
+          triggerUnsavedChanges,
+          byokChatSeam,
+          onStartOrOpenChat,
+        ]
+      );
+
       const onRestore = React.useCallback(
         async ({
           message,
@@ -1860,6 +1599,12 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           message: AiRequestMessage,
           aiRequest: AiRequest,
         |}) => {
+          // BYOK chats restore from the LOCAL pre-message snapshots
+          // (Phase 8.6) — no cloud version, no server fork.
+          if (isByokAiRequestId(aiRequest.id)) {
+            await onRestoreByokChat({ message, aiRequest });
+            return;
+          }
           if (!profile) return;
           const cloudProjectId = storageProvider
             ? getCloudProjectFileMetadataIdentifier(
@@ -2096,6 +1841,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           project,
           showAlert,
           showConfirmation,
+          onRestoreByokChat,
           onCheckoutVersion,
           getOrLoadProjectVersion,
           profile,

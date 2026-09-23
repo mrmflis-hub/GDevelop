@@ -170,6 +170,26 @@ const effectChangeProperty = objectProperty('One effect change.', {
   // Per-project memory (Phase 7): the agent's own notes, injected at chat
   // start. Intercepted (ByokExtraTools).
   'update_project_notes',
+  // Sub-agents (Phase 8): read-only scout (same name as the hosted tool)
+  // and fresh-context reviewer, both intercepted (ByokExtraTools) before
+  // the registry stubs. run_edit_agent stays deliberately excluded:
+  // sequential edits belong to the main context.
+  'run_explorer_agent',
+  'run_review_agent',
+  // Events-based extension authoring (Phase 8.4), ported from the upstream
+  // v18 branch: intercepted (ByokExtensionTools), driving libGD directly.
+  'create_extension',
+  'change_extension_properties',
+  'create_custom_object',
+  'change_custom_object',
+  'create_custom_behavior',
+  'change_custom_behavior',
+  'create_custom_function',
+  'change_custom_function',
+  'find_extension_usages',
+  // Restore points (Phase 8.6): rewind the project to a pre-message
+  // snapshot. Intercepted (ByokExtraTools), approval-gated.
+  'restore_project_point',
 ];
 
 /**
@@ -1141,6 +1161,303 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
       required: [],
     },
   },
+  {
+    name: 'run_explorer_agent',
+    description:
+      'Delegate a read-only exploration to a scout sub-agent with a fresh context: it inspects the project with the read tools and returns a summary. Use it for broad sweeps (inventory the scenes, find where X is used) that would flood this conversation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        instructions: stringProperty(
+          'What the scout must find out, as a self-contained briefing (it sees nothing of this conversation).'
+        ),
+        short_title: stringProperty(
+          'Optional short title of the exploration, shown to the user.'
+        ),
+      },
+      required: ['instructions'],
+    },
+  },
+  {
+    name: 'run_review_agent',
+    description:
+      'Delegate a final review to a fresh-context sub-agent: it checks the finished work against the original request using the read tools, and flags gaps (it never edits). Use it before claiming done on a multi-step build.',
+    parameters: {
+      type: 'object',
+      properties: {
+        instructions: stringProperty(
+          'The review briefing: the original user request, what was built, and what to check (the reviewer sees nothing of this conversation).'
+        ),
+        short_title: stringProperty(
+          'Optional short title of the review, shown to the user.'
+        ),
+      },
+      required: ['instructions'],
+    },
+  },
+  {
+    name: 'create_extension',
+    description:
+      'Create a new, empty events-based extension in the project — the container for custom functions, custom objects and custom behaviors authored with events. Follow up with create_custom_function / create_custom_object / create_custom_behavior.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty(
+          'Name of the extension (its namespace: functions are called as "ExtensionName::FunctionName").'
+        ),
+        full_name: stringProperty('Optional full, human-readable name.'),
+        short_description: stringProperty('Optional one-line description.'),
+        description: stringProperty('Optional detailed description.'),
+        version: stringProperty('Optional version string (e.g. "1.0.0").'),
+        author: stringProperty('Optional author name.'),
+        category: stringProperty('Optional category (e.g. "Game mechanic").'),
+      },
+      required: ['extension_name'],
+    },
+  },
+  {
+    name: 'change_extension_properties',
+    description:
+      'Change the properties of an extension, rename it (updating every reference in the project), or delete it. Deletion is refused while the extension is still used, unless delete_even_if_used is true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty('Name of the extension to change.'),
+        new_name: stringProperty('New name of the extension.'),
+        changed_properties: arrayProperty(
+          'The properties to change.',
+          objectProperty('One property change.', {
+            property_name: stringProperty(
+              'The property: full_name, short_description, description, version, author, category, icon_url, preview_icon_url or help_path.'
+            ),
+            new_value: stringProperty('The new value.'),
+          })
+        ),
+        delete_this_extension: booleanProperty(
+          'Set to true to delete the extension.'
+        ),
+        delete_even_if_used: booleanProperty(
+          'Set to true to delete even while the extension is used (the usages will break).'
+        ),
+      },
+      required: ['extension_name'],
+    },
+  },
+  {
+    name: 'create_custom_object',
+    description:
+      'Create a custom (composed) object inside an extension: a reusable object with its own child objects, layers, properties and functions. Use it when a grouping of objects + logic repeats across the game.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty('Name of the extension.'),
+        custom_object_name: stringProperty('Name of the custom object.'),
+        full_name: stringProperty('Optional full, human-readable name.'),
+        description: stringProperty('Optional description.'),
+        default_name: stringProperty(
+          'Optional default name given to instances in the scene.'
+        ),
+        is_3d: booleanProperty('Mark the object as rendered in 3D.'),
+        is_animatable: booleanProperty('Mark the object as animatable.'),
+        is_text_container: booleanProperty(
+          'Mark the object as containing text (for text-related behaviors).'
+        ),
+      },
+      required: ['extension_name', 'custom_object_name'],
+    },
+  },
+  {
+    name: 'change_custom_object',
+    description:
+      'Change a custom object (rename it with project-wide reference updates, change its properties or metadata), or delete it. Deletion is refused while its object type is used.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty('Name of the extension.'),
+        custom_object_name: stringProperty('Name of the custom object.'),
+        new_name: stringProperty('New name of the custom object.'),
+        full_name: stringProperty('New full name.'),
+        description: stringProperty('New description.'),
+        default_name: stringProperty('New default instance name.'),
+        changed_properties: arrayProperty(
+          'The object properties to create or change.',
+          objectProperty('One property change.', {
+            property_name: stringProperty('Name of the property.'),
+            new_value: stringProperty(
+              'New value of the property, as a string.'
+            ),
+          })
+        ),
+        delete_this_custom_object: booleanProperty(
+          'Set to true to delete the custom object.'
+        ),
+        delete_even_if_used: booleanProperty(
+          'Set to true to delete even while used (the usages will break).'
+        ),
+      },
+      required: ['extension_name', 'custom_object_name'],
+    },
+  },
+  {
+    name: 'create_custom_behavior',
+    description:
+      'Create a custom behavior inside an extension: reusable logic attached to objects, with its own properties and functions (doStepPreEvents, onCreated…). Use it when behavior-like state + per-frame logic is needed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty('Name of the extension.'),
+        custom_behavior_name: stringProperty('Name of the custom behavior.'),
+        full_name: stringProperty('Optional full, human-readable name.'),
+        description: stringProperty('Optional description.'),
+        object_type: stringProperty(
+          'Optional object type the behavior is restricted to (e.g. "Sprite").'
+        ),
+      },
+      required: ['extension_name', 'custom_behavior_name'],
+    },
+  },
+  {
+    name: 'change_custom_behavior',
+    description:
+      'Change a custom behavior (rename it with project-wide reference updates, change its properties or metadata), or delete it. Deletion is refused while objects still use the behavior.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty('Name of the extension.'),
+        custom_behavior_name: stringProperty('Name of the custom behavior.'),
+        new_name: stringProperty('New name of the custom behavior.'),
+        full_name: stringProperty('New full name.'),
+        description: stringProperty('New description.'),
+        object_type: stringProperty('New object type restriction.'),
+        changed_properties: arrayProperty(
+          'The behavior properties to create or change.',
+          objectProperty('One property change.', {
+            property_name: stringProperty('Name of the property.'),
+            new_value: stringProperty(
+              'New value of the property, as a string.'
+            ),
+          })
+        ),
+        delete_this_custom_behavior: booleanProperty(
+          'Set to true to delete the custom behavior.'
+        ),
+        delete_even_if_used: booleanProperty(
+          'Set to true to delete even while used (the usages will break).'
+        ),
+      },
+      required: ['extension_name', 'custom_behavior_name'],
+    },
+  },
+  {
+    name: 'create_custom_function',
+    description:
+      'Create a function of an extension (a free action/condition/expression), or of a custom behavior or custom object (pass custom_behavior_name / custom_object_name). The function body is authored as EventScript (event_script) — the same syntax add_scene_events accepts.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty('Name of the extension.'),
+        function_name: stringProperty('Name of the function.'),
+        function_type: enumProperty('The kind of function.', [
+          'Action',
+          'Condition',
+          'Expression',
+          'ExpressionAndCondition',
+          'ActionWithOperator',
+        ]),
+        custom_behavior_name: stringProperty(
+          'Create the function inside this custom behavior of the extension.'
+        ),
+        custom_object_name: stringProperty(
+          'Create the function inside this custom object of the extension.'
+        ),
+        event_script: stringProperty(
+          'The events of the function, as EventScript source (e.g. `if SomeCondition:\n  DoSomething`). Lifecycle names (onCreated, doStepPreEvents…) have special meanings for behaviors/objects.'
+        ),
+        parameters: arrayProperty(
+          'The typed parameters of the function, in order.',
+          objectProperty('One parameter.', {
+            name: stringProperty('Parameter name.'),
+            type: stringProperty(
+              'Parameter type (expression, string, objectList, behavior, sceneName…).'
+            ),
+            description: stringProperty('Optional parameter description.'),
+          })
+        ),
+        sentence: stringProperty(
+          'The sentence shown in the events editor, with _PARAM0_ style placeholders.'
+        ),
+        full_name: stringProperty('Optional full, human-readable name.'),
+        description: stringProperty('Optional description.'),
+        group: stringProperty('Optional group in the events editor.'),
+        is_private: booleanProperty('Hide the function from the editor.'),
+        is_async: booleanProperty('Run the function asynchronously.'),
+      },
+      required: ['extension_name', 'function_name', 'function_type'],
+    },
+  },
+  {
+    name: 'change_custom_function',
+    description:
+      'Change a function (rename it with project-wide reference updates, change its settings) or replace its events — or delete it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty('Name of the extension.'),
+        function_name: stringProperty('Name of the function.'),
+        custom_behavior_name: stringProperty(
+          'The function lives inside this custom behavior.'
+        ),
+        custom_object_name: stringProperty(
+          'The function lives inside this custom object.'
+        ),
+        new_name: stringProperty('New name of the function.'),
+        changed_settings: arrayProperty(
+          'The settings to change.',
+          objectProperty('One setting change.', {
+            property_name: stringProperty(
+              'The setting: full_name, description, sentence, group, is_private or is_async.'
+            ),
+            new_value: stringProperty(
+              'The new value, as a string (booleans as "true"/"false").'
+            ),
+          })
+        ),
+        event_script: stringProperty(
+          'Replaces the whole events of the function, as EventScript source.'
+        ),
+        delete_this_function: booleanProperty(
+          'Set to true to delete the function.'
+        ),
+      },
+      required: ['extension_name', 'function_name'],
+    },
+  },
+  {
+    name: 'restore_project_point',
+    description:
+      'Rewind the project to the state saved before one of the messages of this chat (the automatic pre-message restore points). Overwrites the current project — the conversation itself continues unchanged.',
+    parameters: {
+      type: 'object',
+      properties: {
+        message_id: stringProperty(
+          'The message id of the restore point (from the restore arrows in the chat, or the ids listed on failure).'
+        ),
+      },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'find_extension_usages',
+    description:
+      'List where an extension is used in the project: the extensions depending on it, and the object types using its custom objects or behaviors. Run it before deleting or renaming anything.',
+    parameters: {
+      type: 'object',
+      properties: {
+        extension_name: stringProperty('Name of the extension.'),
+      },
+      required: ['extension_name'],
+    },
+  },
 ];
 
 /**
@@ -1239,6 +1556,21 @@ export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
   'search_docs',
   'read_doc',
   'update_project_notes',
+  // run_explorer_agent also exists in the registry (as a server stub), so
+  // it is not "BYOK-only" for the validator; run_review_agent does not
+  // exist upstream at all. The Phase 8.4 extension authoring tools have no
+  // registry entry either (they are our port of the v18 surface).
+  'run_review_agent',
+  'create_extension',
+  'change_extension_properties',
+  'create_custom_object',
+  'change_custom_object',
+  'create_custom_behavior',
+  'change_custom_behavior',
+  'create_custom_function',
+  'change_custom_function',
+  'find_extension_usages',
+  'restore_project_point',
 ];
 
 const BYOK_ONLY_TOOL_NAMES_SET: Set<string> = new Set(BYOK_ONLY_TOOL_NAMES);
@@ -1309,16 +1641,17 @@ export const validateByokToolSchemas = (
       problems.push(`Whitelisted tool "${toolName}" has no schema.`);
     }
   }
-  // The cap grew with Phase 6 (perception + gameplay tests, 9 tools) and
-  // Phase 7 (search_reference + load_skill): the roadmap's tool-count
+  // The cap grew with Phase 6 (perception + gameplay tests, 9 tools),
+  // Phase 7 (search_reference + load_skill) and Phase 8 (sub-agents,
+  // extension authoring, restore points): the roadmap's tool-count
   // guidance yields to the phase-mandated surface — the descriptions stay
   // concise, and the skills system (7.6) is the mechanism to scope
   // per-task tool subsets later.
-  if (BYOK_TOOL_NAMES.length > 36) {
+  if (BYOK_TOOL_NAMES.length > 48) {
     problems.push(
       `The default tool set has ${
         BYOK_TOOL_NAMES.length
-      } tools — the cap is 36.`
+      } tools — the cap is 48.`
     );
   }
 

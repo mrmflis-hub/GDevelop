@@ -198,6 +198,9 @@ type Props = {|
   openEventsBasedEntityPropertyEditorDialog:
     | (VariableDialogOpeningProps => void)
     | null,
+  // Opens the Ask AI chat with a prefilled request (Phase 8.5 context
+  // actions). Absent: the menu items are not shown.
+  onOpenAskAi?: ?(options: Object) => void,
 |};
 
 type ComponentProps = {|
@@ -838,6 +841,16 @@ export class EventsSheetComponentWithoutHandle extends React.Component<
   _buildInstructionContextMenu = (i18n: I18nType): any =>
     [
       {
+        label: i18n._(t`Ask AI about this action`),
+        click: () =>
+          this.props.onOpenAskAi &&
+          this.props.onOpenAskAi({
+            prefilledUserRequest:
+              'About the selected action/condition: explain it and improve it. Read the scene events for its context.',
+          }),
+        visible: !!this.props.onOpenAskAi,
+      },
+      {
         label: i18n._(t`Copy`),
         click: () => this.copySelection(),
         accelerator: 'CmdOrCtrl+C',
@@ -1102,6 +1115,16 @@ export class EventsSheetComponentWithoutHandle extends React.Component<
   };
 
   _buildEventContextMenu = (i18n: I18nType): any => [
+    {
+      label: i18n._(t`Ask AI about this event`),
+      click: () =>
+        this.props.onOpenAskAi &&
+        this.props.onOpenAskAi({
+          prefilledUserRequest:
+            'About the selected event(s): explain what they do, then propose improvements or a fix. Read the scene events to see them in their context.',
+        }),
+      visible: !!this.props.onOpenAskAi,
+    },
     {
       label: i18n._(t`Edit`),
       click: () => this.openEventTextDialog(),

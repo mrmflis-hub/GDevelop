@@ -49,14 +49,22 @@ describe('ByokPrompts', () => {
     expect(withoutProject).not.toContain('inspect before editing');
   });
 
-  it('carries the single-agent instruction', () => {
+  it('carries the Phase 8 agents policy (delegation + completion rules + skill pointers)', () => {
     const prompt = buildByokSystemPrompt({
       toolNames: [],
       hasOpenedProject: true,
     });
 
-    expect(prompt).toContain('single agent');
-    expect(prompt).toContain('no sub-agents');
+    expect(prompt).toContain('Agents policy');
+    expect(prompt).toContain('main agent');
+    expect(prompt).toContain('run_explorer_agent');
+    expect(prompt).toContain('run_review_agent');
+    expect(prompt).toContain('Never edit inside sub-agents');
+    expect(prompt).toContain('completion gate will nudge you once');
+    expect(prompt).toContain('build-workflow');
+    expect(prompt).toContain('extend-with-js');
+    // The v5 single-agent wording is gone.
+    expect(prompt).not.toContain('no sub-agents');
   });
 
   it('teaches the output rules and the plan tool usage', () => {
@@ -73,7 +81,8 @@ describe('ByokPrompts', () => {
 
 describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
   it('pins the prompt version', () => {
-    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v5');
+    // Bumped to byok-v6 in Phase 8 (the agents policy section).
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v6');
   });
 
   it('teaches the F2 obligatory to-do list and per-item progress updates', () => {

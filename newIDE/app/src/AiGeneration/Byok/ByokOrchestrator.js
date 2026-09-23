@@ -10,6 +10,7 @@ import {
   getFunctionCallOutputsFromEditorFunctionCallResults,
   getLastMessagesFromAiRequestOutput,
 } from '../AiRequestUtils';
+import type { ByokSubAgentRunner } from './ByokSubAgents';
 import {
   createByokCancellation,
   sendByokChatCompletionWithRetries,
@@ -19,6 +20,19 @@ import {
   describeInvalidRequestForImageContent,
 } from './ByokErrors';
 import { buildByokSystemPrompt } from './ByokPrompts';
+import {
+  BYOK_VERIFY_TOOL_NAMES,
+  buildByokCompletionGateBlock,
+  checkByokCompletionGate,
+  type ByokCompletionGateResult,
+} from './ByokCompletionGate';
+import { getByokPreviewHasCrashed } from './ByokRuntimeTools';
+import { serializeToJSON } from '../../Utils/Serializer';
+import {
+  flushByokExtensionRegeneration,
+  isByokExtensionToolShadowedByRegistry,
+} from './ByokExtensionTools';
+import { takeByokProjectSnapshot } from './ByokFork';
 import {
   getByokAdvertisedToolNames,
   getByokDispatchableToolNames,
@@ -34,7 +48,11 @@ import {
   BYOK_LOOP_GUARD_CORRECTIVE_MESSAGE,
   createByokLoopGuard,
 } from './ByokLoopGuards';
-import { listByokSkillMetadata } from './ByokSkills';
+import {
+  listByokSkillMetadata,
+  isByokBuildIntent,
+  findByNameokSkill,
+} from './ByokSkills';
 import { isByokEngineReferenceAvailable } from './ByokEngineReference';
 import { loadByokProjectNotes } from './ByokProjectNotes';
 import { makeByokPromptContext } from './Knowledge/ByokKnowledgeSections';
@@ -43,9 +61,15 @@ import {
   byokResponseToAssistantMessage,
   byokToolResultToFunctionCallOutput,
   getByokSurvivingImageIds,
+  makeByokMessageId,
 } from './ByokTranscript';
 import { getByokImage, makeDefaultByokImageStore } from './ByokImageContent';
-import { type ByokCancellation, type ByokSettings } from './ByokTypes';
+import {
+  type ByokCancellation,
+  type ByokSettings,
+  type ByokSharedTurnBudget,
+  BYOK_GLOBAL_TURN_BUDGET,
+} from './ByokTypes';
 import {
   getCachedByokModels,
   resolveContextWindowTokens,
@@ -70,6 +94,11 @@ import {
  * creates its project mid-flight (initialize_project) edits it in the same
  * conversation.
  */
+
+// The sub-agent machinery lives in ByokSubAgents (Phase 8.1); re-exported
+// here because this module is where the Phase 4 null-seam promised it.
+export { createByokSubAgentRunner } from './ByokSubAgents';
+export type { ByokSubAgentRunner } from './ByokSubAgents';
 
 /** Runaway protection: stop after this many model rounds of tool calls. */
 export const MAX_BYOK_TOOL_ROUNDS = 20;
@@ -118,6 +147,9 @@ const DISPATCHABLE_TOOL_NAMES: Set<string> = new Set(
   getByokDispatchableToolNames()
 );
 
+/** The calls that count as verifying one's work (see ByokCompletionGate). */
+const VERIFY_TOOL_NAMES: Set<string> = new Set(BYOK_VERIFY_TOOL_NAMES);
+
 /**
  * Cap a tool output to BYOK_TOOL_OUTPUT_CAP characters, marking the cut.
  */
@@ -126,15 +158,8 @@ export const capToolOutput = (output: string): string => {
   return `${output.slice(0, BYOK_TOOL_OUTPUT_CAP)}\n…[output truncated]`;
 };
 
-/**
- * The seam for nested sub-agent loops (a later phase): a sub-agent would be
- * a nested orchestrator conversation with its own message list and a scoped
- * system prompt, its result summarized back into the parent transcript as a
- * `function_call_output`. Returns null in v1 — BYOK runs a single agent and
- * the prompt says so (see ByokPrompts). Do not implement before the tool
- * whitelist re-admits `run_edit_agent` / `run_explorer_agent`.
- */
-export const createByokSubAgentRunner = (): null => null;
+// The sub-agent machinery lives in ByokSubAgents (Phase 8.1); re-exported
+// here because this module is where the Phase 4 null-seam promised it.
 
 export type ByokOrchestratorOptions = {|
   connection: {| baseUrl: string, apiKey: string |},
@@ -210,6 +235,34 @@ export type ByokOrchestratorOptions = {|
   // while no project is open. Used both by the update_project_notes tool
   // and to inject the notes into the system prompt.
   getProjectNotesIdentifier?: () => string | null,
+  // ---- Sub-agent support (Phase 8.1; the options a CHILD gets) ----
+  // Replaces the composed knowledge prompt with a fixed one (the scoped
+  // charter of a sub-agent).
+  systemPrompt?: string,
+  // Overrides the dispatchable-tool whitelist (the read-only surface of a
+  // sub-agent — enforcement happens here, not only at advertisement).
+  allowedToolNames?: Array<string>,
+  // Overrides the tools advertised to the model (defaults to the standard
+  // advertisement rule; a sub-agent passes its read-only list).
+  advertisedToolNames?: () => Array<string>,
+  // Overrides the per-message tool-round budget (sub-agents get less).
+  maxToolRounds?: number,
+  // Shared parent+children model-turn budget: any loop finding it
+  // exhausted stops (runaway-cost protection across delegation).
+  sharedTurnBudget?: ByokSharedTurnBudget,
+  // ---- Sub-agent support (the options a PARENT gets) ----
+  // The runner of this chat's sub-agents (scout/reviewer). Absent: the
+  // sub-agent tools answer with a refusal instead of crashing.
+  subAgentRunner?: ByokSubAgentRunner,
+  // ---- Extension regeneration (Phase 8.4) ----
+  // The editor context's extension reload hooks, flushed once per batch of
+  // extension tool calls (see ByokExtensionTools). Absent: the changes
+  // apply, but the editor only picks them up at its next reload.
+  reloadEventsFunctionsExtensions?: (project: any) => Promise<void>,
+  reloadEventsFunctionsExtensionMetadata?: (
+    project: any,
+    extension: any
+  ) => void,
 |};
 
 export type ByokOrchestrator = {|
@@ -258,6 +311,26 @@ export const createByokOrchestrator = (
   let latestProjectContent: string | null = null;
   let activeCancellation: ByokCancellation | null = null;
   const loopGuard = createByokLoopGuard();
+  // ---- Completion gate state (Phase 8.2) ----
+  // Whether this chat ever modified the project (the gate only runs then)
+  // and whether a modifying call ran more recently than the last
+  // verify-type call (the nudge condition). The one-shot flag keeps the
+  // nudge from ever looping: the second claim is honored, with a warning.
+  let chatMadeEdits = false;
+  let turnMadeEdits = false;
+  let hasEditsSinceLastVerification = false;
+  let wasCompletionNudgeSent = false;
+  // The whitelist actually enforced at dispatch: the standard set, or the
+  // (stricter) read-only surface of a sub-agent.
+  const dispatchableToolNames: Set<string> = new Set(
+    options.allowedToolNames || DISPATCHABLE_TOOL_NAMES
+  );
+  const maxToolRounds = options.maxToolRounds || MAX_BYOK_TOOL_ROUNDS;
+  // The model-turn budget shared by this chat and (when it is a parent)
+  // every sub-agent it spawns; created here when nobody shared one.
+  const sharedTurnBudget = options.sharedTurnBudget || {
+    remaining: BYOK_GLOBAL_TURN_BUDGET,
+  };
   // The image state of the chat: how many recent images are re-sent (the
   // budget guard decrements it under context pressure), and whether images
   // are sent at all (settings, plus the one-way auto degrade).
@@ -265,11 +338,40 @@ export const createByokOrchestrator = (
   let imagesDisabledForChat = false;
   let singleInternalCallCounter = 0;
   const storeImage = makeDefaultByokImageStore();
+  // The auto-suggested build-workflow skill (Phase 8.3): the body of the
+  // flagship playbook, included from turn one when the first message looks
+  // like a game-build request and the user did not turn the heuristic off.
+  let firstUserRequestOfChat: string | null = null;
+  let autoSuggestedSkillBody: string | null = null;
+  let autoSuggestChecked = false;
+
+  const getAutoSuggestedSkillBody = async (): Promise<string | null> => {
+    if (autoSuggestChecked) return autoSuggestedSkillBody;
+    autoSuggestChecked = true;
+    if (!firstUserRequestOfChat) return null;
+    if (settings.buildWorkflowAutoSuggest === false) return null;
+    if (!isByokBuildIntent(firstUserRequestOfChat)) return null;
+    const skill = await findByNameokSkill('build-workflow');
+    autoSuggestedSkillBody = skill ? skill.body : null;
+    return autoSuggestedSkillBody;
+  };
 
   // `output` is optional on the AiRequest type: normalize it once, then
   // always read it through getOutput so Flow sees a plain array.
   aiRequest.output = aiRequest.output || [];
   const getOutput = (): Array<AiRequestMessage> => aiRequest.output || [];
+
+  // Every transcript message gets an id (Phase 8.6): the fork/restore UI
+  // keys on them. Ids are unique per chat and stable across forks (copied
+  // items keep theirs).
+  let messageIdCounter = 0;
+  const pushTranscriptMessage = (message: AiRequestMessage): void => {
+    (message: any).messageId = makeByokMessageId(
+      aiRequest.id,
+      ++messageIdCounter
+    );
+    getOutput().push(message);
+  };
 
   const persistUpdate = (): void => {
     onAiRequestUpdated(aiRequest);
@@ -291,17 +393,18 @@ export const createByokOrchestrator = (
     persistUpdate();
   };
 
-  const appendUserMessage = (text: string): void => {
+  const appendUserMessage = (text: string): AiRequestMessage => {
     const userMessage: AiRequestMessage = {
       type: 'message',
       status: 'completed',
       role: 'user',
       content: [{ type: 'user_request', status: 'completed', text }],
     };
-    getOutput().push(userMessage);
+    pushTranscriptMessage(userMessage);
     aiRequest.status = 'working';
     aiRequest.error = null;
     persistUpdate();
+    return userMessage;
   };
 
   /**
@@ -321,10 +424,13 @@ export const createByokOrchestrator = (
   /**
    * The tool names advertised this turn: the default set, plus
    * initialize_project while no project is open (read at turn time, so the
-   * same chat transitions the moment its project exists).
+   * same chat transitions the moment its project exists) — unless this
+   * orchestrator is a sub-agent with its own read-only list.
    */
   const getAdvertisedToolNames = (): Array<string> =>
-    getByokAdvertisedToolNames({ hasOpenedProject: hasOpenedProject() });
+    options.advertisedToolNames
+      ? options.advertisedToolNames()
+      : getByokAdvertisedToolNames({ hasOpenedProject: hasOpenedProject() });
 
   /** Whether image parts are sent to the model at all. */
   const areImagesEnabled = (): boolean =>
@@ -338,6 +444,9 @@ export const createByokOrchestrator = (
    * the user skills).
    */
   const buildSystemPrompt = async (): Promise<string> => {
+    // A sub-agent carries a fixed, scoped charter instead of the composed
+    // knowledge prompt (its context is deliberately minimal).
+    if (options.systemPrompt) return options.systemPrompt;
     const notesIdentifier = options.getProjectNotesIdentifier
       ? options.getProjectNotesIdentifier()
       : null;
@@ -345,7 +454,7 @@ export const createByokOrchestrator = (
       ? await loadByokProjectNotes(notesIdentifier)
       : null;
     const skills = await listByokSkillMetadata();
-    return buildByokSystemPrompt({
+    const composedPrompt = buildByokSystemPrompt({
       toolNames: getAdvertisedToolNames(),
       hasOpenedProject: hasOpenedProject(),
       context: makeByokPromptContext({
@@ -358,6 +467,12 @@ export const createByokOrchestrator = (
         customInstructions: settings.customInstructions,
       }),
     });
+    // The auto-suggested build-workflow skill rides along from turn one:
+    // the first message looked like a game-build request, and the user did
+    // not turn the heuristic off (Phase 8.3).
+    const skillBody = await getAutoSuggestedSkillBody();
+    if (!skillBody) return composedPrompt;
+    return `${composedPrompt}\n\n[Auto-loaded skill: build-workflow — its pipeline applies to this conversation]\n${skillBody}`;
   };
 
   /**
@@ -472,7 +587,7 @@ export const createByokOrchestrator = (
   };
 
   const recordAssistantTurn = (response: any): void => {
-    getOutput().push(byokResponseToAssistantMessage(response));
+    pushTranscriptMessage(byokResponseToAssistantMessage(response));
 
     const usage = usageFromResponse(response);
     if (usage) {
@@ -516,7 +631,7 @@ export const createByokOrchestrator = (
     message: string
   ): void => {
     for (const functionCall of functionCalls) {
-      getOutput().push(
+      pushTranscriptMessage(
         byokToolResultToFunctionCallOutput(
           functionCall.call_id,
           capToolOutput(JSON.stringify({ success: false, message }))
@@ -550,7 +665,7 @@ export const createByokOrchestrator = (
             success: false,
             message: 'Invalid arguments: a "tasks" array is required.',
           };
-    getOutput().push(
+    pushTranscriptMessage(
       byokToolResultToFunctionCallOutput(
         functionCall.call_id,
         capToolOutput(JSON.stringify(output))
@@ -568,6 +683,58 @@ export const createByokOrchestrator = (
     } catch (error) {
       return null;
     }
+  };
+
+  // ---- Completion gate helpers (Phase 8.2) ----
+
+  /**
+   * Serialize the live project the way snapshots do; null when there is no
+   * project or the serialization fails (both are gate failures).
+   */
+  const serializeProjectForGate = (): ?string => {
+    const project = getProject();
+    if (!project) return null;
+    try {
+      return serializeToJSON(project);
+    } catch (error) {
+      console.error('BYOK orchestrator: gate serialization failed:', error);
+      return null;
+    }
+  };
+
+  /** The one-shot nudge turn: a user-role message the model must answer. */
+  const appendCompletionNudge = (message: string): void => {
+    pushTranscriptMessage({
+      type: 'message',
+      status: 'completed',
+      role: 'user',
+      content: [{ type: 'user_request', status: 'completed', text: message }],
+    });
+    persistUpdate();
+  };
+
+  /**
+   * Attach the gate's evidence block to the final assistant message (an
+   * extra text item — visible in the chat, both when it passes and when
+   * the claim was honored despite a warning).
+   */
+  const appendCompletionGateBlock = (
+    gateResult: ByokCompletionGateResult
+  ): void => {
+    const output = getOutput();
+    const lastMessage = output.length > 0 ? output[output.length - 1] : null;
+    if (!lastMessage || lastMessage.type !== 'message') return;
+    if (lastMessage.role !== 'assistant') return;
+    // The content items are the assistant-message union: Flow cannot prove
+    // the pushed variant matches, the mapper above produces it.
+    const content: Array<any> = lastMessage.content;
+    content.push({
+      type: 'output_text',
+      status: 'completed',
+      text: buildByokCompletionGateBlock(gateResult),
+      annotations: [],
+    });
+    persistUpdate();
   };
 
   /**
@@ -627,12 +794,27 @@ export const createByokOrchestrator = (
 
     const collaborators: ByokExtraToolCollaborators = {
       getProject,
+      // The id of the chat whose tool batch this is (the restore-point
+      // tool keys the snapshot store on it).
+      byokChatId: aiRequest.id,
       onSceneEventsModifiedOutsideEditor: changes => {
         if (options.onSceneEventsModifiedOutsideEditor) {
           options.onSceneEventsModifiedOutsideEditor(changes);
         }
       },
       runtimeDeps: getExtraToolRuntimeDeps() || undefined,
+      // The sub-agent tools (run_explorer_agent / run_review_agent)
+      // resolve here before the editor registry, whose implementations are
+      // server stubs. A sub-agent's own collaborators carry NO runner:
+      // that is what structurally refuses nesting (one level only).
+      runSubAgent: options.subAgentRunner
+        ? options.subAgentRunner.runSubAgent
+        : undefined,
+      // The extension regeneration hooks (Phase 8.4), flushed once per
+      // batch after the loop (not per call).
+      reloadEventsFunctionsExtensions: options.reloadEventsFunctionsExtensions,
+      reloadEventsFunctionsExtensionMetadata:
+        options.reloadEventsFunctionsExtensionMetadata,
       // The docs tools may fetch missing pages online only if the user
       // opted in (offline-first, see ByokDocs.js).
       onlineDocsEnabled: settings.onlineDocsEnabled,
@@ -647,7 +829,7 @@ export const createByokOrchestrator = (
         parsedArguments || {},
         collaborators
       );
-      getOutput().push(
+      pushTranscriptMessage(
         byokToolResultToFunctionCallOutput(
           functionCall.call_id,
           capToolOutput(JSON.stringify(output)),
@@ -672,7 +854,7 @@ export const createByokOrchestrator = (
           error instanceof Error ? error.message : String(error)
         }`,
       };
-      getOutput().push(
+      pushTranscriptMessage(
         byokToolResultToFunctionCallOutput(
           functionCall.call_id,
           capToolOutput(JSON.stringify(output))
@@ -702,7 +884,7 @@ export const createByokOrchestrator = (
       hasUnfinishedResult,
     } = getFunctionCallOutputsFromEditorFunctionCallResults(results);
     for (const functionCallOutput of functionCallOutputs) {
-      getOutput().push({
+      pushTranscriptMessage({
         ...functionCallOutput,
         output: capToolOutput(functionCallOutput.output),
       });
@@ -789,7 +971,7 @@ export const createByokOrchestrator = (
     const whitelistedCalls: Array<AiRequestMessageAssistantFunctionCall> = [];
     const rejectedCalls: Array<AiRequestMessageAssistantFunctionCall> = [];
     for (const functionCall of functionCalls) {
-      if (DISPATCHABLE_TOOL_NAMES.has(functionCall.name)) {
+      if (dispatchableToolNames.has(functionCall.name)) {
         whitelistedCalls.push(functionCall);
         continue;
       }
@@ -863,13 +1045,18 @@ export const createByokOrchestrator = (
     }
 
     // The plan tool is handled by the orchestrator itself; intercepted
-    // tools (ByokExtraTools) run here; everything else goes to the editor
-    // executor.
+    // tools (ByokExtraTools) run here — unless the registry grew a REAL
+    // implementation of the same name, which then wins (the
+    // upstream-tracking guard of Phase 8.4); everything else goes to the
+    // editor executor.
     const editorFunctionCalls = [];
     const extraToolCalls = [];
     for (const functionCall of proceedingCalls) {
       if (appendPlanToolOutput(functionCall)) continue;
-      if (findByNameokExtraTool(functionCall.name)) {
+      if (
+        findByNameokExtraTool(functionCall.name) &&
+        !isByokExtensionToolShadowedByRegistry(functionCall.name)
+      ) {
         extraToolCalls.push(functionCall);
         continue;
       }
@@ -890,6 +1077,15 @@ export const createByokOrchestrator = (
       const result = await runExtraToolCall(extraToolCall);
       if (result) executedResults.push(result);
     }
+
+    // The extension authoring tools regenerate the editor's view of the
+    // extensions ONCE for the whole batch (the v18 lesson) — not after
+    // every single call.
+    await flushByokExtensionRegeneration(getProject(), {
+      reloadEventsFunctionsExtensions: options.reloadEventsFunctionsExtensions,
+      reloadEventsFunctionsExtensionMetadata:
+        options.reloadEventsFunctionsExtensionMetadata,
+    });
 
     // Tool failures are not thrown: a failed editor function becomes a
     // `function_call_output` with success:false and the error text, and the
@@ -936,6 +1132,23 @@ export const createByokOrchestrator = (
 
     persistUpdate();
 
+    // Completion-gate tracking (Phase 8.2): a verify-type call in the batch
+    // clears the "edits since last verification" flag, a modifying result
+    // sets it back (modifications win when a batch did both — the safe
+    // direction for the nudge).
+    if (proceedingCalls.some(call => VERIFY_TOOL_NAMES.has(call.name))) {
+      hasEditsSinceLastVerification = false;
+    }
+    if (
+      executedResults.some(
+        result => result.status === 'finished' && result.didModifyProject
+      )
+    ) {
+      chatMadeEdits = true;
+      turnMadeEdits = true;
+      hasEditsSinceLastVerification = true;
+    }
+
     if (onFunctionCallsExecuted) {
       try {
         onFunctionCallsExecuted(executedResults, {
@@ -972,8 +1185,20 @@ export const createByokOrchestrator = (
     const cancellation = createByokCancellation();
     activeCancellation = cancellation;
 
-    for (let roundCount = 0; roundCount < MAX_BYOK_TOOL_ROUNDS; roundCount++) {
+    for (let roundCount = 0; roundCount < maxToolRounds; roundCount++) {
       if (isSuspended) return;
+
+      // The shared parent+children budget: sub-agents multiply the model
+      // calls made against the user's endpoint, so any loop that finds it
+      // exhausted stops here (the pending transcript stays valid).
+      if (sharedTurnBudget.remaining <= 0) {
+        markError(
+          'byok-turn-budget-exhausted',
+          'The chat reached its total model-turn budget (parent and sub-agents combined). Start a new chat to continue.'
+        );
+        return;
+      }
+      sharedTurnBudget.remaining--;
 
       const response = await callModel();
       recordAssistantTurn(response);
@@ -990,6 +1215,24 @@ export const createByokOrchestrator = (
             'The model returned an empty answer. Try again, or send a more detailed message.'
           );
           return;
+        }
+        // The completion gate (Phase 8.2): after edits were made, "done"
+        // must be earned. An unverified (or failing) claim gets exactly
+        // one nudge turn; the second claim is honored, carrying the gate's
+        // evidence block (with a warning line when it did not pass).
+        if (chatMadeEdits) {
+          const gateResult = checkByokCompletionGate({
+            transcript: getOutput(),
+            hasEditsSinceLastVerification,
+            serializeProject: serializeProjectForGate,
+            hasCrashedPreview: getByokPreviewHasCrashed,
+          });
+          if (gateResult.needsNudge && !wasCompletionNudgeSent) {
+            wasCompletionNudgeSent = true;
+            appendCompletionNudge(gateResult.nudgeMessage || '');
+            continue;
+          }
+          appendCompletionGateBlock(gateResult);
         }
         markReady();
         return;
@@ -1053,10 +1296,34 @@ export const createByokOrchestrator = (
     }
     isRunning = true;
     isSuspended = false;
+    turnMadeEdits = false;
     try {
-      appendUserMessage(text);
+      // The very first user message decides the build-intent heuristic
+      // (a later message never re-triggers the auto-suggested skill).
+      if (getOutput().length === 0) firstUserRequestOfChat = text;
+      // The restore-point pre-capture (Phase 8.6): serialize now, keep
+      // only if the turn edits something (lazy snapshots), after the loop.
+      const preTurnProjectSnapshot = serializeProjectForGate();
+      // The chat's gameId follows the live project, so the chat UI's
+      // restore affordances gate on the right project.
+      const liveProject = getProject();
+      if (liveProject && typeof liveProject.getProjectUuid === 'function') {
+        aiRequest.gameId = liveProject.getProjectUuid();
+      }
+      const userMessage = appendUserMessage(text);
       latestProjectContent = await getProjectUserContent();
       await runLoop();
+      if (preTurnProjectSnapshot && turnMadeEdits) {
+        takeByokProjectSnapshot(
+          aiRequest.id,
+          ((userMessage: any).messageId: string),
+          preTurnProjectSnapshot
+        );
+        // The version pointer the chat UI's restore arrow gates on.
+        (userMessage: any).projectVersionIdBeforeMessage = ((userMessage: any)
+          .messageId: string);
+        persistUpdate();
+      }
     } catch (error) {
       handleLoopError(error);
     } finally {
@@ -1097,6 +1364,9 @@ export const createByokOrchestrator = (
     sendUserMessage: (text: string) => runWithUserMessage(text),
     suspend: () => {
       isSuspended = true;
+      // Sub-agents of this chat are stopped too: suspending the parent
+      // must never leave a child spending the user's endpoint alone.
+      if (options.subAgentRunner) options.subAgentRunner.suspendAll();
       // Abort the in-flight model request (see runLoop).
       if (activeCancellation) activeCancellation.cancel();
       markSuspended();

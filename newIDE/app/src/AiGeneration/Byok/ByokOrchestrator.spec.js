@@ -7,6 +7,7 @@ import {
   MAX_BYOK_TOOL_ROUNDS,
 } from './ByokOrchestrator';
 import { DEFAULT_BYOK_SETTINGS } from './ByokTypes';
+import { createByokUsageTracker } from './ByokUsageTracker';
 import { createByokAiRequestShell } from './ByokTranscript';
 import {
   createByokCancellation,
@@ -1064,8 +1065,25 @@ describe('capToolOutput', () => {
 });
 
 describe('createByokSubAgentRunner', () => {
-  it('returns null in v1 (single-agent BYOK)', () => {
-    expect(createByokSubAgentRunner()).toBe(null);
+  it('is the real Phase 8 sub-agent runner (re-exported from ByokSubAgents)', () => {
+    // The Phase 4 null-seam became real in Phase 8: the factory now builds
+    // the scout/reviewer runner (its behavior is covered in
+    // ByokSubAgents.spec.js) — assert the seam is no longer null.
+    expect(typeof createByokSubAgentRunner).toBe('function');
+    expect(
+      createByokSubAgentRunner({
+        connection: { baseUrl: 'https://example.invalid/v1', apiKey: 'k' },
+        settings: DEFAULT_BYOK_SETTINGS,
+        hasOpenedProject: () => false,
+        getProject: () => null,
+        getProjectUserContent: async () => null,
+        createExecutor: () => {
+          throw new Error('not used');
+        },
+        usageTracker: createByokUsageTracker(),
+        sharedTurnBudget: { remaining: 10 },
+      })
+    ).not.toBe(null);
   });
 });
 
@@ -1102,7 +1120,10 @@ describe('ByokOrchestrator: local event writing interception (Phase 5)', () => {
             ],
           })
         )
-        .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+        .mockResolvedValueOnce(makeResponse({ text: 'Done.' }))
+        // The completion gate (Phase 8.2) nudges once after an unverified
+        // edit: the second claim is honored with the gate block.
+        .mockResolvedValueOnce(makeResponse({ text: 'Done (confirmed).' }));
       const { orchestrator, aiRequest } = makeOrchestrator({
         executeFunctionCalls,
         getProject: () => project,

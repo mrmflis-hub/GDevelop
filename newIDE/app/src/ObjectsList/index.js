@@ -502,6 +502,9 @@ type Props = {|
   onSetAsGlobalObject: (object: gdObject) => void,
 
   onEditObject: (object: gdObject, initialTab: ?ObjectEditorTab) => void,
+  // Opens the Ask AI chat with a prefilled request (Phase 8.5 context
+  // actions). Absent: the menu item is not shown.
+  onOpenAskAi?: ?(options: Object) => void,
   onOpenEventBasedObjectEditor: (
     extensionName: string,
     eventsBasedObjectName: string
@@ -552,6 +555,7 @@ const ObjectsList = React.forwardRef<Props, ObjectsListInterface>(
       objectsContainer,
       resourceManagementProps,
       onSelectAllInstancesOfObjectInLayout,
+      onOpenAskAi,
       onDeleteObjects,
       onRenameObjectFolderOrObjectWithContextFinish,
       selectedObjectFolderOrObjectsWithContext,
@@ -1131,6 +1135,7 @@ const ObjectsList = React.forwardRef<Props, ObjectsListInterface>(
         objectsContainer,
         onObjectPasted,
         onSelectAllInstancesOfObjectInLayout,
+        onOpenAskAi,
         editName,
         onEditObject,
         onDeleteObjects,
@@ -1161,6 +1166,7 @@ const ObjectsList = React.forwardRef<Props, ObjectsListInterface>(
         objectsContainer,
         onObjectPasted,
         onSelectAllInstancesOfObjectInLayout,
+        onOpenAskAi,
         editName,
         onEditObject,
         onDeleteObjects,

@@ -19,6 +19,13 @@ import {
   mergeByokProjectNotes,
   saveByokProjectNotes,
 } from './ByokProjectNotes';
+import type { ByokSubAgentKind, ByokSubAgentRunResult } from './ByokSubAgents';
+import { getByokExtensionTools } from './ByokExtensionTools';
+import {
+  getByokProjectSnapshot,
+  listByokProjectSnapshots,
+  restoreByokProjectFromSnapshot,
+} from './ByokFork';
 
 /**
  * The BYOK interception registry: tools the orchestrator resolves itself,
@@ -48,6 +55,26 @@ export type ByokExtraToolCollaborators = {|
   // file identifier of the project, or a name-hash fallback. Null while no
   // project is open.
   getProjectNotesIdentifier?: () => string | null,
+  // The sub-agent runner of the parent chat (Phase 8.1). ABSENT inside a
+  // sub-agent's own orchestrator: that is the structural nesting guard —
+  // the tools then answer with a refusal instead of delegating.
+  runSubAgent?: (options: {|
+    kind: ByokSubAgentKind,
+    instructions: string,
+  |}) => Promise<ByokSubAgentRunResult>,
+  // The extension regeneration hooks (Phase 8.4): the editor context's
+  // reload functions, flushed ONCE PER BATCH of extension tool calls (see
+  // flushByokExtensionRegeneration). Absent in hosts without them: the
+  // changes still apply, but the editor only picks them up at its next
+  // reload.
+  reloadEventsFunctionsExtensions?: (project: any) => Promise<void>,
+  reloadEventsFunctionsExtensionMetadata?: (
+    project: any,
+    extension: any
+  ) => void,
+  // The id of the BYOK chat whose batch this is (Phase 8.6): the
+  // restore-point tool keys the snapshot store on it.
+  byokChatId?: string,
 |};
 
 export type ByokExtraToolResult = {|
@@ -64,6 +91,11 @@ export type ByokExtraToolResult = {|
 
 export type ByokExtraTool = {|
   name: string,
+  // Whether running this tool modifies the project — the static flag the
+  // host's approval decision reads for the tools that exist ONLY here (the
+  // ones that also live in the editor registry keep their registry-side,
+  // sometimes per-arguments decision).
+  modifiesProject: boolean,
   run: (
     args: Object,
     collaborators: ByokExtraToolCollaborators
@@ -87,6 +119,7 @@ const readEventBatches = (args: Object): Array<ByokEventBatch> => {
  */
 const makeLocalEventWritingTool = (name: string): ByokExtraTool => ({
   name,
+  modifiesProject: true,
   run: async (args, collaborators) => {
     const output = byokApplySceneEventBatches({
       project: collaborators.getProject(),
@@ -134,6 +167,7 @@ const readOptionalString = (value: mixed): string | void =>
 
 const makeSearchReferenceTool = (): ByokExtraTool => ({
   name: 'search_reference',
+  modifiesProject: false,
   run: async args => {
     const result = searchByokEngineReference({
       query: typeof args.query === 'string' ? args.query : '',
@@ -175,6 +209,7 @@ const makeSearchReferenceTool = (): ByokExtraTool => ({
  */
 const makeLoadSkillTool = (): ByokExtraTool => ({
   name: 'load_skill',
+  modifiesProject: false,
   run: async args => {
     const name = typeof args.name === 'string' ? args.name.trim() : '';
     if (!name) {
@@ -218,6 +253,7 @@ const makeLoadSkillTool = (): ByokExtraTool => ({
  */
 const makeSearchDocsTool = (): ByokExtraTool => ({
   name: 'search_docs',
+  modifiesProject: false,
   run: async args => {
     const query = typeof args.query === 'string' ? args.query : '';
     const { results, truncated } = searchByokDocs(query);
@@ -252,6 +288,7 @@ const makeSearchDocsTool = (): ByokExtraTool => ({
  */
 const makeReadDocTool = (): ByokExtraTool => ({
   name: 'read_doc',
+  modifiesProject: false,
   run: async (args, collaborators) => {
     const page = typeof args.page === 'string' ? args.page.trim() : '';
     if (!page) {
@@ -297,6 +334,7 @@ const makeReadDocTool = (): ByokExtraTool => ({
  */
 const makeUpdateProjectNotesTool = (): ByokExtraTool => ({
   name: 'update_project_notes',
+  modifiesProject: false,
   run: async (args, collaborators) => {
     const identifier =
       collaborators.getProjectNotesIdentifier &&
@@ -343,6 +381,107 @@ const makeUpdateProjectNotesTool = (): ByokExtraTool => ({
   },
 });
 
+/**
+ * The sub-agent delegation tools (Phase 8.1): `run_explorer_agent` (the
+ * scout — same name as the hosted tool, so models porting the habit work)
+ * and `run_review_agent`. Both resolve here BEFORE the editor registry,
+ * whose implementations are server stubs. They never modify the project;
+ * a missing runner (nested call, or a host without sub-agents) is a
+ * refusal, never a crash.
+ */
+const makeSubAgentTool = (
+  name: string,
+  kind: ByokSubAgentKind
+): ByokExtraTool => ({
+  name,
+  modifiesProject: false,
+  run: async (args, collaborators) => {
+    if (!collaborators.runSubAgent) {
+      return {
+        output: {
+          success: false,
+          message:
+            'Sub-agents cannot be nested: do the work yourself with your own tools.',
+        },
+        didModifyProject: false,
+      };
+    }
+    const instructions =
+      typeof args.instructions === 'string' ? args.instructions : '';
+    const result = await collaborators.runSubAgent({ kind, instructions });
+    return {
+      output: {
+        success: result.success,
+        agent_kind: result.kind,
+        summary: result.summary,
+        transcript_id: result.transcriptId,
+      },
+      didModifyProject: false,
+    };
+  },
+});
+
+/**
+ * restore_project_point (Phase 8.6): rewind the project to the snapshot
+ * taken before a message of this chat. Approval-gated (it overwrites the
+ * current project) — the static flag says so.
+ */
+const makeRestoreProjectPointTool = (): ByokExtraTool => ({
+  name: 'restore_project_point',
+  modifiesProject: true,
+  run: async (args, collaborators) => {
+    const project = collaborators.getProject();
+    if (!project) {
+      return {
+        output: {
+          success: false,
+          message: 'No project is open: there is nothing to restore.',
+        },
+        didModifyProject: false,
+      };
+    }
+    const chatId = collaborators.byokChatId || '';
+    const messageId =
+      typeof args.message_id === 'string' ? args.message_id : '';
+    const snapshot = chatId ? getByokProjectSnapshot(chatId, messageId) : null;
+    if (!snapshot) {
+      const available = chatId
+        ? listByokProjectSnapshots(chatId)
+            .map(item => item.messageId)
+            .join(', ')
+        : '(none)';
+      return {
+        output: {
+          success: false,
+          message: `No restore point for message "${messageId}" of this chat. Available restore points: ${available ||
+            '(none)'}.`,
+        },
+        didModifyProject: false,
+      };
+    }
+    try {
+      restoreByokProjectFromSnapshot(project, snapshot);
+    } catch (error) {
+      return {
+        output: {
+          success: false,
+          message: `The restore failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+        didModifyProject: false,
+      };
+    }
+    return {
+      output: {
+        success: true,
+        message: `Project restored to the state saved before message "${messageId}". The current conversation continues; read the project state before editing further.`,
+      },
+      didModifyProject: true,
+    };
+  },
+});
+
 const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   makeLocalEventWritingTool('add_scene_events'),
   makeLocalEventWritingTool('generate_events'),
@@ -351,7 +490,13 @@ const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   makeSearchDocsTool(),
   makeReadDocTool(),
   makeUpdateProjectNotesTool(),
+  makeSubAgentTool('run_explorer_agent', 'scout'),
+  makeSubAgentTool('run_review_agent', 'reviewer'),
+  makeRestoreProjectPointTool(),
   ...makeByokRuntimeTools(),
+  // Events-based extension authoring (Phase 8.4), ported from the upstream
+  // v18 branch and driving libGD directly.
+  ...getByokExtensionTools(),
 ];
 
 /** All the intercepted tools (a fresh read: the list may grow per phase). */

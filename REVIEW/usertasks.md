@@ -352,3 +352,54 @@ needs a vision-capable model. **Recorded in:** worklog 2026-09-22 (Phases
      `image_url` parts in the request bodies.
    - [ ] with "Auto-detect": point at a text-only model → the chat degrades
      to text-only once and continues (one console note).
+
+## Task 9 — Phase 8 desktop QA: the autonomous build workflow (flagship)
+
+**Why you:** the flagship needs the real desktop app + a real endpoint
+(preferably vision-capable); no agent session can run it. **Prerequisite:**
+Task 1 done. **Spec:** `Phase8.md` step 8.7.2 + §3.
+
+From the homepage form with BYOK on (or the Ask AI tab with no project
+open), send exactly:
+
+> Build me a small platformer: 3 short levels, coins, one enemy type, HUD,
+> menu, save best score, and make it feel juicy.
+
+- [ ] Brief + plan: the agent shows a design brief via `create_or_update_plan`
+  before editing; the plan tasks update as mechanics complete.
+- [ ] The build-workflow skill is auto-included from turn one (visible as
+  `[Auto-loaded skill: build-workflow]` in the first request body — DevTools
+  Network tab — or via `load_skill` if the model loads it explicitly).
+- [ ] Scenes/objects/events built locally; at least one gameplay test
+  written and green (or visibly repaired); a screenshot captured and
+  discussed; an extension or a JS event used somewhere sensible.
+- [ ] Completion gate: the final message carries the `[Completion gate]`
+  `Verified:` block; if the model claims done unverified, exactly one
+  `[completion gate]` nudge message appears and the second claim is honored
+  with a warning line.
+- [ ] Restore points: after an editing turn, the user message shows the
+  restore arrow in the chat; restoring confirms, rewinds the project, and
+  the conversation forks ("Fork of …" appears in the history).
+- [ ] Zero `api.gdevelop.io/generation` calls in the Network tab.
+
+## Task 10 — Phase 8 desktop QA: sub-agents, extension authoring, entry points
+
+**Why you:** same as Task 9. **Spec:** `Phase8.md` steps 8.1/8.4/8.5 + §3.
+
+- [ ] Scout: ask something broad ("explore the project and list what could
+  be improved") → `run_explorer_agent` runs in a fresh context and returns
+  a capped summary; the chat continues. A nested agent call is refused.
+- [ ] Reviewer: before a done-claim on a multi-step build,
+  `run_review_agent` checks the work and flags gaps without editing.
+- [ ] Extensions: ask for a reusable mechanic → `create_extension` +
+  `create_custom_behavior`/`create_custom_function` build it; the new
+  functions appear usable in events right away (regeneration once per
+  batch); deleting a used extension is refused with the usage list.
+- [ ] Entry points: right-click an event / an action / an object / a scene
+  selection → the "Ask AI about this …" item opens the Ask AI tab with the
+  prefilled request (works for hosted AI too).
+- [ ] Homepage: the standalone form starts a BYOK chat that KEEPS RUNNING
+  when the form's dialog closes (the Ask AI tab selects it and shows the
+  work in progress).
+- [ ] Regression: BYOK off → the hosted flows (form, context menus,
+  restore) behave exactly as before.

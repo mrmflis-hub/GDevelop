@@ -95,3 +95,39 @@ export const subscribeByokChats = (listener: () => void): (() => void) => {
     listeners.delete(listener);
   };
 };
+
+// ----------------------------------------------------------------------
+// The orchestrators of the BYOK chats, kept at module level (Phase 8.5):
+// a chat started from the homepage standalone form must keep running when
+// the form's dialog unmounts and the conversation continues in the Ask AI
+// tab — whose own seam finds the live orchestrator here.
+// ----------------------------------------------------------------------
+const byokOrchestrators: Map<string, Object> = new Map();
+
+export const getByokOrchestrator = (chatId: string): ?Object =>
+  byokOrchestrators.get(chatId) || null;
+
+export const setByokOrchestrator = (
+  chatId: string,
+  orchestrator: Object
+): void => {
+  byokOrchestrators.set(chatId, orchestrator);
+};
+
+export const deleteByokOrchestrator = (chatId: string): void => {
+  byokOrchestrators.delete(chatId);
+};
+
+// The chat another surface (the homepage form) asked the Ask AI editor to
+// select when it mounts — consumed once.
+let pendingByokChatSelectionId: string | null = null;
+
+export const setPendingByokChatSelection = (chatId: string): void => {
+  pendingByokChatSelectionId = chatId;
+};
+
+export const consumePendingByokChatSelection = (): string | null => {
+  const chatId = pendingByokChatSelectionId;
+  pendingByokChatSelectionId = null;
+  return chatId;
+};

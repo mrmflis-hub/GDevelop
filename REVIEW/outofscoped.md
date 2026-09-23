@@ -26,6 +26,9 @@ now lives in a committed phase step — F2's prompt half is `Phase7.md`
 is `Phase9.md` **step 9.1**, F1 is `Phase9.md` **step 9.3**, and F3
 (+ D5) is `Phase9.md` **step 9.4**.
 
+**Cleared 2026-09-22 (Phase 8, step 8.0):** O3 was implemented + verified
+(all gates green; see the Phase 8 worklog entry) and its row removed.
+
 **Cleared 2026-09-22 (Phase 7, step 7.0):** O1, O4, O5, O6, O7, O8, O9,
 O10, O11, O13 and D10 were implemented + verified (all gates green) and
 their entries removed from this file — see the Phase 7 worklog entry for
@@ -90,7 +93,6 @@ setting as the chat-facing surface:
 | ID | What | Where | Status / phase home |
 |----|------|-------|---------------------|
 | O2 | ~~The context guard silently disappears when the endpoint omits `usage`~~ | `ByokUsageTracker.js`, `ByokOrchestrator.js` | **Accepted (#12)** — round cap holds; char-estimate fallback → `deferred.md` (conditional) |
-| O3 | `ensureExtensionInstalled` memo can use a stale project for ~1s around project creation mid-chat — needs the upstream getter refactor. | `AskAiEditorContainer.js` | Standing rec (#13) → **step 8.0** |
 | O12 | ~~Precise Flow types for the transcript content array and the orchestrator's `chatOptions`~~ | `ByokTranscript.js`, `ByokOrchestrator.js:391` | **Closed by-design (#8/D9)** — no upstreaming, so the `any` escapes stay (documented in `audit2209.md` §6) |
 | D5 | BYOK badge in the chat header + exact token row (`getTotals` provides the data). | `AiRequestChat` header | **Approved (#5)** → step 9.4 (with F3) |
 
@@ -101,3 +103,14 @@ setting as the chat-facing surface:
 | What | Where | What blocks it |
 |------|-------|----------------|
 | Project-notes identifier is captured once per orchestrator (a project "Save as…" mid-chat keeps writing notes under the pre-save identifier until the chat is reopened — reopen after save works). Re-read `fileMetadata` live (a ref like `byokProjectRef`) at notes read/write time. | `AskAiEditorContainer.js` (`getProjectNotesIdentifier` in `createByokOrchestratorForChat`), `ByokOrchestrator.js` | None — small follow-up; surfaced during Phase 7 step 7.8, deliberately kept simple in v1. |
+
+---
+
+## New items from the Phase 8 session (2026-09-22)
+
+| What | Where | What blocks it |
+|------|-------|----------------|
+| Two-argument project self-unserialization corrupts the project: `unserializeFromJSObject(project, obj, 'unserializeFrom', project)` crashes the WASM with memory-access-out-of-bounds when the serializable IS the project (the single-argument `project.unserializeFrom(element)` works in place — the form MainFrame's `loadFromSerializedProject` uses). A guard in `Utils/Serializer.js` (refuse `optionalProject === serializable`, or route projects to the 1-arg form) would prevent the next caller from hitting it. | `src/Utils/Serializer.js` (`unserializeFromJSObject`), discovered via `ByokFork.js` restore | None — small upstream-safe fix; Phase 8 worked around it (ByokFork uses `gd.Serializer.fromJSON` + the 1-arg `unserializeFrom`). |
+| Duplicate `onOpenAskAi` key in `AskAiEditorContainer`'s Props type (an older `{\| aiRequestId, paneIdentifier \|}` shape at ~line 228 and the current `(?OpenAskAiOptions) => void` at ~line 234 — the second silently wins). Pre-existing; noticed while wiring the Phase 8 entry points. | `src/AiGeneration/AskAiEditorContainer.js` Props | None — one-line cleanup at the file's next churn. |
+| In-place BYOK restore refreshes the project under open editors, but deeply-held views (scene editors) may show stale content until their next interaction or reopen. v1 accepts this (the phase's full-fidelity-restore disclaimer); a full editor refresh (like `onCheckoutVersion`'s project reload) would remove it. | `src/AiGeneration/AskAiEditorContainer.js` (`onRestoreByokChat`) | A design decision on how hard to refresh (reopening editors is disruptive mid-session). |
+| Repeated in-place project restores inside ONE jest/WASM instance are flaky (embind `null function or function signature mismatch` on the second restore of the same project). The production path does one restore per user action; the ByokFork tool test mocks the restore and the round-trip test covers the real path once. | `src/AiGeneration/Byok/ByokFork.spec.js` | Unknown WASM/embind lifetime cause; affects tests only. |

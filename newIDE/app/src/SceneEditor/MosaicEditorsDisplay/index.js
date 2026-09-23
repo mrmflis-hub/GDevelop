@@ -493,6 +493,7 @@ const MosaicEditorsDisplay: React.ComponentType<{
                   props.selectedObjectFolderOrObjectsWithContext
                 }
                 onEditObject={props.onEditObject}
+                onOpenAskAi={props.onOpenAskAi}
                 onOpenEventBasedObjectEditor={
                   props.onOpenEventBasedObjectEditor
                 }

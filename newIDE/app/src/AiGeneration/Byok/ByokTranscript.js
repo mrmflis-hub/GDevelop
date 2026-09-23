@@ -294,6 +294,14 @@ export const assistantMessageToByokMessage = (
 };
 
 /**
+ * The id of a BYOK transcript message (Phase 8.6): `<chat id>-m<n>`, unique
+ * per chat and stable across forks (a fork's copied items keep their
+ * original ids — the fork UI targets them).
+ */
+export const makeByokMessageId = (chatId: string, index: number): string =>
+  `${chatId}-m${index}`;
+
+/**
  * The minimal `AiRequest` a BYOK chat starts from: the same shape the chat
  * UI and `AiRequestUtils.js` consume, with an empty transcript. The
  * `orchestrator` mode is what the chat UI keys its plan component on (see

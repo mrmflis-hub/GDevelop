@@ -22,9 +22,16 @@ type _UseEnsureExtensionInstalledReturnType = {
 };
 export const useEnsureExtensionInstalled = ({
   project,
+  getProject,
   i18n,
 }: {|
   project: ?gdProject,
+  // Read the live project through a getter when the host has one (the
+  // BYOK getters pattern): the React `project` prop can be stale for ~1
+  // render after a project was created mid-chat (initialize_project), and
+  // an extension install in that window would then silently do nothing
+  // (or target the previous project) — the O3 memo-staleness fix.
+  getProject?: () => ?gdProject,
   i18n: I18nType,
 |}): _UseEnsureExtensionInstalledReturnType => {
   const {
@@ -40,8 +47,9 @@ export const useEnsureExtensionInstalled = ({
         onExtensionInstalled,
         onWillInstallExtension,
       }: EnsureExtensionInstalledOptions) => {
-        if (!project) return;
-        if (project.getCurrentPlatform().isExtensionLoaded(extensionName))
+        const liveProject = getProject ? getProject() : project;
+        if (!liveProject) return;
+        if (liveProject.getCurrentPlatform().isExtensionLoaded(extensionName))
           return;
 
         // Warm the context for following installs, and get a loaded registry
@@ -77,12 +85,12 @@ export const useEnsureExtensionInstalled = ({
         const requiredExtensionInstallation = await checkRequiredExtensionsUpdate(
           {
             requiredExtensions,
-            project,
+            project: liveProject,
             extensionShortHeadersByName: extensionShortHeadersByNameToUse,
           }
         );
         await installExtension({
-          project,
+          project: liveProject,
           requiredExtensionInstallation,
           importedSerializedExtensions: [],
           onWillInstallExtension,
@@ -95,6 +103,7 @@ export const useEnsureExtensionInstalled = ({
         extensionShortHeadersByName,
         fetchExtensionsAndFilters,
         installExtension,
+        getProject,
         project,
       ]
     ),

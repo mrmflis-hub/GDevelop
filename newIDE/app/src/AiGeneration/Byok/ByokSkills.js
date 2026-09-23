@@ -205,3 +205,16 @@ export const findByNameokSkill = async (
   const skills = await getByokSkills();
   return skills.find(skill => skill.name === name) || null;
 };
+
+/**
+ * The build-intent heuristic (Phase 8.3): a make/build/create verb in the
+ * same sentence as a game word. Cheap and over-inclusive on purpose — the
+ * auto-suggested build-workflow skill is only instructions (overridable in
+ * the settings), and a false positive just loads a playbook the model can
+ * ignore.
+ */
+const BYOK_BUILD_INTENT_PATTERN = /\b(?:make|build|create|develop|generate|design)\b[^.!?]{0,120}\b(?:game|platformer|shooter|rpg|arcade|runner|puzzler|top-down|beat-them-all)\b/i;
+
+/** Whether the first user message looks like a game-build request. */
+export const isByokBuildIntent = (text: string): boolean =>
+  BYOK_BUILD_INTENT_PATTERN.test(text);

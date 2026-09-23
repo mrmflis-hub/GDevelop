@@ -46,6 +46,10 @@ export type ByokPreviewSession = {|
     state?: Object,
   |}>,
   isRunning: () => boolean,
+  // Whether the running game crashed (and the crash was not cleared by a
+  // new start) — read by the completion gate's "no crashed previews
+  // pending" check.
+  hasCrashed: () => boolean,
 |};
 
 /**
@@ -314,5 +318,6 @@ export const createByokPreviewSession = (options: {|
     },
 
     isRunning: () => isRunning,
+    hasCrashed: () => !!crash,
   };
 };

@@ -26,6 +26,7 @@ describe('DEFAULT_BYOK_SETTINGS', () => {
       contextWindowByModel: {},
       onlineDocsEnabled: false,
       customInstructions: '',
+      buildWorkflowAutoSuggest: true,
     });
   });
 });

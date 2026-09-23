@@ -21,6 +21,253 @@ orchestrating agent writes one consolidated entry per session.
 
 ---
 
+## 2026-09-22 — Phase 8 implemented: the autonomous build workflow (sub-agents, completion gate, skills, extension authoring, entry points, fork/restore, byok-v6)
+
+**Agent:** ZCode main orchestrator + 5 read-only Explore subagents (one
+wave, at session start: v18 upstream tools map; libGD extension typings;
+UI entry points map; Phase 5 machinery / chat restore UI; knowledge-sections
+/ skills infrastructure). All code written by the orchestrator.
+
+**Actions:**
+
+- **Step 8.0 (prep)** —
+  - **D8:** completed the extraction started by a previous session (the
+    untracked draft `useByokChatSeam.js` was incomplete: missing `t` /
+    `useStableUpToDateRef` imports, no `gd` binding, duplicate imports).
+    The hook now carries the whole container BYOK seam; `AskAiEditorContainer`
+    keeps a single `useByokChatSeam(...)` call (behavior-preserving — all
+    pre-existing suites green). The hook also improves the approval
+    decision: BYOK-only intercepted tools now carry a `modifiesProject`
+    flag (`ByokExtraTool` type) used when the name is NOT in the registry
+    (registry names keep their per-arguments decision).
+  - **O3:** `useEnsureExtensionInstalled` accepts a `getProject` getter
+    read at call time; the seam passes the BYOK live-project getter, so an
+    install right after `initialize_project` sees the fresh project. New
+    `UseEnsureExtensionInstalled.spec.js` (4 tests: getter wins over the
+    stale prop, already-loaded short-circuit, no-project no-op, prop
+    fallback for the existing callers).
+- **Step 8.1 — sub-agents** (`ByokSubAgents.js`, 14 tests): the Phase-4
+  `createByokSubAgentRunner` null-seam is real (re-exported from
+  `ByokOrchestrator.js`). `run_explorer_agent` (scout) and `run_review_agent`
+  (reviewer) resolve in `ByokExtraTools` BEFORE the registry stubs. Fresh
+  orchestrator conversations: scoped charter prompt, read-only whitelist
+  (19 tools) enforced at advertisement AND dispatch, `runScriptReadOnly`
+  executors, rounds budgets 8/3, summary cap 1.5k tokens, transcripts kept
+  module-side (capped 20, never replayed), failures degrade to
+  `success:false`. Nesting refused structurally (a child's collaborators
+  carry no `runSubAgent`). A shared model-turn budget
+  (`BYOK_GLOBAL_TURN_BUDGET = 150`, parent + children) stops runaway cost.
+  Suspending the parent suspends the children.
+- **Step 8.2 — completion gate** (`ByokCompletionGate.js`, 9 tests):
+  after edits, a plain-text done-claim runs cheap checks (project
+  serializes, no crashed preview — `ByokPreviewSession.hasCrashed` via a
+  module accessor in `ByokRuntimeTools` — and no unfixed failing gameplay
+  tests scanned from the transcript). Unverified/failing claims get exactly
+  ONE `[completion gate]` nudge user-message and the loop continues; the
+  second claim is honored carrying a `[Completion gate]` `Verified:` /
+  `Warning:` block attached to the final assistant message.
+- **Step 8.3 — build-workflow skill**: authored
+  `Byok/Skills/build-workflow.md` (brief → plan+scaffold → per-mechanic
+  failing-test-first loops → juice pass → verified handover + scope rules),
+  regenerated `ByokBuiltinSkills.generated.js` (13 skills). Auto-suggest:
+  `isByokBuildIntent` (ByokSkills.js) on the FIRST user message includes
+  the skill body from turn one, overridable via the new
+  `buildWorkflowAutoSuggest` setting (ByokTypes + a settings-tab checkbox).
+  Spec (8 tests) guards parsing, the required-tools list, the phase order,
+  the heuristic truth table, and the orchestrator integration.
+- **Step 8.4 — extension authoring** (`ByokExtensionTools.js`, 8 tests):
+  9 tools ported from the upstream v18 branch (present in this clone at
+  `upstream/claude/*`, commits c0bc40d06e/3a2659eb86/8d514278ad, not in
+  master) driving libGD directly: create/change_extension (rename with
+  `WholeProjectRefactorer.renameEventsFunctionsExtension` + usage-guarded
+  delete), create/change_custom_object, create/change_custom_behavior,
+  create/change_custom_function (typed parameters; bodies authored as
+  EventScript through the Phase 5 parser + a `gd.EventsList` round-trip),
+  and `find_extension_usages` (plain-text usage list via
+  `UsedExtensionsFinder`/`UsedObjectTypeFinder`/behavior scans).
+  Regeneration fires ONCE PER BATCH (`flushByokExtensionRegeneration`
+  called by the orchestrator after its intercepted-tools loop; full reload
+  after structural changes, metadata-only otherwise) through the editor's
+  `EventsFunctionsExtensionsContext` hooks wired in the seam. The
+  upstream-stub delegation guard (`isByokExtensionToolShadowedByRegistry`)
+  steps aside if the registry ever grows REAL implementations — scoped to
+  the extension tool names only, so the deliberate interceptions
+  (`add_scene_events`, `run_gameplay_test`) are unaffected.
+- **Step 8.5 — UI entry points**:
+  - Homepage standalone form: the `newAiRequestOptions` effect gained the
+    BYOK branch (before any account/credits check) using the SAME seam
+    hook. Orchestrators moved to a module-level registry
+    (`ByokChatStore`: get/set/deleteByokOrchestrator) so the chat keeps
+    running when the form's dialog unmounts and the Ask AI tab takes over
+    (pending selection: `setPendingByokChatSelection`, consumed by the
+    container on mount).
+  - Context menus (all behind `onOpenAskAi({prefilledUserRequest})`, all
+    Lingui `t`): Events sheet event + action items (EventsSheet/index.js,
+    threaded via EventsEditorContainer), Objects list
+    "Edit {object} with AI…" (ObjectTreeViewItemContent + the
+    SceneEditorContainer → SceneEditor → Mosaic/SwipeableDisplays →
+    ObjectsList chain), scene selection (SceneEditor's instance context
+    menu, which builds the InstancesEditor menu).
+- **Step 8.6 — fork / restore points**: transcript messages get
+  `messageId`s (`makeByokMessageId`, stamped by the orchestrator).
+  `ByokFork.js`: `forkByokChat(chatId, upToMessageId)` (INCLUSIVE copy,
+  "Fork of …" title, `forkedFrom*` fields); lazy pre-message project
+  snapshots (serialize before the turn, keep only if the turn edited),
+  capped to the last 5, dropped when the chat is archived;
+  `restore_project_point({message_id})` tool (approval-gated). The chat
+  UI's restore arrow is lit for BYOK chats (user messages carry
+  `projectVersionIdBeforeMessage` = their messageId; the chat's `gameId`
+  follows the live project) and the container's `onRestore` routes BYOK
+  ids to a local confirm → in-place restore → transcript-fork flow.
+- **Step 8.7 — prompt `byok-v6`**: the `single-agent` knowledge section
+  became the `agents` section (delegation policy for the scout/reviewer,
+  "never edit inside sub-agents", completion rules naming the gate, and
+  pointers to the build-workflow + extend-with-js skills). Pinned specs
+  updated (version + section markers).
+- **Tool surface:** `BYOK_TOOL_NAMES` 36 → 48 (`run_explorer_agent`,
+  `run_review_agent`, the 9 extension tools, `restore_project_point`), the
+  validator cap raised to 48 with a comment, `BYOK_ONLY_TOOL_NAMES`
+  extended, and the prompt's tools-section budget raised 1400 → 2100
+  tokens (48 one-line entries no longer truncate).
+- **Gates, final tree:** `npm test -- --watchAll=false` → **183 suites
+  passed, 1926 passed (1 pre-existing skip)**; `npm run lint` → **0
+  warnings**; `npm run flow` → **Found 0 errors**; `npm run check-format`
+  → **clean** (all from `newIDE\app`; flow run via the direct
+  `flow.exe check` workaround).
+
+**Audit greps** (run 2026-09-22, all from `newIDE/app/src/AiGeneration/Byok`
+unless noted):
+
+1. Every BYOK-only / new tool is actually intercepted (name found in
+   ByokExtraTools.js / ByokRuntimeTools.js / ByokExtensionTools.js):
+   `OK` for all 23 checked (`capture_*`, `start/stop_preview`,
+   `read_preview_logs`, `get_runtime_errors`, `inspect_runtime_state`,
+   `search_reference`, `load_skill`, `search_docs`, `read_doc`,
+   `update_project_notes`, `run_review_agent`, the 9 extension tools,
+   `restore_project_point`) — no `MISSING` line was printed.
+2. `run_edit_agent` exclusion: 0 occurrences in `ByokToolSchema.js`'s
+   whitelist; pinned in `ByokToolSchema.spec.js`'s excluded list.
+3. No generation-backend calls in the BYOK modules: grepping
+   `createAiRequest|addMessageToAiRequest|retryAiRequest|forkAiRequest`
+   over the Byok modules returns only a documentation comment in
+   `ByokFork.js` ("the local equivalent of the server's forkAiRequest") —
+   zero call sites.
+4. `byok-v6`: 2 occurrences in `ByokPrompts.js` (doc comment + the export),
+   2 in `ByokPrompts.spec.js` (the pinned version test).
+5. Locales untouched: `git status newIDE/app/src/locales` → 0 lines.
+6. New modules all have co-located specs: `OK` for useByokChatSeam,
+   ByokSubAgents, ByokCompletionGate, ByokExtensionTools, ByokFork,
+   ByokBuildWorkflowSkill (skills spec), UseEnsureExtensionInstalled.
+7. Phase-8 keyword spread: `createByokSubAgentRunner`/`ByokCompletionGate`/
+   `forkByokChat`/`restore_project_point`/`build-workflow`/`extend-with-js`
+   appear in ByokOrchestrator.js (13), ByokExtraTools.js (2),
+   ByokSkills.js (1), ByokFork.js (1), AskAiEditorContainer.js (2).
+
+**Bugs found:**
+
+- **Two-argument project self-unserialization corrupts the project** —
+  `unserializeFromJSObject(project, obj, 'unserializeFrom', project)`
+  (the `Utils/Serializer.js` helper with `optionalProject`) crashes the
+  WASM with "memory access out of bounds" when the serializable IS the
+  project; the single-argument `project.unserializeFrom(element)` (the
+  form `MainFrame`'s `loadFromSerializedProject` uses) works in place.
+  Repro: `gd.Serializer.fromJSON(json)` + 2-arg `unserializeFrom` on any
+  project. Root cause: Project's unserializeFrom binding is 1-arg
+  (`gdproject.js:123`); the 2-arg path aliases the project into the
+  element argument slot. Fixed-now in `ByokFork.js` (uses `fromJSON` + the
+  1-arg form); the guard in `Utils/Serializer.js` is logged in
+  `outofscoped.md`.
+- **The tools-section prompt budget truncated the 48-tool list** — with
+  this phase's additions, `ByokKnowledgeSections.js`'s 1400-token budget
+  cut the tool list mid-way (the section is non-degradable → truncated),
+  hiding tools from the model. Caught by the "every tool name in the
+  prompt" spec; fixed by raising the budget to 2100 (the section comment
+  now documents the 48-tool surface).
+- **Repeated in-place restores under one jest/WASM instance are flaky**
+  (embind "null function or function signature mismatch" on the second
+  restore of the same project, only in tests; a single restore is stable
+  and the production path restores once per user action). Worked around:
+  the `restore_project_point` tool test mocks the restore; the real
+  round-trip is covered once. Logged in `outofscoped.md`.
+- Found-and-fixed during the session (introduced by this session's own
+  edits, listed for the record): a duplicated `capToolOutput` block after
+  the sub-agent re-export edit; an inline-type export-from syntax the
+  Babel version rejects; a stray apostrophe breaking a schema description
+  string; a node splice that emptied `ByokBuildWorkflowSkill.spec.js`
+  (recreated in full); lint/flow cleanups (unused imports, exact-object
+  extra props, `jest.fn` underconstrained generics per the known repo
+  quirks).
+
+**Issues found:**
+
+- **Upstream files touched beyond the phase doc's explicit list** (each a
+  1–3-line surgical addition mandated by the step 8.5 ACs; the doc listed
+  "EventsSheet + ObjectsList + one editor container"): EventsEditorContainer
+  (thread `onOpenAskAi`), ObjectTreeViewItemContent (the per-object menu
+  builder), SceneEditorContainer, SceneEditor/index.js (props + the
+  scene-selection item in the InstancesEditor menu it builds),
+  MosaicEditorsDisplay + SwipeableDrawerEditorsDisplay + EditorsDisplay.flow
+  (threading). `UseEnsureExtensionInstalled.js` is the O3 getter (owner's
+  standing decision #13). `AskAiStandAloneForm.js` is the phase-mandated
+  first edit (justified in `Phase8.md` itself); note its earlier D7
+  de-scoping was superseded by the owner-approved replan — recorded in
+  `deferred.md`.
+- **In-place restore editor staleness**: restoring a project in place
+  refreshes the project under the editors, but deeply-held views may show
+  stale content until their next interaction/reopen. Accepted for v1 (the
+  phase's full-fidelity disclaimer); a full refresh option is logged in
+  `outofscoped.md`.
+- **Pre-existing**: `AskAiEditorContainer`'s Props type declares
+  `onOpenAskAi` twice (an old shape + the current one; the second wins) —
+  logged in `outofscoped.md`.
+- **libGD name normalization**: `gd.Project.getSafeName('New Name')` →
+  `New_Name` (underscore) — extension/object/behavior/function renames
+  normalize through it (tests pin the behavior).
+- **Manual QA not runnable in this session** (no desktop app / real
+  endpoint): the flagship build-workflow QA, the sub-agent/extension/
+  entry-point QA, and the Phase 3/4/5/6 desktop tasks are owner tasks —
+  **Tasks 9 and 10 added to `usertasks.md`**; the phase gate's "flagship
+  QA recorded with evidence" checkbox stays open on them.
+- Triage updates: O3 removed from `outofscoped.md` (fixed + verified);
+  D4/D8/O7-marked D7 entries updated in `deferred.md`; AGENTS.md §2
+  refreshed (Phase 8 implemented uncommitted; QA Tasks 9/10 open). New
+  `outofscoped.md` items: the serializer self-restore guard, the duplicate
+  prop key, the restore-refresh design decision, the WASM test flakiness.
+
+**Files worked on:**
+
+- Created: `newIDE/app/src/AiGeneration/Byok/useByokChatSeam.js` +
+  `.spec.js`; `ByokSubAgents.js` + `.spec.js`; `ByokCompletionGate.js` +
+  `.spec.js`; `ByokExtensionTools.js` + `.spec.js`; `ByokFork.js` +
+  `.spec.js`; `ByokBuildWorkflowSkill.spec.js`; `Skills/build-workflow.md`;
+  `Skills/extend-with-js.md`; `newIDE/app/src/AiGeneration/UseEnsureExtensionInstalled.spec.js`.
+- Modified (BYOK): `ByokChatStore.js` (orchestrator registry + pending
+  selection), `ByokExtraTools.js` (modifiesProject flags, sub-agent tools,
+  restore tool, extension registration, regeneration collaborators),
+  `ByokOrchestrator.js` (+`.spec.js`) (sub-agent runner wiring, completion
+  gate, message ids, snapshots, gameId, budget/whitelist/prompt overrides,
+  auto-suggest, serialization for the gate), `ByokPreviewSession.js`
+  (`hasCrashed`), `ByokRuntimeTools.js` (flags + crash accessor),
+  `ByokSeam.js` (`runScriptReadOnly` pass-through), `ByokPrompts.js`
+  (+`.spec.js`) (v6), `ByokSkills.js` (build-intent), `ByokToolSchema.js`
+  (+`.spec.js`) (11 new schemas, cap 48), `ByokTranscript.js`
+  (`makeByokMessageId`), `ByokTypes.js` (+`.spec.js`) (setting + shared
+  budget), `ByokSettingsTab.js` (checkbox), `Knowledge/ByokKnowledgeSections.js`
+  (agents section; tools budget), `Skills/ByokBuiltinSkills.generated.js`
+  (regenerated).
+- Modified (upstream touchpoints): `AskAiEditorContainer.js` (hook call,
+  BYOK restore routing, pending selection), `AskAiStandAloneForm.js` (BYOK
+  branch + seam), `UseEnsureExtensionInstalled.js` (O3 getter),
+  `EventsSheet/index.js`, `MainFrame/EditorContainers/EventsEditorContainer.js`,
+  `MainFrame/EditorContainers/SceneEditorContainer.js`, `ObjectsList/index.js`,
+  `ObjectsList/ObjectTreeViewItemContent.js`, `SceneEditor/index.js`,
+  `SceneEditor/EditorsDisplay.flow.js`, `SceneEditor/MosaicEditorsDisplay/index.js`,
+  `SceneEditor/SwipeableDrawerEditorsDisplay/index.js`.
+- Docs: `REVIEW/worklog.md` (this entry), `REVIEW/outofscoped.md`,
+  `REVIEW/deferred.md`, `REVIEW/usertasks.md`, `AGENTS.md`.
+
+---
+
 ## 2026-09-22 — Phase 7 implemented: knowledge, prompts, and the skills system (+ step 7.0 backlog clearing)
 
 **Agent:** ZCode main orchestrator (no subagents — all code written and

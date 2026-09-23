@@ -28,13 +28,18 @@ pass. `REVIEW/report.md` is the original architecture survey;
 
 Status as of 2026-09-22 (update at the end of every session):
 
-- **Implemented and committed** (owner commit `0802d2d21e` on `master`):
-  Phases 1–6 — settings UI, client engine, Electron safeStorage integration,
-  client-side agent loop, local EventScript event writing + full tool parity,
-  perception (vision, screenshots, previews, gameplay tests). Prompt version
-  `byok-v4`.
-- **Planned, not started:** Phase 7 (knowledge/prompts/skills), Phase 8
-  (autonomous build workflow), Phase 9 (scale, robustness, model economics).
+- **Implemented** — Phases 1–7 committed (owner commits `0802d2d21e` and
+  `e81697cbe6` on `master`): settings UI, client engine, Electron
+  safeStorage integration, client-side agent loop, local EventScript event
+  writing + full tool parity, perception, knowledge/prompt composer +
+  skills (`byok-v5`). **Phase 8 implemented 2026-09-22, uncommitted:**
+  the D8 hook extraction (`Byok/useByokChatSeam.js`, also reused by the
+  homepage standalone form), the O3 memo fix, scout/reviewer sub-agents,
+  the completion gate, the build-workflow + extend-with-js skills with
+  auto-suggest, events-based extension authoring (9 tools ported from the
+  upstream v18 surface), Ask-AI context-menu entry points, fork/restore
+  points, and prompt `byok-v6` (48 tools). QA Tasks 9/10 open.
+- **Planned, not started:** Phase 9 (scale, robustness, model economics).
 - **Quality bar at the last full verification:** 164 test suites / 1740 tests
   green, `lint` 0 warnings, `flow` 0 errors, `check-format` clean in
   `newIDE\app`; the electron-app `check-format` gate is green too (fully

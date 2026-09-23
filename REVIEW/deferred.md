@@ -47,29 +47,29 @@ them.
   identically in both modes. No coupling decisions like this one are needed
   again — BYOK offers only what is built for it locally.
 
-### D4 — Sub-agents (edit / explorer) — *deferred (answer #4, 2026-09-22)*
+### D4 — Sub-agents (edit / explorer) — *DONE in Phase 8 step 8.1 (2026-09-22)*
 
 - **What:** nested BYOK agent runs (`createByokSubAgentRunner()` currently
   returns null).
-- **Why deferred:** owner said defer; they only pay off once the autonomous
-  build workflow and the knowledge system exist.
-- **When to tackle:** Phase 8 (autonomous build workflow), unchanged —
-  now step 8.1 in `Phase8.md`.
+- **Status:** the scout/reviewer halves are implemented and verified in
+  Phase 8 step 8.1 (`ByokSubAgents.js`, worklog 2026-09-22). The EDIT
+  sub-agent stays excluded by design (see `Phase8.md` §4).
 
-### D7 — BYOK in the homepage stand-alone AI form — *BY-DESIGN: de-scoped (reconfirmed 2026-09-22)*
+### D7 — BYOK in the homepage stand-alone AI form — *SUPERSEDED by the Phase 8 replan*
 
 - **What:** BYOK support in `AskAiStandAloneForm.js`.
-- **Reasoning:** the form is account/credits-oriented with no project
-  context; `report.md` §5 de-scoped it originally and the owner confirmed
-  keeping it so.
+- **Status:** the de-scoping was superseded when the owner-approved
+  `Phase8.md` step 8.5 made the homepage form a mandated BYOK entry point
+  (feature parity — the homepage make-me-a-game flow). Implemented and
+  verified in the Phase 8 session (worklog 2026-09-22).
 
-### D8 — Shrink `AskAiEditorContainer.js`'s BYOK additions into a hook — *deferred (answer #7, 2026-09-22)*
+### D8 — Shrink `AskAiEditorContainer.js`'s BYOK additions into a hook — *DONE in Phase 8 step 8.0 (2026-09-22)*
 
 - **What:** optional refactor moving the BYOK seam code out of the container
   into a dedicated hook.
-- **Why deferred:** keep local for now; the file churns again at Phase 8,
-  which is the cheap moment to refactor.
-- **When to tackle:** start of Phase 8 — now step 8.0 in `Phase8.md`.
+- **Status:** done — `Byok/useByokChatSeam.js` (also reused by the
+  standalone form since step 8.5); the container keeps a single hook call.
+  Verified by the Phase 8 gates (worklog 2026-09-22).
 
 ### D9 — Upstream export of the helpers BYOK reimplements — *BY-DESIGN: keep local (answer #8, 2026-09-22)*
 
@@ -91,12 +91,13 @@ them.
 - **When to tackle:** if a real endpoint in use proves to never send
   `usage` (conditional; also noted in `Phase9.md` §4).
 
-### O3 — Executor/`ensureExtensionInstalled` memo staleness — *deferred (standing rec. #13)*
+### O3 — Executor/`ensureExtensionInstalled` memo staleness — *DONE in Phase 8 step 8.0 (2026-09-22)*
 
 - **What:** the memo can use a stale project for ~1s around a mid-chat
   project creation; needs an upstream getter refactor.
-- **When to tackle:** Phase 8 (unchanged recommendation; not explicitly
-  answered in the 2026-09-22 round) — now step 8.0 in `Phase8.md`.
+- **Status:** done — `useEnsureExtensionInstalled` accepts a `getProject`
+  getter (the BYOK live-project getter); unit-tested in
+  `UseEnsureExtensionInstalled.spec.js` (worklog 2026-09-22).
 
 ### O4 — Transcript images not rendered to the user — *deferred (standing rec. #14)*
 

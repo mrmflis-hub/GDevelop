@@ -134,6 +134,10 @@ type ByokExecutorDeps = {|
   onWillDeleteObject: (changes: any) => void,
   onWillInstallExtension: (extensionNames: Array<string>) => void,
   onExtensionInstalled: (extensionNames: Array<string>) => void,
+  // When true, the `run_script` tool exposes only non-mutating functions —
+  // the read-only script context of the scout sub-agent (the editor
+  // runner's own flag, passed through).
+  runScriptReadOnly?: boolean,
 |};
 
 // The tool capabilities excluded from the BYOK v1 whitelist (event
@@ -196,6 +200,7 @@ export const createByokEditorFunctionCallExecutor = (
         relatedAiRequestId: context.aiRequestId,
         getRelatedAiRequestLastMessages:
           context.getRelatedAiRequestLastMessages,
+        runScriptReadOnly: deps.runScriptReadOnly === true,
         generateEvents: makeUnavailableDependency('generate_events'),
         ensureExtensionInstalled: deps.ensureExtensionInstalled,
         onSceneEventsModifiedOutsideEditor: changes => {
