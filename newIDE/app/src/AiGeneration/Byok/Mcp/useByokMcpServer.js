@@ -10,6 +10,11 @@ import {
   type ByokMcpToolHandlers,
 } from './ByokMcpProtocol';
 import { makeByokMcpToolDescriptors } from './ByokMcpTools';
+import { getByokMcpPrompt, listByokMcpPrompts } from './ByokMcpPrompts';
+import {
+  makeByokMcpResourceDescriptors,
+  readByokMcpResource,
+} from './ByokMcpResources';
 import {
   cancelByokMcpCall,
   executeByokMcpToolCall,
@@ -144,6 +149,32 @@ export const useByokMcpServer = (enabled: boolean): ByokMcpServerStatus => {
         cancelByokMcpCall(requestId);
       },
       getAppVersion: () => getIDEVersion(),
+      // The prompts/resources primitives (Phase 12): served from the host's
+      // data sources; without a host, the lists are empty and the specific
+      // reads answer -32602 (mirroring the tools surface's no-host rule).
+      listPrompts: async () => {
+        const host = getByokMcpToolHost();
+        const skills =
+          host && host.listSkillPrompts ? await host.listSkillPrompts() : [];
+        return listByokMcpPrompts(skills);
+      },
+      getPrompt: async name => {
+        const host = getByokMcpToolHost();
+        if (!host || !host.listSkillPrompts) return null;
+        return getByokMcpPrompt(await host.listSkillPrompts(), name);
+      },
+      listResources: async () => {
+        const host = getByokMcpToolHost();
+        const notesText =
+          host && host.readProjectNotes ? await host.readProjectNotes() : null;
+        return makeByokMcpResourceDescriptors({ notesText });
+      },
+      readResource: async uri => {
+        const host = getByokMcpToolHost();
+        const notesText =
+          host && host.readProjectNotes ? await host.readProjectNotes() : null;
+        return readByokMcpResource({ uri, notesText });
+      },
     }),
     []
   );

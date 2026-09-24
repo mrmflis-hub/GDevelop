@@ -75,6 +75,7 @@ type CommandHandlers = {|
   onOpenProfile: () => void,
   onRestartInGameEditor: (reason: string) => void,
   onOpenGlobalSearch: () => void,
+  onOpenAskAi: () => void,
   onOpenMemoryTrackerRegistry: () => void,
   onImportExtension: () => Promise<void>,
   canInstallCliInPath: boolean,
@@ -182,6 +183,10 @@ const useMainFrameCommands = (handlers: CommandHandlers) => {
 
   useCommand('OPEN_GLOBAL_SEARCH', !!handlers.project, {
     handler: handlers.onOpenGlobalSearch,
+  });
+
+  useCommand('OPEN_ASK_AI', true, {
+    handler: handlers.onOpenAskAi,
   });
 
   useCommand('IMPORT_EXTENSION', !!handlers.project, {

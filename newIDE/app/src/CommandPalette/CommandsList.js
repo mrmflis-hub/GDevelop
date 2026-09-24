@@ -75,7 +75,8 @@ export type CommandName =
   | 'OPEN_EXTENSION_SETTINGS'
   | 'OPEN_PROFILE'
   | 'OPEN_MEMORY_TRACKER_REGISTRY'
-  | 'INSTALL_CLI_IN_PATH';
+  | 'INSTALL_CLI_IN_PATH'
+  | 'OPEN_ASK_AI';
 
 export const commandAreas = {
   GENERAL: (t`General`: any),
@@ -229,6 +230,11 @@ const commandsList: { [CommandName]: CommandMetadata } = {
   OPEN_GLOBAL_SEARCH: {
     area: 'IDE',
     displayText: t`Global search (search in project)`,
+  },
+
+  OPEN_ASK_AI: {
+    area: 'IDE',
+    displayText: t`Open Ask AI`,
   },
 
   // Tab-opening commands

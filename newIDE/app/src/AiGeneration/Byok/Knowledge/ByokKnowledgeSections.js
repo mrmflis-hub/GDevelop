@@ -124,7 +124,7 @@ const buildToolSectionText = (toolNames: Array<string>): string => {
 const PROJECT_OPEN_SECTION_TEXT = `- The user message carries a simplified JSON snapshot of the project (its current state at the time it was sent).
 - After any edit, that snapshot is stale: inspect before editing. Use describe_instances and read_scene_events to check the current state of a scene, read_game_project_json for the whole project, and read_events_source before editing events, instead of assuming what exists.`;
 
-const NO_PROJECT_SECTION_TEXT = `- No project is opened in the editor. When the request needs a game, call initialize_project first (an empty project with one scene, or a template by its slug), then edit the new project with the other tools.`;
+const NO_PROJECT_SECTION_TEXT = `- No project is opened in the editor. When the request needs a game: browse the starter templates with get_game_starter_summary (pick a real slug — never invent one), then call initialize_project (empty, or the chosen template slug), and edit the new project with the other tools.`;
 
 const OUTPUT_RULES_SECTION_TEXT = `- Reply with plain text only when the task is done (or to ask the user for a missing piece of information).
 - Always use tools to read or change the project — never describe an edit instead of making it.
@@ -162,6 +162,17 @@ const LOOK_VERIFY_SECTION_TEXT = `- After any visual change (instances, scene se
 const HYBRID_GROUNDING_SECTION_TEXT = `- Every screenshot comes with a textual state sibling: pair captures with describe_instances / inspect_scene_properties_layers_effects / inspect_runtime_state, and read the outputs.
 - When coordinates matter, read them from describe_instances or inspect_runtime_state — never guess from pixels.`;
 
+// Phase 11 authoring reach: the surfaces beyond scenes the agent can now
+// read/write, and how they combine. Phase 12 added the discovery stores
+// and the runtime steering.
+const AUTHORING_REACH_SECTION_TEXT = `- External events (read/add_external_events_source/add_external_events) are reusable event sheets: author them once, then include them from scenes (the "Include external events" event, written as EventScript).
+- External layouts (describe/put_external_layout_instances) hold reusable sets of instances — the spawn-point mechanic. Fill one, then spawn it at runtime with "Create objects from external layout".
+- Effects: list_effects gives the exact effect_type strings and defaults — never guess an effect type; pick it there and pass its defaults through changed_properties.
+- Sprites: describe_sprite_frames first, then change_sprite_frames with typed operations (frames, points, collision masks).
+- Real files: import_project_resources brings images/audio/fonts into the project (URL or local path), then reference them by name (set_frame_image, create_or_replace_object…).
+- Discovery (Phase 12): search_object_asset_store finds ready-made objects (public/free), search_resource_store finds audio and fonts with direct urls — and create_or_replace_object with search_terms INSTALLS the best asset match by itself.
+- Runtime (Phase 12): read_runtime_details, control_runtime and profile_runtime see and steer the preview this chat launched (pause it, dump its state, profile a slow scene). They never touch the project itself.`;
+
 // --- Core sections ---------------------------------------------------------
 
 const buildCoreSections = (): Array<ByokKnowledgeSection> => {
@@ -171,10 +182,10 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     id: 'tools',
     title: 'Available tools',
     priority: 20,
-    // The full advertised list (48 tools with their summaries, Phase 8's
-    // surface) must fit: a truncated tool list would hide tools from the
-    // model.
-    budgetTokens: 2100,
+    // The full advertised list (63 tools with their summaries — Phases 8,
+    // 11 and 12's surfaces) must fit: a truncated tool list would hide
+    // tools from the model.
+    budgetTokens: 2800,
     degradable: false,
     build: context => buildToolSectionText(context.toolNames),
   };
@@ -261,6 +272,12 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     100,
     HYBRID_GROUNDING_SECTION_TEXT
   );
+  const authoringReachSection = makeSimpleSection(
+    'authoring-reach',
+    'Authoring reach: external events, layouts, effects, sprites, files',
+    105,
+    AUTHORING_REACH_SECTION_TEXT
+  );
 
   const skillsSection: ByokKnowledgeSection = {
     id: 'skills-appendix',
@@ -311,6 +328,7 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     scriptSection,
     lookVerifySection,
     groundingSection,
+    authoringReachSection,
     skillsSection,
     customInstructionsSection,
   ];

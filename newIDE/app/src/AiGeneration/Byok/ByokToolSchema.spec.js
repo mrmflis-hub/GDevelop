@@ -85,9 +85,9 @@ describe('validateByokToolSchemas', () => {
     // load_skill): every advertised schema is billed as input tokens on
     // every turn, so the guard exists to force a conscious decision when
     // the surface grows again.
-    // The cap moved to 48 with Phase 8 (sub-agents, extension authoring,
-    // restore points) — see the comment in ByokToolSchema.js.
-    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(48);
+    // The cap moved to 48 (Phase 8), 56 (Phase 11) then 62 (Phase 12) —
+    // see the counting comment in ByokToolSchema.js.
+    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(62);
     expect(BYOK_TOOL_NAMES.length).toBeGreaterThanOrEqual(30);
     expect(validateByokToolSchemas()).toEqual([]);
   });
@@ -130,26 +130,31 @@ describe('BYOK_TOOL_NAMES (the v4 whitelist)', () => {
     }
   });
 
-  it('keeps initialize_project in the no-project set only', () => {
+  it('keeps the no-project-only tools out of the default set', () => {
     expect(BYOK_TOOL_NAMES).not.toContain('initialize_project');
-    expect(BYOK_NO_PROJECT_TOOL_NAMES).toEqual(['initialize_project']);
+    // get_game_starter_summary joined in Phase 12 (D12-1): the starter
+    // catalog is only useful before a project exists.
+    expect(BYOK_TOOL_NAMES).not.toContain('get_game_starter_summary');
+    expect(BYOK_NO_PROJECT_TOOL_NAMES).toEqual([
+      'initialize_project',
+      'get_game_starter_summary',
+    ]);
   });
 
   it('does not expose the excluded tools (server stubs, legacy aliases, dupes)', () => {
     // run_explorer_agent left this list in Phase 8: it is intercepted
     // client-side (the scout sub-agent) before the registry stub. Only
     // run_edit_agent stays excluded (sequential edits belong to the main
-    // context).
+    // context). The store searches and get_game_starter_summary left this
+    // list in Phase 12 (local implementations over the public catalogs,
+    // D12-1).
     const excludedTools = [
       'run_edit_agent',
-      'search_object_asset_store',
-      'search_resource_store',
       // Still excluded: the raw "read the whole docs" server tool — Phase 7
       // exposes search_docs + read_doc (the bundled subset) instead.
       'read_full_docs',
       'run_tests',
       'report_fulfilment_problem',
-      'get_game_starter_summary',
       // Legacy aliases (canonical names only in BYOK).
       'inspect_object_properties',
       'change_object_property',

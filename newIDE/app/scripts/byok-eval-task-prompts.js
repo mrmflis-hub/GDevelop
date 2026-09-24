@@ -76,4 +76,29 @@ module.exports = {
     'The screenshot shows "QuestText" covering the inventory panel at (200, 150); the panel is 100×100. Move QuestText (set_instance_position) clear of it.',
   'boss-bar-overlaps-score':
     'The screenshot shows "BossBar" on top of the score display at (320, 30); both are 64×64. Move BossBar (set_instance_position) so the score is readable.',
+
+  // ---- Authoring-reach (Phase 11) ----
+  'external-events-sheet':
+    'The game has a scene "Level 1". Create a NEW external-events sheet named "PauseSheet" associated with "Level 1", containing a simple event of your choice, so scenes can include it. Use add_external_events.',
+  'external-layout-spawn':
+    'The game has a scene "Level 1" with a "Coin" object. Create a NEW external layout named "CoinField" (associated with "Level 1") holding a few Coin instances around (200, 200), so events can spawn it at runtime. Use put_external_layout_instances.',
+  'effect-type-selection':
+    'The user wants a bloom/glow effect on the UI layer of scene "Level 1" but you do not remember the exact effect type string. First discover the available effect types, then add the effect to layer "UI" of scene "Level 1".',
+  'sprite-frame-edit':
+    'Object "Player" (a Sprite, scene "Level 1") must reuse its new sheet: swap the image of frame 0 of its first animation to "player_new.png" AND set its origin to the center of the frame. Use change_sprite_frames with typed operations.',
+  'resource-import-url':
+    'The project needs this sound: https://example.com/assets/jump.mp3. Import it into the project as an audio resource. Use import_project_resources.',
+  'custom-object-children':
+    'The extension "UiKit" has a custom object "Button". Add a "Sprite" child named "Icon" to it. Use change_custom_object.',
+// ---- Discovery/runtime (Phase 12) ----
+  'starter-template-pick':
+    'No project is open. The user wants "a vertical platformer like Doodle Jump, but with a rocket". Pick a suitable starter template from the real catalog and create the project from it. Answer with the tool calls you would make, in order.',
+  'asset-search-then-install':
+    'In scene "Level 1", add a gold coin pickup to the game (the project has no such object). First check the public asset store for what exists, then add the object. Answer with the tool calls you would make, in order.',
+  'resource-search-then-import':
+    'The game needs a jump sound effect and a pixel-art font. Find both in the public resource store, then bring the sound into the project. Answer with the tool calls you would make, in order.',
+  'notes-read-before-build':
+    'You are continuing work on an existing project (a project is open). Before proposing anything, check the persistent project memory for the conventions and the work in progress. Answer with the tool calls you would make first.',
+  'runtime-profile-slow-scene':
+    'The user says scene "Level 3" of the running preview feels slow. The chat already started a preview. Inspect the live runtime, then measure where the frame time goes, then look at the details again. Answer with the tool calls you would make, in order.',
 };

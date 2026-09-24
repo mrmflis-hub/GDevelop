@@ -51,11 +51,11 @@ is what reconciles the two numbers (recorded in the worklog).
 | `inspect_object_properties` | legacy alias of `inspect_object_properties_effects` — BYOK has no old requests to honor (canonical names only) |
 | `change_object_property` | legacy alias of `change_object_properties_effects` — same |
 | `remove_behavior` | deprecated upstream (kept there for old requests only); `change_behavior_property` + `delete_this_behavior` covers it |
-| `search_object_asset_store`, `search_resource_store` | server-side stubs client-side; the store path that DOES work in BYOK is `create_or_replace_object`/`change_object_properties_effects` (see below) |
-| `read_full_docs`, `search_docs` | permanent failure stubs (docs served server-side) → Phase 7 |
-| `run_explorer_agent`, `run_edit_agent`, `run_tests` | server-side sub-agent stubs → Phase 8 |
+| ~~`search_object_asset_store`, `search_resource_store`~~ | **Flipped in Phase 12 (D12-1)**: now locally implemented over the auth-free public catalogs (`ByokCatalogTools`), advertised and dispatched in BYOK; the names reuse the hosted tools' so parity docs stay stable |
+| `read_full_docs`, `search_docs` | permanent failure stubs (docs served server-side) → Phase 7 (search_docs/read_doc admitted there; read_full_docs stays excluded) |
+| `run_explorer_agent`, `run_edit_agent`, `run_tests` | server-side sub-agent stubs → Phase 8 (run_explorer_agent admitted there; run_edit_agent/run_tests stay excluded) |
 | `report_fulfilment_problem` | server telemetry — meaningless against a user endpoint |
-| `get_game_starter_summary` | server-side template summarizer; the v3 prompt tells the model to plan from its own knowledge instead |
+| ~~`get_game_starter_summary`~~ | **Flipped in Phase 12 (D12-1)**: locally implemented over the public examples catalog (`ByokCatalogTools`), advertised in the no-project set; the prompt's "plan from your own knowledge" line was removed |
 | `run_gameplay_test`, `change_gameplay_tests` | **Phase 6** scope (admitted there, 6.4) |
 
 ## Store-search decision (step 5.0 item 3)

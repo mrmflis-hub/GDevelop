@@ -434,3 +434,239 @@ describe('ByokExtensionTools: deletion safety', () => {
     expect(badScript.output.message).toContain('not valid');
   });
 });
+
+describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependencies)', () => {
+  let project: any = null;
+
+  beforeEach(() => {
+    resetByokExtensionBatchForTests();
+    project = gd.ProjectHelper.createNewGDJSProject();
+  });
+
+  afterEach(() => {
+    project.delete();
+    project = null;
+  });
+
+  const makeExtensionWithFunction = async (collaborators: Object) => {
+    await runTool(
+      'create_extension',
+      { extension_name: 'Internals' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_function',
+      {
+        extension_name: 'Internals',
+        function_name: 'DoThing',
+        function_type: 'Action',
+        parameters: [{ name: 'Speed', type: 'expression' }],
+      },
+      collaborators
+    );
+  };
+
+  it('adds, moves and removes function parameters', async () => {
+    const collaborators = makeCollaborators(project);
+    await makeExtensionWithFunction(collaborators);
+
+    const added = await runTool(
+      'change_custom_function',
+      {
+        extension_name: 'Internals',
+        function_name: 'DoThing',
+        parameters_to_add: [
+          { name: 'Label', type: 'string', description: 'A label.' },
+          { name: 'Speed', type: 'string' }, // duplicate: skipped
+        ],
+      },
+      collaborators
+    );
+    expect(added.output.success).toBe(true);
+    expect(added.output.message).toContain('parameters');
+
+    const eventsFunction = project
+      .getEventsFunctionsExtension('Internals')
+      .getEventsFunctions()
+      .getEventsFunction('DoThing');
+    const parameters = eventsFunction.getParameters();
+    expect(parameters.getParametersCount()).toBe(2);
+    expect(parameters.hasParameterNamed('Label')).toBe(true);
+    expect(parameters.getParameter('Label').getType()).toBe('string');
+    expect(parameters.getParameter('Label').getDescription()).toBe('A label.');
+
+    const moved = await runTool(
+      'change_custom_function',
+      {
+        extension_name: 'Internals',
+        function_name: 'DoThing',
+        parameters_to_move: [{ name: 'Label', to_index: 0 }],
+      },
+      collaborators
+    );
+    expect(moved.output.success).toBe(true);
+    expect(parameters.getParameterAt(0).getName()).toBe('Label');
+
+    const removed = await runTool(
+      'change_custom_function',
+      {
+        extension_name: 'Internals',
+        function_name: 'DoThing',
+        parameters_to_remove: ['Label'],
+      },
+      collaborators
+    );
+    expect(removed.output.success).toBe(true);
+    expect(parameters.hasParameterNamed('Label')).toBe(false);
+    expect(parameters.getParametersCount()).toBe(1);
+  });
+
+  it('adds and removes custom-object children, with the usage guard', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension',
+      { extension_name: 'Internals' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_object',
+      {
+        extension_name: 'Internals',
+        custom_object_name: 'Button',
+      },
+      collaborators
+    );
+
+    const added = await runTool(
+      'change_custom_object',
+      {
+        extension_name: 'Internals',
+        custom_object_name: 'Button',
+        children_to_add: [
+          { name: 'Icon', object_type: 'Sprite' },
+          { name: 'Icon', object_type: 'Sprite' }, // duplicate: skipped
+        ],
+      },
+      collaborators
+    );
+    expect(added.output.success).toBe(true);
+    const eventsBasedObject = project
+      .getEventsFunctionsExtension('Internals')
+      .getEventsBasedObjects()
+      .get('Button');
+    expect(eventsBasedObject.getObjects().hasObjectNamed('Icon')).toBe(true);
+
+    // The usage guard: an event referencing the child blocks the removal.
+    const guarded = await runTool(
+      'change_custom_object',
+      {
+        extension_name: 'Internals',
+        custom_object_name: 'Button',
+        children_to_remove: ['Icon'],
+      },
+      collaborators
+    );
+    // The child is not referenced yet: the removal succeeds.
+    expect(guarded.output.success).toBe(true);
+    expect(eventsBasedObject.getObjects().hasObjectNamed('Icon')).toBe(false);
+  });
+
+  it('refuses to remove a child used by the object events', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension',
+      { extension_name: 'Internals' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_object',
+      { extension_name: 'Internals', custom_object_name: 'Button' },
+      collaborators
+    );
+    await runTool(
+      'change_custom_object',
+      {
+        extension_name: 'Internals',
+        custom_object_name: 'Button',
+        children_to_add: [{ name: 'Icon', object_type: 'Sprite' }],
+      },
+      collaborators
+    );
+    // Reference the child from one of the object's functions (a custom
+    // object's logic IS its functions' events), written through the
+    // established event_script path.
+    const eventsBasedObject = project
+      .getEventsFunctionsExtension('Internals')
+      .getEventsBasedObjects()
+      .get('Button');
+    const referenced = await runTool(
+      'create_custom_function',
+      {
+        extension_name: 'Internals',
+        custom_object_name: 'Button',
+        function_name: 'DoStepPreEvents',
+        function_type: 'Action',
+        event_script: 'always:\n  Delete(Icon)',
+      },
+      collaborators
+    );
+    expect(referenced.output.success).toBe(true);
+
+    const guarded = await runTool(
+      'change_custom_object',
+      {
+        extension_name: 'Internals',
+        custom_object_name: 'Button',
+        children_to_remove: ['Icon'],
+      },
+      collaborators
+    );
+    expect(guarded.output.success).toBe(false);
+    expect(guarded.output.message).toContain(
+      "used by the custom object's events"
+    );
+    expect(eventsBasedObject.getObjects().hasObjectNamed('Icon')).toBe(true);
+  });
+
+  it('adds and removes extension dependencies, always listing them', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension',
+      { extension_name: 'Internals' },
+      collaborators
+    );
+
+    const added = await runTool(
+      'change_extension_properties',
+      {
+        extension_name: 'Internals',
+        dependencies_to_add: [
+          { name: 'cordova-plugin-admob', dependency_type: 'npm' },
+        ],
+      },
+      collaborators
+    );
+    expect(added.output.success).toBe(true);
+    expect(added.output.dependencies).toEqual(['cordova-plugin-admob']);
+    const extension = project.getEventsFunctionsExtension('Internals');
+    expect(extension.getAllDependencies().size()).toBe(1);
+    expect(
+      extension
+        .getAllDependencies()
+        .at(0)
+        .getDependencyType()
+    ).toBe('npm');
+
+    const removed = await runTool(
+      'change_extension_properties',
+      {
+        extension_name: 'Internals',
+        dependencies_to_remove: ['cordova-plugin-admob'],
+      },
+      collaborators
+    );
+    expect(removed.output.success).toBe(true);
+    expect(removed.output.dependencies).toEqual([]);
+    expect(extension.getAllDependencies().size()).toBe(0);
+  });
+});

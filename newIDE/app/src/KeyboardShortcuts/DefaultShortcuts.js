@@ -29,6 +29,7 @@ const defaultShortcuts: ShortcutMap = {
   OPEN_PLATFORM_SPECIFIC_ASSETS_DIALOG: '',
   OPEN_PROJECT_RESOURCES: '',
   OPEN_GLOBAL_SEARCH: 'CmdOrCtrl+Shift+KeyF',
+  OPEN_ASK_AI: 'CmdOrCtrl+Alt+KeyA',
 
   OPEN_LAYOUT: '',
   OPEN_EXTERNAL_EVENTS: '',

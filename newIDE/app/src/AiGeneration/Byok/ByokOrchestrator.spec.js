@@ -1349,10 +1349,10 @@ describe('ByokOrchestrator: project creation and live getters (Phase 5)', () => 
         secondCallOptions.tools.map((tool: any) => tool.function.name)
       ).not.toContain('initialize_project');
       expect(firstCallOptions.messages[0].content).toContain(
-        'initialize_project first'
+        'get_game_starter_summary'
       );
       expect(secondCallOptions.messages[0].content).not.toContain(
-        'initialize_project first'
+        'get_game_starter_summary'
       );
     } finally {
       createdProject.delete();

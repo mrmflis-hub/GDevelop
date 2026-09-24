@@ -5638,6 +5638,7 @@ const MainFrame = (props: Props): React.MixedElement => {
     onOpenProfile: onOpenProfileDialog,
     onRestartInGameEditor,
     onOpenGlobalSearch: openGlobalSearch,
+    onOpenAskAi: () => openAskAi(),
     onOpenMemoryTrackerRegistry: () => setMemoryTrackedRegistryDialogOpen(true),
     onImportExtension,
     canInstallCliInPath: isCliInPathInstallSupported(),

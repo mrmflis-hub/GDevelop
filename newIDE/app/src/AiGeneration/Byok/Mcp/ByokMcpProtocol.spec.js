@@ -64,7 +64,11 @@ describe('handleByokMcpMessage — initialize', () => {
       id: 1,
       result: {
         protocolVersion: BYOK_MCP_PROTOCOL_VERSION,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: {
+          tools: { listChanged: false },
+          prompts: { listChanged: false },
+          resources: { listChanged: false },
+        },
         serverInfo: {
           name: 'gdevelop',
           title: 'GDevelop',
@@ -191,19 +195,148 @@ describe('handleByokMcpMessage — ping and notifications', () => {
 
   it('ignores unknown notifications but errors unknown requests', async () => {
     const notificationOutcome = await handleByokMcpMessage(
-      { jsonrpc: '2.0', method: 'resources/list' },
+      { jsonrpc: '2.0', method: 'sampling/createMessage' },
       makeHandlers()
     );
     expect(notificationOutcome).toEqual({ kind: 'notification' });
 
     const requestOutcome = await handleByokMcpMessage(
-      { jsonrpc: '2.0', id: 8, method: 'resources/list' },
+      { jsonrpc: '2.0', id: 8, method: 'sampling/createMessage' },
       makeHandlers()
     );
     if (requestOutcome.kind !== 'response') return;
     expect(requestOutcome.response.error.code).toBe(
       BYOK_MCP_ERROR_METHOD_NOT_FOUND
     );
+  });
+});
+
+describe('handleByokMcpMessage — prompts and resources (Phase 12)', () => {
+  const makePromptsResourcesHandlers = () =>
+    makeHandlers({
+      listPrompts: (jest.fn(): any).mockResolvedValue([
+        { name: 'build-workflow', description: 'The build pipeline.' },
+      ]),
+      getPrompt: (jest.fn(): any).mockImplementation(async (name: string) =>
+        name === 'build-workflow'
+          ? {
+              description: 'The build pipeline.',
+              messages: [
+                { role: 'user', content: { type: 'text', text: 'Do it.' } },
+              ],
+            }
+          : null
+      ),
+      listResources: (jest.fn(): any).mockResolvedValue([
+        {
+          uri: 'gdevelop://project/notes',
+          name: 'Project notes',
+          mimeType: 'text/plain',
+        },
+      ]),
+      readResource: (jest.fn(): any).mockImplementation(async (uri: string) =>
+        uri === 'gdevelop://project/notes'
+          ? { uri, mimeType: 'text/plain', text: 'Conventions: …' }
+          : null
+      ),
+    });
+
+  it('serves prompts/list from the handlers', async () => {
+    const outcome = await handleByokMcpMessage(
+      { jsonrpc: '2.0', id: 21, method: 'prompts/list' },
+      makePromptsResourcesHandlers()
+    );
+    if (outcome.kind !== 'response') return;
+    expect(outcome.response.result.prompts).toEqual([
+      { name: 'build-workflow', description: 'The build pipeline.' },
+    ]);
+  });
+
+  it('serves prompts/get with the messages, and -32602 for an unknown name', async () => {
+    const handlers = makePromptsResourcesHandlers();
+    const found = await handleByokMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 22,
+        method: 'prompts/get',
+        params: { name: 'build-workflow' },
+      },
+      handlers
+    );
+    if (found.kind !== 'response') return;
+    expect(found.response.result.messages[0].content.text).toBe('Do it.');
+
+    const missing = await handleByokMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 23,
+        method: 'prompts/get',
+        params: { name: 'nope' },
+      },
+      handlers
+    );
+    if (missing.kind !== 'response') return;
+    expect(missing.response.error.code).toBe(BYOK_MCP_ERROR_INVALID_PARAMS);
+  });
+
+  it('rejects prompts/get without a name string', async () => {
+    const outcome = await handleByokMcpMessage(
+      { jsonrpc: '2.0', id: 24, method: 'prompts/get', params: {} },
+      makePromptsResourcesHandlers()
+    );
+    if (outcome.kind !== 'response') return;
+    expect(outcome.response.error.code).toBe(BYOK_MCP_ERROR_INVALID_PARAMS);
+  });
+
+  it('serves resources/list and resources/read, and -32602 for unknown uris', async () => {
+    const handlers = makePromptsResourcesHandlers();
+    const list = await handleByokMcpMessage(
+      { jsonrpc: '2.0', id: 25, method: 'resources/list' },
+      handlers
+    );
+    if (list.kind !== 'response') return;
+    expect(list.response.result.resources).toHaveLength(1);
+
+    const read = await handleByokMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 26,
+        method: 'resources/read',
+        params: { uri: 'gdevelop://project/notes' },
+      },
+      handlers
+    );
+    if (read.kind !== 'response') return;
+    expect(read.response.result.contents[0].text).toBe('Conventions: …');
+
+    const unknown = await handleByokMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 27,
+        method: 'resources/read',
+        params: { uri: 'gdevelop://nope' },
+      },
+      handlers
+    );
+    if (unknown.kind !== 'response') return;
+    expect(unknown.response.error.code).toBe(BYOK_MCP_ERROR_INVALID_PARAMS);
+  });
+
+  it('answers empty lists and -32602 when the host provides no handlers', async () => {
+    const handlers = makeHandlers();
+    const list = await handleByokMcpMessage(
+      { jsonrpc: '2.0', id: 28, method: 'prompts/list' },
+      handlers
+    );
+    if (list.kind !== 'response') return;
+    expect(list.response.result.prompts).toEqual([]);
+
+    const get = await handleByokMcpMessage(
+      { jsonrpc: '2.0', id: 29, method: 'prompts/get', params: { name: 'x' } },
+      handlers
+    );
+    if (get.kind !== 'response') return;
+    expect(get.response.error.code).toBe(BYOK_MCP_ERROR_INVALID_PARAMS);
   });
 });
 

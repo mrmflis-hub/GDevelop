@@ -54,6 +54,13 @@ export type ByokMcpToolHostBag = {|
   +editorFunctionsWithoutProject: {| +[string]: ?ByokMcpToolMeta |},
   +getProject: () => any,
   +getSettings: () => ByokSettings,
+  // The prompts/resources data sources (Phase 12): the skill library and
+  // the project notes. Optional so older hosts keep working (the MCP
+  // methods then answer with empty lists / -32602).
+  +listSkillPrompts?: () => Promise<
+    Array<{| name: string, description: string, body: string |}>
+  >,
+  +readProjectNotes?: () => Promise<string | null>,
 |};
 
 export type ByokMcpToolHost = {|
@@ -73,6 +80,11 @@ export type ByokMcpToolHost = {|
   +editorFunctionsWithoutProject: {| +[string]: ?ByokMcpToolMeta |},
   +getProject: () => any,
   +getSettings: () => ByokSettings,
+  // The prompts/resources data sources (Phase 12), mirrored from the bag.
+  +listSkillPrompts?: () => Promise<
+    Array<{| name: string, description: string, body: string |}>
+  >,
+  +readProjectNotes?: () => Promise<string | null>,
 |};
 
 export type ByokMcpActivityOutcome =

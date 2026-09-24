@@ -445,12 +445,173 @@ const perceptionScorers = {
     }),
 };
 
+// ---- Authoring-reach tasks (Phase 11): the new surfaces. ----
+
+const authoringReachScorers = {
+  'external-events-sheet': result => {
+    const args = parseArgs(collectToolCall(result, 'add_external_events'));
+    if (!args) return fail('No add_external_events call found.');
+    if (args.create_if_missing !== true) {
+      return fail('create_if_missing must be true for a new sheet.');
+    }
+    if (!args.associated_scene || typeof args.associated_scene !== 'string') {
+      return fail('No associated_scene given.');
+    }
+    const hasContent =
+      typeof args.event_script === 'string' && args.event_script.length > 0;
+    const hasBatches =
+      Array.isArray(args.event_batches) && args.event_batches.length > 0;
+    if (!hasContent && !hasBatches) {
+      return fail('No event_script or event_batches content.');
+    }
+    return pass('The sheet creation call carries scene association and content.');
+  },
+  'external-layout-spawn': result => {
+    const args = parseArgs(
+      collectToolCall(result, 'put_external_layout_instances')
+    );
+    if (!args) {
+      return fail('No put_external_layout_instances call found.');
+    }
+    if (args.create_if_missing !== true) {
+      return fail('create_if_missing must be true for a new layout.');
+    }
+    if (!args.associated_scene) {
+      return fail('No associated_scene given.');
+    }
+    if (!args.object_name) return fail('No object_name to place.');
+    if (!args.brush_position) return fail('No brush_position.');
+    return pass('The spawn-point layout creation call is complete.');
+  },
+  'effect-type-selection': result => {
+    const listCall = findToolCall(result, 'list_effects');
+    if (!listCall) {
+      return fail('list_effects must be called before choosing an effect.');
+    }
+    const changeArgs =
+      parseArgs(collectToolCall(result, 'change_scene_properties_layers_effects_groups')) ||
+      parseArgs(collectToolCall(result, 'change_object_properties_effects'));
+    if (!changeArgs) return fail('No effect change call found.');
+    const serialized = JSON.stringify(changeArgs);
+    if (!/effect_type/.test(serialized)) {
+      return fail('The change call carries no effect_type.');
+    }
+    return pass('The catalog is consulted before the effect is created.');
+  },
+  'sprite-frame-edit': result => {
+    const args = parseArgs(collectToolCall(result, 'change_sprite_frames'));
+    if (!args) return fail('No change_sprite_frames call found.');
+    const operations = Array.isArray(args.operations) ? args.operations : [];
+    if (operations.length === 0) {
+      return fail('No operations in the call.');
+    }
+    const opNames = operations.map(op => (op && op.op) || '');
+    if (!opNames.includes('set_frame_image')) {
+      return fail('No set_frame_image operation.');
+    }
+    if (!opNames.some(name => name.startsWith('set_') && name !== 'set_frame_image')) {
+      return fail('No second operation family exercised.');
+    }
+    return pass('The sprite edit mixes frame and property operations.');
+  },
+  'resource-import-url': result => {
+    const args = parseArgs(collectToolCall(result, 'import_project_resources'));
+    if (!args) return fail('No import_project_resources call found.');
+    const entries = Array.isArray(args.entries) ? args.entries : [];
+    if (entries.length === 0) return fail('No entries.');
+    const hasUrl = entries.some(
+      entry => entry && typeof entry.source === 'string' && /^https?:\/\//.test(entry.source)
+    );
+    if (!hasUrl) return fail('No URL source in the entries.');
+    return pass('The import call carries a URL entry.');
+  },
+  'custom-object-children': result => {
+    const args = parseArgs(collectToolCall(result, 'change_custom_object'));
+    if (!args) return fail('No change_custom_object call found.');
+    const children = Array.isArray(args.children_to_add) ? args.children_to_add : [];
+    if (children.length === 0) return fail('No children_to_add.');
+    const wellFormed = children.every(
+      child => child && typeof child.name === 'string' && typeof child.object_type === 'string'
+    );
+    if (!wellFormed) {
+      return fail('A child lacks name or object_type.');
+    }
+    return pass('The children declarations are well formed.');
+  },
+};
+
+// ---- Discovery/runtime tasks (Phase 12): the new surfaces. ----
+
+const discoveryScorers = {
+  'starter-template-pick': result => {
+    const listCall = findToolCall(result, 'get_game_starter_summary');
+    if (!listCall) {
+      return fail('get_game_starter_summary must be called to pick a real slug.');
+    }
+    const initArgs = parseArgs(collectToolCall(result, 'initialize_project'));
+    if (!initArgs) return fail('No initialize_project call found.');
+    const slug = initArgs.template_slug;
+    if (typeof slug !== 'string' || !slug) {
+      return fail('initialize_project carries no template_slug.');
+    }
+    return pass(`The starter "${slug}" comes from the catalog and feeds initialize_project.`);
+  },
+  'asset-search-then-install': result => {
+    const searchArgs = parseArgs(collectToolCall(result, 'search_object_asset_store'));
+    if (!searchArgs || typeof searchArgs.search_terms !== 'string') {
+      return fail('No search_object_asset_store call with search_terms.');
+    }
+    const createArgs = parseArgs(collectToolCall(result, 'create_or_replace_object'));
+    if (!createArgs || typeof createArgs.search_terms !== 'string') {
+      return fail('No create_or_replace_object call with search_terms (the install path).');
+    }
+    return pass('Searched the store, then installed through create_or_replace_object.');
+  },
+  'resource-search-then-import': result => {
+    const searchArgs = parseArgs(collectToolCall(result, 'search_resource_store'));
+    if (!searchArgs || typeof searchArgs.search_terms !== 'string') {
+      return fail('No search_resource_store call with search_terms.');
+    }
+    const importArgs = parseArgs(collectToolCall(result, 'import_project_resources'));
+    if (!importArgs || !Array.isArray(importArgs.entries) || importArgs.entries.length === 0) {
+      return fail('No import_project_resources call with entries.');
+    }
+    const hasUrl = importArgs.entries.some(
+      entry => entry && typeof entry.source === 'string' && /^https?:\/\//.test(entry.source)
+    );
+    if (!hasUrl) return fail('No URL entry imported from the store results.');
+    return pass('Searched the resource store, then imported the url.');
+  },
+  'notes-read-before-build': result => {
+    const readCall = findToolCall(result, 'read_project_notes');
+    if (!readCall) {
+      return fail('read_project_notes must be called before continuing an existing project.');
+    }
+    return pass('The persistent notes were read first.');
+  },
+  'runtime-profile-slow-scene': result => {
+    const profileArgs = parseArgs(collectToolCall(result, 'profile_runtime'));
+    if (!profileArgs) {
+      return fail('No profile_runtime call found.');
+    }
+    const controlCalls = result.toolCalls.filter(
+      call => call.name === 'control_runtime' || call.name === 'read_runtime_details'
+    );
+    if (controlCalls.length === 0) {
+      return fail('No control_runtime/read_runtime_details call to pair with the profile.');
+    }
+    return pass('The runtime was profiled and inspected through the debugger channel.');
+  },
+};
+
 const ALL_SCORERS = {
   'event-logic': eventLogicScorers,
   layout: layoutScorers,
   variables: variableScorers,
   'js-extension': jsScorers,
   'perception-repair': perceptionScorers,
+  'authoring-reach': authoringReachScorers,
+  'discovery-runtime': discoveryScorers,
 };
 
 const tasks = Object.keys(ALL_SCORERS)

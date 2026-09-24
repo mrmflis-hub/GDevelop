@@ -107,10 +107,11 @@ const effectChangeProperty = objectProperty('One effect change.', {
  * - `create_object`, the legacy aliases (`inspect_object_properties`,
  *   `change_object_property`, `remove_behavior`): covered by their modern
  *   equivalents.
- * - `search_object_asset_store`, `search_resource_store`,
- *   `read_full_docs`, `search_docs`, `run_explorer_agent`, `run_edit_agent`,
- *   `run_tests`, `report_fulfilment_problem`, `get_game_starter_summary`:
- *   server-side stubs (Phase 7/8).
+ * - `read_full_docs`, `run_tests`, `report_fulfilment_problem`:
+ *   server-side stubs (Phase 7/8). The Phase 12 flip (D12-1):
+ *   `search_object_asset_store`, `search_resource_store` and
+ *   `get_game_starter_summary` were in this list until Phase 12 replaced
+ *   the stubs with local implementations over the public catalogs.
  */ export const BYOK_TOOL_NAMES: Array<string> = [
   'describe_instances',
   'inspect_variables',
@@ -190,16 +191,50 @@ const effectChangeProperty = objectProperty('One effect change.', {
   // Restore points (Phase 8.6): rewind the project to a pre-message
   // snapshot. Intercepted (ByokExtraTools), approval-gated.
   'restore_project_point',
+  // External events & external layouts (Phase 11): dedicated tools over the
+  // same EventScript and instance pipelines the scene tools use — all
+  // intercepted (ByokExternalSceneTools).
+  'read_external_events_source',
+  'add_external_events',
+  'describe_external_layout',
+  'put_external_layout_instances',
+  // Effect catalog (Phase 11): the effect types + property schemas the
+  // effect-change tools consume. Intercepted (ByokCatalogTools).
+  'list_effects',
+  // Sprite internals (Phase 11): animations/directions/frames, points and
+  // collision masks. Intercepted (ByokSpriteTools).
+  'describe_sprite_frames',
+  'change_sprite_frames',
+  // Resource import/replace (Phase 11): URL / absolute path / in-project
+  // sources. Intercepted (ByokResourceTools), desktop-only.
+  'import_project_resources',
+  // Store discovery (Phase 12): intercepted (ByokCatalogTools) over the
+  // auth-free public catalogs; the names reuse the hosted tools' (D12-1),
+  // so the phase5-tool-decisions exclusions flipped.
+  'search_object_asset_store',
+  'search_resource_store',
+  // The notes read side (Phase 12): intercepted (ByokExtraTools).
+  'read_project_notes',
+  // Debugger/profiler (Phase 12): intercepted (ByokDebuggerTools), acting
+  // on the chat's own preview only — runtime state, not project state.
+  'read_runtime_details',
+  'control_runtime',
+  'profile_runtime',
 ];
 
 /**
  * The tools advertised only while no project is open. With a project open
  * the runner refuses `initialize_project` anyway, so advertising it would
  * waste a slot of the (billed) tool list; without one, it is the entry
- * point of "make me a game from scratch". The name stays dispatchable at
- * all times — only the advertisement is conditional.
+ * point of "make me a game from scratch". `get_game_starter_summary`
+ * (Phase 12) is its companion: the real template catalog instead of the
+ * model's memory. The names stay dispatchable at all times — only the
+ * advertisement is conditional.
  */
-export const BYOK_NO_PROJECT_TOOL_NAMES: Array<string> = ['initialize_project'];
+export const BYOK_NO_PROJECT_TOOL_NAMES: Array<string> = [
+  'initialize_project',
+  'get_game_starter_summary',
+];
 
 /**
  * Every tool name the BYOK loop may dispatch: the default set, the
@@ -1458,6 +1493,282 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
       required: ['extension_name'],
     },
   },
+  {
+    name: 'read_external_events_source',
+    description:
+      'Read an external-events sheet (a reusable events group shared by scenes) as EventScript source — the same syntax add_external_events accepts back. Shows the associated scene and the object names in context.',
+    parameters: {
+      type: 'object',
+      properties: {
+        external_events_name: stringProperty(
+          'Name of the external-events sheet to read.'
+        ),
+      },
+      required: ['external_events_name'],
+    },
+  },
+  {
+    name: 'add_external_events',
+    description:
+      'Write an external-events sheet: create it if missing (create_if_missing + associated_scene), then either apply anchored event_batches (like add_scene_events) or write the whole sheet with event_script (mode replace/insert).',
+    parameters: {
+      type: 'object',
+      properties: {
+        external_events_name: stringProperty(
+          'Name of the external-events sheet.'
+        ),
+        create_if_missing: booleanProperty(
+          'Create the sheet when it does not exist (required when it is missing).'
+        ),
+        associated_scene: stringProperty(
+          'The scene the sheet is associated with (its objects and layers provide the context).'
+        ),
+        event_batches: arrayProperty(
+          'Anchored event changes, exactly like add_scene_events event_batches.',
+          objectProperty('One event batch.', {})
+        ),
+        event_script: stringProperty(
+          'The whole sheet content as EventScript source (alternative to event_batches).'
+        ),
+        mode: enumProperty(
+          'How event_script is applied: replace the sheet or insert at the end.',
+          ['replace', 'insert']
+        ),
+      },
+      required: ['external_events_name'],
+    },
+  },
+  {
+    name: 'describe_external_layout',
+    description:
+      'List the instances placed in an external layout (a reusable set of instances, the spawn-point mechanic), like describe_instances does for a scene.',
+    parameters: {
+      type: 'object',
+      properties: {
+        external_layout_name: stringProperty(
+          'Name of the external layout to read.'
+        ),
+      },
+      required: ['external_layout_name'],
+    },
+  },
+  {
+    name: 'put_external_layout_instances',
+    description:
+      'Place, move, resize or erase instances in an external layout with the same brushes as put_2d_instances. Create the layout when missing (create_if_missing + associated_scene).',
+    parameters: {
+      type: 'object',
+      properties: {
+        external_layout_name: stringProperty('Name of the external layout.'),
+        create_if_missing: booleanProperty(
+          'Create the external layout when it does not exist (with associated_scene).'
+        ),
+        associated_scene: stringProperty(
+          'The scene whose layers and objects the external layout uses.'
+        ),
+        layer_name: stringProperty('Target layer ("" for the base layer).'),
+        brush_kind: enumProperty('The brush to apply.', [
+          'point',
+          'line',
+          'grid',
+          'random_in_circle',
+          'erase',
+          'none',
+        ]),
+        brush_position: stringProperty('Brush position as "x, y".'),
+        object_name: stringProperty('Object of the instances to place.'),
+        new_instances_count: numberProperty('How many instances to create.'),
+        existing_instance_ids: stringProperty(
+          'Comma-separated ids from describe_external_layout to modify.'
+        ),
+      },
+      required: ['external_layout_name', 'layer_name', 'brush_kind'],
+    },
+  },
+  {
+    name: 'list_effects',
+    description:
+      'List the effect types available in this project, with their property names, types and defaults — the effect_type strings and changed_properties values that change_object_properties_effects and change_scene_properties_layers_effects_groups expect. Optional filter: 2d, 3d or object.',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter: enumProperty('Only effects usable on that target.', [
+          '2d',
+          '3d',
+          'object',
+        ]),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'describe_sprite_frames',
+    description:
+      'Read the internals of a Sprite object: animations, directions, frames with their image names, origin/center, custom points and collision-mask modes. Read before change_sprite_frames.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty(
+          'Scene of the object (or where it is used).'
+        ),
+        object_name: stringProperty('Name of the Sprite object.'),
+      },
+      required: ['scene_name', 'object_name'],
+    },
+  },
+  {
+    name: 'change_sprite_frames',
+    description:
+      'Edit the internals of a Sprite object with a typed operations list: animations (add/remove/move/rename, set_directions_count), frames (add/remove/move, set_frame_image), points (set_origin, set_center, set_default_center, add/move/remove point) and collision masks (set_full_image_mask, set_polygon_mask with vertices or a rectangle, per frame or all frames; set_adapt_collision_masks).',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty('Scene of the object.'),
+        object_name: stringProperty('Name of the Sprite object.'),
+        operations: arrayProperty(
+          'The operations to apply in order; failed operations are reported and skipped.',
+          objectProperty(
+            'One operation (see the op names in the description).',
+            {}
+          )
+        ),
+      },
+      required: ['scene_name', 'object_name', 'operations'],
+    },
+  },
+  {
+    name: 'import_project_resources',
+    description:
+      'Import resource files into the project (images, audio, fonts, video, JSON): each entry downloads a URL, copies an absolute path into the project folder, or registers a project-relative path in place. replace_existing retargets an existing resource in place. Desktop app only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        entries: arrayProperty(
+          'The resources to import.',
+          objectProperty('One resource to import.', {
+            kind: stringProperty(
+              'Resource kind (image, audio, font, video, json). Inferred from the extension when omitted.'
+            ),
+            source: stringProperty(
+              'A URL, an absolute path, or a project-relative path.'
+            ),
+            name: stringProperty(
+              'Optional resource name (defaults to the file name).'
+            ),
+          })
+        ),
+        replace_existing: booleanProperty(
+          'Replace an existing resource of the same name in place (references follow).'
+        ),
+      },
+      required: ['entries'],
+    },
+  },
+  {
+    name: 'get_game_starter_summary',
+    description:
+      'Browse the public GDevelop starter-template catalog: without a template_slug, list the templates as compact headers (optionally narrowed by search); with one, get its full summary (description, tags, difficulty, license). The chosen slug goes to initialize_project (template_slug). Needs the network.',
+    parameters: {
+      type: 'object',
+      properties: {
+        template_slug: stringProperty(
+          'Optional: the slug of one template to summarize (from the list).'
+        ),
+        search: stringProperty(
+          'Optional: only list the templates matching these terms (genre, mechanic…).'
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'search_object_asset_store',
+    description:
+      'Search the public (free) GDevelop asset store for ready-made objects (characters, UI, effects…) ranked by pertinence. To add one to the game, call create_or_replace_object with search_terms — it installs the best match automatically.',
+    parameters: {
+      type: 'object',
+      properties: {
+        search_terms: stringProperty(
+          'What to search for (e.g. "platformer character").'
+        ),
+        object_type: stringProperty(
+          'Optional: only assets of this object type (e.g. "sprite").'
+        ),
+        tags: arrayProperty(
+          'Optional: only assets carrying all these tags.',
+          stringProperty('A tag.')
+        ),
+      },
+      required: ['search_terms'],
+    },
+  },
+  {
+    name: 'search_resource_store',
+    description:
+      'Search the public (free) GDevelop resource store for audio and fonts. Each hit carries its direct url — install it with import_project_resources.',
+    parameters: {
+      type: 'object',
+      properties: {
+        search_terms: stringProperty('What to search for (e.g. "jump sound").'),
+        resource_type: enumProperty('Optional: only this resource kind.', [
+          'audio',
+          'font',
+        ]),
+      },
+      required: ['search_terms'],
+    },
+  },
+  {
+    name: 'read_project_notes',
+    description:
+      'Read the persistent notes of this project (conventions, work in progress, decisions) — the same memory update_project_notes writes.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'read_runtime_details',
+    description:
+      'Read live details of the preview this chat launched: the paused state and current scene (getStatus) plus the instances and variables (a targeted refresh). Never guesses from pixels, never touches the project.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'control_runtime',
+    description:
+      'Steer the preview this chat launched: pause, play/resume, or getStatus. The runtime refuses mutating commands while a gameplay test runs — such refusals come back as failures.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: enumProperty('What to do.', [
+          'pause',
+          'play',
+          'resume',
+          'getStatus',
+        ]),
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'profile_runtime',
+    description:
+      'Profile the preview this chat launched for a short run: starts the profiler, lets the game run (duration_ms, default 2000), stops it, and returns the pushed per-subsystem timings (framesAverageMeasures, ms/frame) and stats — read the heaviest entries first.',
+    parameters: {
+      type: 'object',
+      properties: {
+        duration_ms: numberProperty(
+          'How long to measure before stopping (default 2000, max 60000).'
+        ),
+      },
+      required: [],
+    },
+  },
 ];
 
 /**
@@ -1571,6 +1882,26 @@ export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
   'change_custom_function',
   'find_extension_usages',
   'restore_project_point',
+  // Phase 11 authoring-reach tools: no registry entry (Byok's own
+  // implementations in ByokExternalSceneTools / ByokCatalogTools /
+  // ByokSpriteTools / ByokResourceTools).
+  'read_external_events_source',
+  'add_external_events',
+  'describe_external_layout',
+  'put_external_layout_instances',
+  'list_effects',
+  'describe_sprite_frames',
+  'change_sprite_frames',
+  'import_project_resources',
+  // Phase 12 BYOK-only tools: the notes read side and the runtime steering
+  // (ByokExtraTools / ByokDebuggerTools). search_object_asset_store,
+  // search_resource_store and get_game_starter_summary DO exist in the
+  // registry (as permanent-failure stubs), so they are not here — the
+  // interception wins before the registry lookup.
+  'read_project_notes',
+  'read_runtime_details',
+  'control_runtime',
+  'profile_runtime',
 ];
 
 const BYOK_ONLY_TOOL_NAMES_SET: Set<string> = new Set(BYOK_ONLY_TOOL_NAMES);
@@ -1643,15 +1974,19 @@ export const validateByokToolSchemas = (
   }
   // The cap grew with Phase 6 (perception + gameplay tests, 9 tools),
   // Phase 7 (search_reference + load_skill) and Phase 8 (sub-agents,
-  // extension authoring, restore points): the roadmap's tool-count
-  // guidance yields to the phase-mandated surface — the descriptions stay
-  // concise, and the skills system (7.6) is the mechanism to scope
-  // per-task tool subsets later.
-  if (BYOK_TOOL_NAMES.length > 48) {
+  // extension authoring, restore points), then Phase 11 (authoring reach:
+  // external events/layouts, effects, sprite frames, resources → 56) and
+  // Phase 12 (discovery/runtime: the two store searches plus the four
+  // BYOK-only tools → 62 in this list; `get_game_starter_summary` joins
+  // initialize_project in the no-project list, so a no-project chat
+  // advertises 64 names — the roadmap's "advertised set 63" counts the 56
+  // + 7 new tool names). The descriptions stay concise, and the skills
+  // system (7.6) is the mechanism to scope per-task tool subsets later.
+  if (BYOK_TOOL_NAMES.length > 62) {
     problems.push(
       `The default tool set has ${
         BYOK_TOOL_NAMES.length
-      } tools — the cap is 48.`
+      } tools — the cap is 62.`
     );
   }
 

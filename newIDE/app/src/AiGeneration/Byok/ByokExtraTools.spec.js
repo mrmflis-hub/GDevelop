@@ -271,6 +271,74 @@ describe('update_project_notes interception tool', () => {
   });
 });
 
+describe('read_project_notes interception tool (Phase 12)', () => {
+  // Same in-memory localStorage as the update tool above (node env).
+  if (typeof (global: any).localStorage === 'undefined') {
+    const backing: Map<string, string> = new Map();
+    (global: any).localStorage = {
+      getItem: (key: string) => (backing.has(key) ? backing.get(key) : null),
+      setItem: (key: string, value: string) => {
+        backing.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        backing.delete(key);
+      },
+      clear: () => {
+        backing.clear();
+      },
+    };
+  }
+  const runReadNotesTool = async (identifier: string | null) => {
+    const tool = findByNameokExtraTool('read_project_notes');
+    if (!tool) throw new Error('read_project_notes tool not found');
+    return tool.run(
+      {},
+      {
+        ...makeCollaborators(null),
+        getProjectNotesIdentifier: () => identifier,
+      }
+    );
+  };
+
+  beforeEach(() => {
+    (global: any).localStorage.clear();
+  });
+
+  it('reads back what update_project_notes wrote (same project)', async () => {
+    const updateTool = findByNameokExtraTool('update_project_notes');
+    if (!updateTool) throw new Error('update_project_notes tool not found');
+    await updateTool.run(
+      { conventions: 'Use "mob_" prefixes.', decisions: 'Pixel-art only.' },
+      {
+        ...makeCollaborators(null),
+        getProjectNotesIdentifier: () => 'file-id-read',
+      }
+    );
+
+    const result = await runReadNotesTool('file-id-read');
+    expect(result.output.success).toBe(true);
+    expect(result.didModifyProject).toBe(false);
+    expect(result.output.notes.conventions).toBe('Use "mob_" prefixes.');
+    expect(result.output.notes.decisions).toBe('Pixel-art only.');
+  });
+
+  it('succeeds with a clear message on empty notes', async () => {
+    const result = await runReadNotesTool('file-id-empty');
+    expect(result.output.success).toBe(true);
+    expect(result.output.message).toContain('empty');
+  });
+
+  it('fails while no project is open, and stays per-project isolated', async () => {
+    const noProject = await runReadNotesTool(null);
+    expect(noProject.output.success).toBe(false);
+    expect(noProject.output.message).toContain('No project is open');
+
+    const otherProject = await runReadNotesTool('file-id-other');
+    expect(otherProject.output.success).toBe(true);
+    expect(otherProject.output.notes.conventions).toBe('');
+  });
+});
+
 describe('search_reference interception tool', () => {
   const runSearch = async (args: Object) => {
     const tool = findByNameokExtraTool('search_reference');

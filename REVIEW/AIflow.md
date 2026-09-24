@@ -19,8 +19,9 @@ document. All paths relative to repo root; checked against the tree on
      schemas, model choice, sub-agents — runs server-side**. None of those
      prompts are in this repo.
    - **BYOK flow** (`src\AiGeneration\Byok\`, this project): a **client-side
-     orchestrator** that owns its system prompt (`byok-v2`), its own tool
-     schemas (an 11-tool whitelist), and drives a chat-completions loop against
+     orchestrator** that owns its system prompt (`byok-v8` after Phase 12),
+     its own tool schemas (a 62-tool default whitelist + 2 no-project tools,
+     grown through Phases 5–12), and drives a chat-completions loop against
      a user-provided OpenAI-compatible endpoint, reusing the same editor tool
      executor and chat UI as the hosted flow.
 2. **What the agent "sees" of the game** is identical in both flows: a
@@ -96,12 +97,14 @@ user types in the SAME AiRequestChat UI
       → BYOK chats live in ByokChatStore only — never in AiRequestContext,
         which would load/poll them on GDevelop's servers (container :533-537)
   → ByokOrchestrator.sendUserMessage:
-      1. system prompt   = buildByokSystemPrompt (ByokPrompts.js, 'byok-v2')
+      1. system prompt   = buildByokSystemPrompt (ByokPrompts.js, 'byok-v8' after Phase 12)
       2. messages        = transcript replay (ByokTranscript.js) + the latest
                            SimplifiedProject snapshot folded into the LAST user
                            message (ByokOrchestrator.js:202-240) — re-fetch fresh
                            via getProjectUserContent each turn (:466)
-      3. tools           = toOpenAiToolsFormat(getByokToolSchemas()) — 11 tools
+      3. tools           = toOpenAiToolsFormat(getByokToolSchemas()) — 62 default
+                           tools + initialize_project/get_game_starter_summary
+                           while no project is open (Phases 5-12)
       4. reasoning_effort (optional, user toggle) ── ByokClient ──→
                            POST {baseUrl}/chat/completions (retries, normalized errors)
       5. tool_calls → SAME EditorFunctionCallRunner, restricted to the whitelist;
@@ -228,7 +231,7 @@ Utils.js:102-108).
 
 ### 4.2 BYOK flow: the one prompt owned by this repo
 
-`AiGeneration\Byok\ByokPrompts.js` — version **`byok-v2`**
+`AiGeneration\Byok\ByokPrompts.js` — version **`byok-v8`** (Phases 5→12 grew it; the composer with token budgets landed in Phase 7)
 (`BYOK_AGENT_PROMPT_VERSION`, :13; bump on any behavioral change). Assembled by
 `buildByokSystemPrompt({toolNames, hasOpenedProject})` (:60-76) and injected as
 the OpenAI `system` message (ByokOrchestrator.js:210-211). Sections, in order:
@@ -341,24 +344,38 @@ All via `https://api[-dev].gdevelop.io/generation` (ApiConfigs.js:111-114):
 asset search → `POST /asset-search` (with conversation context, :992-1044);
 resource search → `POST /resource-search` (:1046-1080).
 
-### 5.4 BYOK whitelist (11 tools)
+### 5.4 BYOK whitelist (62 default tools + 2 no-project, byok-v8)
 
-`ByokToolSchema.js:85-97` (`BYOK_V1_TOOL_NAMES`) — schemas are **authored in
-this file** (checked against each implementation's `SafeExtractor.extract…`
-calls; `validateByokToolSchemas` fails the tests if a name leaves the upstream
-registry). Exposed: `describe_instances`, `inspect_variables`,
-`read_scene_events`, `read_game_project_json`, `create_scene`,
-`create_or_replace_object`, `add_behavior`, `change_behavior_property`,
-`add_or_edit_variable`, `put_2d_instances`, `create_or_update_plan` (kept as a
-client-rendered plan even though the hosted one is server-side).
+`ByokToolSchema.js` (`BYOK_TOOL_NAMES` + `BYOK_NO_PROJECT_TOOL_NAMES`) —
+schemas are **authored in this file** (checked by `validateByokToolSchemas`,
+which fails the tests if a non-intercepted name leaves the upstream registry).
+Beyond the registry surface, BYOK intercepts or implements locally:
 
-**Deliberately excluded (documented :69-84):** `run_script` + sub-agents
-(single-agent v1), `generate_events`/`add_scene_events` (GDevelop's
-event-generation backend), store-search tools (GDevelop account APIs),
-`read_full_docs`/`search_docs` (permanent failure stubs — docs are
-server-side), gameplay-test tools (later phase). Note `create_or_replace_object`
-still triggers the asset-store backend when given a `description`/`asset_id` —
-the one whitelisted tool with a server dependency.
+- **Intercepted before the registry** (`ByokExtraTools.js` and friends):
+  `add_scene_events`/`generate_events` (local EventScript writer),
+  `run_gameplay_test` (screenshot shaping), `run_explorer_agent` (scout
+  sub-agent), and — flipped in **Phase 12 (D12-1)** —
+  `get_game_starter_summary`, `search_object_asset_store` and
+  `search_resource_store`, now real implementations over the auth-free public
+  catalogs (`ByokCatalogTools.js`).
+- **BYOK-only tools** (no upstream entry): the perception/preview set
+  (Phase 6), `search_reference`/`load_skill`/`search_docs`/`read_doc`/
+  `update_project_notes` + `read_project_notes` (Phases 7/12), sub-agent +
+  extension authoring + restore points (Phase 8), external events/layouts +
+  `list_effects` + sprite internals + `import_project_resources` (Phase 11),
+  and `read_runtime_details`/`control_runtime`/`profile_runtime` (Phase 12,
+  acting on the chat's own preview through a targeted debugger channel —
+  runtime state, not project state, so they pass the MCP read-only gate).
+
+**No-project set:** `initialize_project` + `get_game_starter_summary`
+(Phase 12) — advertised only while no project is open.
+
+The store path that also works inside BYOK: `create_or_replace_object` with
+`search_terms` / an audio-font `new_value` calls the seam's
+`searchAndInstallAsset`/`searchAndInstallResources` — real since Phase 12
+(`ByokSeam.js` wires `byokSearchAndInstallAsset`/`byokSearchAndInstallResources`),
+which replaced the Phase 5 unavailable-dependency stubs ("add an enemy"
+installs a real public asset).
 
 ---
 

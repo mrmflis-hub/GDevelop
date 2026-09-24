@@ -167,21 +167,30 @@ export const getByokPreviewHasCrashed = (): boolean =>
   !!activePreviewSessionHolder.session &&
   activePreviewSessionHolder.session.hasCrashed();
 
-export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
-  let previewSession: ?ByokPreviewSession = null;
+/** Test-only: drop the cached session between tests. */
+export const resetByokPreviewSessionForTests = (): void => {
+  activePreviewSessionHolder.session = null;
+};
 
-  const getOrCreatePreviewSession = (
-    deps: ByokRuntimeToolDeps
-  ): ByokPreviewSession => {
-    if (!previewSession) {
-      previewSession = createByokPreviewSession({
-        getPreviewLauncher: deps.getPreviewLauncher,
-        getProject: deps.getProject,
-      });
-      activePreviewSessionHolder.session = previewSession;
-    }
-    return previewSession;
-  };
+/**
+ * The one BYOK preview session, created on first use (one BYOK preview at
+ * a time — the v1 rule). Shared by the perception tools (Phase 6) and the
+ * debugger tools (Phase 12), so they steer the SAME preview.
+ */
+export const getOrCreateByokPreviewSession = (
+  deps: ByokRuntimeToolDeps
+): ByokPreviewSession => {
+  if (!activePreviewSessionHolder.session) {
+    activePreviewSessionHolder.session = createByokPreviewSession({
+      getPreviewLauncher: deps.getPreviewLauncher,
+      getProject: deps.getProject,
+    });
+  }
+  return activePreviewSessionHolder.session;
+};
+
+export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
+  const getOrCreatePreviewSession = getOrCreateByokPreviewSession;
 
   const captureSceneScreenshotTool: ByokExtraTool = {
     name: 'capture_scene_screenshot',

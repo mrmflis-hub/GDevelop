@@ -55,6 +55,19 @@ export type ByokMcpCallToolResult = {|
   isError?: boolean,
 |};
 
+/** Structural slices of the prompts/resources results (no module cycle). */
+export type ByokMcpPromptDescriptorLike = {|
+  name: string,
+  description: string,
+|};
+export type ByokMcpGetPromptResultLike = Object;
+export type ByokMcpResourceDescriptorLike = Object;
+export type ByokMcpResourceContentsLike = {|
+  uri: string,
+  mimeType: string,
+  text: string,
+|};
+
 export type ByokMcpToolHandlers = {|
   listTools: () => Array<ByokMcpToolDescriptor>,
   callTool: (
@@ -66,6 +79,26 @@ export type ByokMcpToolHandlers = {|
   ) => Promise<ByokMcpCallToolResult>,
   cancel: (requestId: string | number, reason: string) => void,
   getAppVersion: () => string,
+  // The prompts/resources primitives (Phase 12, D12-6). Optional so older
+  // hosts keep working: the methods then answer with empty lists / -32602.
+  +listPrompts?: () =>
+    | Array<ByokMcpPromptDescriptorLike>
+    | Promise<Array<ByokMcpPromptDescriptorLike>>,
+  +getPrompt?: (
+    name: string
+  ) =>
+    | Promise<ByokMcpGetPromptResultLike | null>
+    | ByokMcpGetPromptResultLike
+    | null,
+  +listResources?: () =>
+    | Array<ByokMcpResourceDescriptorLike>
+    | Promise<Array<ByokMcpResourceDescriptorLike>>,
+  +readResource?: (
+    uri: string
+  ) =>
+    | Promise<ByokMcpResourceContentsLike | null>
+    | ByokMcpResourceContentsLike
+    | null,
 |};
 
 export type ByokMcpMessageOutcome =
@@ -179,6 +212,60 @@ export const handleByokMcpMessage = async (
       const result = await handlers.callTool(toolParams, id);
       return makeResultResponse(id, result);
     }
+    case 'prompts/list': {
+      if (isNotification) return { kind: 'notification' };
+      const prompts = handlers.listPrompts ? await handlers.listPrompts() : [];
+      return makeResultResponse(id, { prompts });
+    }
+    case 'prompts/get': {
+      if (isNotification) return { kind: 'notification' };
+      if (!isPlainObject(params) || typeof params.name !== 'string') {
+        return makeErrorResponse(
+          id,
+          BYOK_MCP_ERROR_INVALID_PARAMS,
+          'prompts/get requires a "name" string.'
+        );
+      }
+      const prompt = handlers.getPrompt
+        ? await handlers.getPrompt(params.name)
+        : null;
+      if (!prompt) {
+        return makeErrorResponse(
+          id,
+          BYOK_MCP_ERROR_INVALID_PARAMS,
+          `Unknown prompt: ${params.name}`
+        );
+      }
+      return makeResultResponse(id, prompt);
+    }
+    case 'resources/list': {
+      if (isNotification) return { kind: 'notification' };
+      const resources = handlers.listResources
+        ? await handlers.listResources()
+        : [];
+      return makeResultResponse(id, { resources });
+    }
+    case 'resources/read': {
+      if (isNotification) return { kind: 'notification' };
+      if (!isPlainObject(params) || typeof params.uri !== 'string') {
+        return makeErrorResponse(
+          id,
+          BYOK_MCP_ERROR_INVALID_PARAMS,
+          'resources/read requires a "uri" string.'
+        );
+      }
+      const contents = handlers.readResource
+        ? await handlers.readResource(params.uri)
+        : null;
+      if (!contents) {
+        return makeErrorResponse(
+          id,
+          BYOK_MCP_ERROR_INVALID_PARAMS,
+          `Unknown resource: ${params.uri}`
+        );
+      }
+      return makeResultResponse(id, { contents: [contents] });
+    }
     default: {
       if (isNotification) return { kind: 'notification' };
       return makeErrorResponse(
@@ -202,7 +289,11 @@ const makeInitializeResult = (params: any, handlers: ByokMcpToolHandlers) => {
       : BYOK_MCP_PROTOCOL_VERSION;
   return {
     protocolVersion: negotiatedVersion,
-    capabilities: { tools: { listChanged: false } },
+    capabilities: {
+      tools: { listChanged: false },
+      prompts: { listChanged: false },
+      resources: { listChanged: false },
+    },
     serverInfo: {
       name: BYOK_MCP_SERVER_NAME,
       title: BYOK_MCP_SERVER_TITLE,

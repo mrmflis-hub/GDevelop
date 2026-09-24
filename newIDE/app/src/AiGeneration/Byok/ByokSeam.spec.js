@@ -7,6 +7,7 @@ import {
   isByokAiRequestId,
   shouldUseByokForNewRequest,
 } from './ByokSeam';
+import { setByokCatalogFetchersForTests } from './ByokCatalogTools';
 import { DEFAULT_BYOK_SETTINGS } from './ByokTypes';
 
 describe('APPROVED_CALL_IDS_CAPACITY', () => {
@@ -250,26 +251,50 @@ describe('createByokEditorFunctionCallExecutor', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('provides the excluded v1 dependencies as failures', async () => {
-    const deps = makeExecutorDeps();
-    deps.processEditorFunctionCalls.mockImplementation(async (options: any) => {
-      await expect(options.generateEvents({})).rejects.toThrow(
-        'not available in BYOK'
-      );
-      await expect(options.searchAndInstallAsset({})).rejects.toThrow(
-        'not available in BYOK'
-      );
-      expect(options.getAssetStoreTagForNewObject('Sprite::Object')).toBe(null);
-      return { results: [], createdSceneNames: [], createdProject: null };
+  it('wires the store search dependencies to the local catalog implementation', async () => {
+    // The Phase 12 flip: searchAndInstallAsset/searchAndInstallResources
+    // used to be `makeUnavailableDependency` stubs — they now run the
+    // public-catalog implementation (Phase 12, D12-3). The catalogs are
+    // faked so the test never touches the network.
+    setByokCatalogFetchersForTests({
+      listAllExamples: async () => [],
+      getExample: async () => ({}),
+      listAllPublicAssets: async () => [],
+      getPublicAsset: async () => ({}),
+      listAllResources: async () => [],
     });
-    const executor = createByokEditorFunctionCallExecutor(deps);
+    try {
+      const deps = makeExecutorDeps();
+      deps.processEditorFunctionCalls.mockImplementation(
+        async (options: any) => {
+          await expect(options.generateEvents({})).rejects.toThrow(
+            'not available in BYOK'
+          );
+          const assetResult = await options.searchAndInstallAsset({
+            objectsContainer: null,
+            objectName: 'Coin',
+            objectType: null,
+            searchTerms: 'coin',
+            description: '',
+          });
+          expect(assetResult.status).toBe('nothing-found');
+          expect(options.getAssetStoreTagForNewObject('Sprite::Object')).toBe(
+            null
+          );
+          return { results: [], createdSceneNames: [], createdProject: null };
+        }
+      );
+      const executor = createByokEditorFunctionCallExecutor(deps);
 
-    await executor([], {
-      aiRequestId: 'byok-chat-1',
-      getRelatedAiRequestLastMessages: () => ({}),
-    });
+      await executor([], {
+        aiRequestId: 'byok-chat-1',
+        getRelatedAiRequestLastMessages: () => ({}),
+      });
 
-    expect(deps.processEditorFunctionCalls).toHaveBeenCalledTimes(1);
+      expect(deps.processEditorFunctionCalls).toHaveBeenCalledTimes(1);
+    } finally {
+      setByokCatalogFetchersForTests(null);
+    }
   });
 
   it('passes the real ensureExtensionInstalled through', async () => {

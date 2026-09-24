@@ -35,7 +35,11 @@ import { loadByokKey, type ByokKeyLoadResult } from './ByokKeyStorage';
 import { getByokImage } from './ByokImageContent';
 import { createByokChatFileStore } from './ByokChatPersistence';
 import { createByokChatFilesBackendForPlatform } from './ByokChatStorageBackends';
-import { makeByokProjectNotesIdentifierFromProjectName } from './ByokProjectNotes';
+import {
+  loadByokProjectNotes,
+  makeByokProjectNotesIdentifierFromProjectName,
+} from './ByokProjectNotes';
+import { getByokSkills } from './ByokSkills';
 import {
   BYOK_GLOBAL_TURN_BUDGET,
   getByokSettings,
@@ -714,6 +718,35 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
         editorFunctionsWithoutProject,
         getProject: getByokLiveProject,
         getSettings: () => getByokSettings(preferencesValuesRef.current || {}),
+        // The prompts/resources data sources (Phase 12): the skill library
+        // as MCP prompts, the project notes as an MCP resource.
+        listSkillPrompts: async () => {
+          const skills = await getByokSkills();
+          return skills.map(skill => ({
+            name: skill.name,
+            description: skill.description,
+            body: skill.body,
+          }));
+        },
+        readProjectNotes: async () => {
+          const liveProject = getByokLiveProject();
+          if (!liveProject) return null;
+          const liveFileMetadata = byokFileMetadataRef.current;
+          const identifier =
+            liveFileMetadata && liveFileMetadata.fileIdentifier
+              ? liveFileMetadata.fileIdentifier
+              : makeByokProjectNotesIdentifierFromProjectName(
+                  liveProject.getName()
+                );
+          const notes = await loadByokProjectNotes(identifier);
+          return [
+            notes.conventions ? `Conventions:\n${notes.conventions}` : '',
+            notes.inProgress ? `In progress:\n${notes.inProgress}` : '',
+            notes.decisions ? `Decisions:\n${notes.decisions}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n\n');
+        },
       });
       setByokMcpToolHost(host);
       return () => {
@@ -919,6 +952,9 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           );
         },
         onAiRequestUpdated: updatedChat => updateByokChat(updatedChat),
+        // Passed through to the sprite-internals tools so open scene editors
+        // redraw after a change_sprite_frames batch.
+        onObjectsModifiedOutsideEditor,
         // The extension regeneration hooks (Phase 8.4): the editor
         // context's reload functions, flushed once per batch of extension
         // tool calls so new functions/behaviors/objects become usable.

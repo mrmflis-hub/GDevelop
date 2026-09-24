@@ -32,8 +32,8 @@ describe('Byok eval harness: self-check', () => {
 });
 
 describe('Byok eval harness: the task suite', () => {
-  it('ships 30 tasks in the planned category split', () => {
-    expect(tasks).toHaveLength(30);
+  it('ships the planned category split', () => {
+    expect(tasks).toHaveLength(41);
     const byCategory = {};
     for (const task of tasks) {
       byCategory[task.category] = (byCategory[task.category] || 0) + 1;
@@ -44,6 +44,8 @@ describe('Byok eval harness: the task suite', () => {
       variables: 5,
       'js-extension': 5,
       'perception-repair': 5,
+      'authoring-reach': 6,
+      'discovery-runtime': 5,
     });
   });
 

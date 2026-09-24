@@ -21,12 +21,18 @@ import './Knowledge/ByokJsApiPack';
  * one. Quality here decides BYOK quality.
  *
  * Bump BYOK_AGENT_PROMPT_VERSION whenever a change alters the prompt's
- * behavior, and note it in the worklog. byok-v6 (Phase 8): the single-agent
- * section became the agents policy (scout/reviewer delegation, completion
- * rules, skill pointers). byok-v5 (Phase 7): section composer
- * with a token budget + the F2 progress discipline in the planning section.
+ * behavior, and note it in the worklog. byok-v8 (Phase 12): discovery and
+ * runtime — the starter-catalog guidance in the no-project section, the
+ * store-search and runtime-steering lines in the authoring-reach section,
+ * read_project_notes and the seven new tools in the tool list. byok-v7
+ * (Phase 11): the authoring-reach section (external events & layouts,
+ * effects catalog, sprite internals, resource import) and the eight new
+ * tools in the tool list. byok-v6 (Phase 8): the single-agent section
+ * became the agents policy (scout/reviewer delegation, completion rules,
+ * skill pointers). byok-v5 (Phase 7): section composer with a token
+ * budget + the F2 progress discipline in the planning section.
  */
-export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v6';
+export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v8';
 
 /**
  * Build the system prompt of the BYOK agent loop. The signature keeps the

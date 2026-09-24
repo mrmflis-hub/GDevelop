@@ -1,6 +1,10 @@
 // @flow
 import type { EditorFunctionCallResult } from '../../EditorFunctions';
 import {
+  byokSearchAndInstallAsset,
+  byokSearchAndInstallResources,
+} from './ByokCatalogTools';
+import {
   type ByokSettings,
   getByokSettings,
   isByokFullyConfigured,
@@ -243,12 +247,15 @@ export const createByokEditorFunctionCallExecutor = (
         onWillDeleteObject: deps.onWillDeleteObject,
         onWillInstallExtension: deps.onWillInstallExtension,
         onExtensionInstalled: deps.onExtensionInstalled,
-        searchAndInstallAsset: makeUnavailableDependency(
-          'search_and_install_asset'
-        ),
-        searchAndInstallResources: makeUnavailableDependency(
-          'search_and_install_resources'
-        ),
+        searchAndInstallAsset: options =>
+          byokSearchAndInstallAsset(options, {
+            project: deps.getProject(),
+            ensureExtensionInstalled: deps.ensureExtensionInstalled,
+          }),
+        searchAndInstallResources: options =>
+          byokSearchAndInstallResources(options, {
+            project: deps.getProject(),
+          }),
         getAssetStoreTagForNewObject: () => null,
       });
     } finally {

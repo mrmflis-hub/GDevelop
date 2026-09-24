@@ -66,17 +66,44 @@ Status as of 2026-09-24 (update at the end of every session):
   persistence (`ByokBenchmarkStore.js`), the notes-identifier live ref, the
   `Utils/Serializer.js` project-self-unserialization guard, and the
   duplicate `onOpenAskAi` Props key. QA Task 12 open (MCP desktop QA).
-- **Planned, not started:** **Phase 11** (`Phase11.md`, planned 2026-09-24
-  — authoring reach: external events/layouts tools, effect catalog,
-  sprite-frame internals, resource import/replace, extension internals;
-  prompt → `byok-v7`) and **Phase 12** (`Phase12.md`, planned 2026-09-24 —
-  discovery/runtime/integration: starter summaries, local asset/resource
-  store search + seam wiring, command palette + shortcut, MCP
-  prompts/resources + read-notes, debugger/profiler tools; prompt →
-  `byok-v8`). Owner green-lit the 10-item audit backlog on 2026-09-24
-  (record in `usertasks.md`); D11-1…5 / D12-1…8 are answered at
-  implementation kickoff. After both: only the human QA list in
-  `usertasks.md`.
+- **Phases 11 + 12 implemented 2026-09-24, uncommitted** (the owner ordered
+  Phase 12 in chat; Phase 11 was its unbuilt prerequisite and was built in
+  the same session; D11-1…5 and D12-1…8 answered as recommended).
+  **Phase 11 (authoring reach, prompt `byok-v7`, 56 advertised tools):**
+  the behavior-preserving instance-core extraction
+  (`EditorFunctions/InstanceTools.js` — index.js delegates; the scene
+  specs stayed green through it), external events + external layouts tools
+  (`Byok/ByokExternalSceneTools.js`, over the same EventScript/instance
+  pipelines; the event writer's apply step became container-generic in
+  `ByokLocalEventWriter.js`), the effect catalog (`list_effects` in
+  `Byok/ByokCatalogTools.js`), sprite internals
+  (`Byok/ByokSpriteTools.js` — describe/change over animations/directions/
+  frames/points/masks, editor wrapper-lifecycle rules encoded),
+  `import_project_resources` (`Byok/ByokResourceTools.js` — URL/absolute/
+  in-project sources, replace-in-place, desktop-only), and the extension
+  internals (parameters add/remove/move, custom-object children with a
+  usage guard, extension dependencies, in `ByokExtensionTools.js`).
+  **Phase 12 (discovery/runtime, prompt `byok-v8`, 62 default + 2
+  no-project tools):** `get_game_starter_summary` over the public examples
+  catalog (no-project advertisement), `search_object_asset_store` /
+  `search_resource_store` over the auth-free public catalogs (self-contained
+  scorer, session-cached, injectable fetchers), the seam store stubs
+  replaced by real installs (`byokSearchAndInstallAsset` →
+  `getPublicAsset` + required extensions + `addAssetToProject`;
+  resources registered by URL with the store origin — "add an enemy"
+  installs), the "Open Ask AI" command + default `Ctrl+Alt+A` (the four
+  standard palette touchpoints), MCP `prompts`/`resources` primitives
+  (skills as prompts; notes + docs as `gdevelop://` resources; all three
+  capabilities advertised; `Byok/Mcp/ByokMcpPrompts.js` +
+  `ByokMcpResources.js`), `read_project_notes`, and the debugger tools
+  (`Byok/ByokDebuggerTools.js` — read_runtime_details/control_runtime/
+  profile_runtime over the preview session's TARGETED debugger channel
+  with pushed-profiler-output waits; `ByokPreviewSession.js` gained the
+  DebuggerId capture, targeted request/response and the stop()
+  closeAllPreviews fix). Evals 30 → 41 tasks. QA Tasks 13/14 open.
+- **All 12 phases are now implemented.** Remaining work: the human QA list
+  in `usertasks.md` (Tasks 1, 2, 6, 7, 9–14) and the owner's commit review
+  (Phases 9–12 are uncommitted).
 
 - **Audits:** every 2026-09-21 audit B-finding is fixed. The remaining open
   findings are consolidated in `REVIEW/audit2209.md` (full detail) and triaged
@@ -90,9 +117,11 @@ Status as of 2026-09-24 (update at the end of every session):
 - **Owner decisions:** all 16 decisions of 2026-09-22 are **answered**
   (canonical record in `usertasks.md`; dispositions in the triage docs), as
   are the 5 Phase 10 decisions (D10-1…D10-5, answered 2026-09-23 by the
-  "implement this" order on the presented recommendations), as is the
-  2026-09-24 surface-audit backlog: the owner picked 10 of the audit's
-  unconnected candidates, planned as `Phase11.md` + `Phase12.md`.
+  "implement this" order on the presented recommendations), the
+  2026-09-24 surface-audit backlog (the owner picked 10 candidates,
+  planned as `Phase11.md` + `Phase12.md`), and D11-1…5 + D12-1…8
+  (answered 2026-09-24 at implementation, as recommended, when the owner
+  ordered Phase 12 in chat).
   Every approved/queued item now has a committed phase home: the fixes
   batch is `Phase7.md` step 7.0 (D10, O1, O4, O5–O11, O13), F2's halves
   are `Phase7.md` step 7.1 + `Phase9.md` step 9.1, the owner's

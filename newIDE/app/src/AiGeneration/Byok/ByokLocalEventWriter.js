@@ -290,6 +290,37 @@ export const byokApplySceneEventBatches = ({
       message: `No scene named "${sceneName}" in the project — create it with create_scene first.`,
     };
   }
+
+  const scene = project.getLayout(sceneName);
+  return byokApplyEventBatchesToEventsList({
+    project,
+    eventsList: scene.getEvents(),
+    eventBatches,
+    onApplied: aiGeneratedEventId =>
+      onSceneEventsModifiedOutsideEditor({
+        scene,
+        newOrChangedAiGeneratedEventIds: new Set([aiGeneratedEventId]),
+      }),
+  });
+};
+
+/**
+ * The container-generic core of the event writer (Phase 11): applies the
+ * same parse → anchor-check → build → apply pipeline to ANY `gdEventsList`
+ * — a scene's events or an external-events sheet — and leaves the editor
+ * notification to the caller (`onApplied` receives the generated event id).
+ */
+export const byokApplyEventBatchesToEventsList = ({
+  project,
+  eventsList,
+  eventBatches,
+  onApplied,
+}: {|
+  project: any,
+  eventsList: any,
+  eventBatches: Array<ByokEventBatch>,
+  onApplied: (aiGeneratedEventId: string) => void,
+|}): ByokEventWriterOutput => {
   if (!Array.isArray(eventBatches) || eventBatches.length === 0) {
     return {
       success: false,
@@ -298,15 +329,13 @@ export const byokApplySceneEventBatches = ({
     };
   }
 
-  const scene = project.getLayout(sceneName);
-  const sceneEvents = scene.getEvents();
   const changes: Array<Object> = [];
   for (let index = 0; index < eventBatches.length; index++) {
     const anchorFailure = checkBatchAnchor(
       eventBatches[index],
       index,
       eventBatches[index].placement_relation || 'insert_at_end',
-      sceneEvents,
+      eventsList,
       project
     );
     if (anchorFailure) return anchorFailure;
@@ -319,7 +348,7 @@ export const byokApplySceneEventBatches = ({
   const aiGeneratedEventId = makeByokAiGeneratedEventId();
   const { applied, errors } = applyEventsChanges(
     project,
-    sceneEvents,
+    eventsList,
     changes,
     aiGeneratedEventId
   );
@@ -328,16 +357,13 @@ export const byokApplySceneEventBatches = ({
     return {
       success: false,
       message:
-        'No event change could be applied (the targets may not exist anymore). Read the scene events again and retry with current ids.',
+        'No event change could be applied (the targets may not exist anymore). Read the events again and retry with current ids.',
       aiGeneratedEventId,
       errors,
     };
   }
 
-  onSceneEventsModifiedOutsideEditor({
-    scene,
-    newOrChangedAiGeneratedEventIds: new Set([aiGeneratedEventId]),
-  });
+  onApplied(aiGeneratedEventId);
 
   const output: ByokEventWriterOutput = {
     success: true,

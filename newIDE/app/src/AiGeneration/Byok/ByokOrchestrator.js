@@ -236,6 +236,9 @@ export type ByokOrchestratorOptions = {|
   // Passed through to the intercepted tools (ByokExtraTools) that edit the
   // events outside the events editor.
   onSceneEventsModifiedOutsideEditor?: (changes: any) => void,
+  // Passed through to the intercepted tools that edit objects directly
+  // (sprite frames) so open editors redraw.
+  onObjectsModifiedOutsideEditor?: (changes: any) => void,
   // The perception tools' environment hooks (screenshots, preview capture
   // IPC, preview launcher). Absent: the perception tools answer with
   // actionable failures instead of crashing. `storeImage` overrides the
@@ -959,6 +962,11 @@ export const createByokOrchestrator = (
       onSceneEventsModifiedOutsideEditor: changes => {
         if (options.onSceneEventsModifiedOutsideEditor) {
           options.onSceneEventsModifiedOutsideEditor(changes);
+        }
+      },
+      onObjectsModifiedOutsideEditor: changes => {
+        if (options.onObjectsModifiedOutsideEditor) {
+          options.onObjectsModifiedOutsideEditor(changes);
         }
       },
       runtimeDeps: getExtraToolRuntimeDeps() || undefined,

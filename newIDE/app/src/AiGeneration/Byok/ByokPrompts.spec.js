@@ -1,5 +1,9 @@
 // @flow
-import { BYOK_TOOL_NAMES, getByokToolSchemas } from './ByokToolSchema';
+import {
+  BYOK_NO_PROJECT_TOOL_NAMES,
+  BYOK_TOOL_NAMES,
+  getByokToolSchemas,
+} from './ByokToolSchema';
 import {
   BYOK_AGENT_PROMPT_VERSION,
   buildByokSystemPrompt,
@@ -20,6 +24,15 @@ describe('ByokPrompts', () => {
     for (const schema of getByokToolSchemas()) {
       expect(prompt).toContain(schema.name);
     }
+  });
+
+  it('lists the no-project tools when no project is open', () => {
+    const prompt = buildByokSystemPrompt({
+      toolNames: [...BYOK_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES],
+      hasOpenedProject: false,
+    });
+    expect(prompt).toContain('get_game_starter_summary');
+    expect(prompt).toContain('initialize_project');
   });
 
   it('contains each tool name only in the tool list line, with its summary', () => {
@@ -81,8 +94,8 @@ describe('ByokPrompts', () => {
 
 describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
   it('pins the prompt version', () => {
-    // Bumped to byok-v6 in Phase 8 (the agents policy section).
-    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v6');
+    // Bumped to byok-v8 in Phase 12 (discovery + runtime guidance).
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v8');
   });
 
   it('teaches the F2 obligatory to-do list and per-item progress updates', () => {
@@ -167,6 +180,9 @@ describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
       toolNames: BYOK_TOOL_NAMES,
       hasOpenedProject: false,
     });
-    expect(prompt).toContain('initialize_project first');
+    // Phase 12: the real starter catalog replaced "plan from memory".
+    expect(prompt).toContain('get_game_starter_summary');
+    expect(prompt).toContain('never invent one');
+    expect(prompt).toContain('initialize_project');
   });
 });

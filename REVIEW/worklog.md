@@ -1830,3 +1830,288 @@ entry), agent memory files (outside the repo). Surveys read only.
 `deferred.md` or are listed in the new phases' §5 deferrals), `no UT` new
 QA tasks yet (desktop QA Tasks 13/14 get filed by their implementation
 sessions; `Phase12.md` Appendix A drafts the checklist).
+
+
+---
+
+## 2026-09-24 — Phases 11 + 12 implemented (authoring reach + discovery/runtime); Phase 11 built as the ordered Phase 12's prerequisite
+
+**Context:** the owner ordered "implement Phase 12" in chat. `Phase12.md`
+hard-depends on Phase 11 (the `ByokCatalogTools` module,
+`import_project_resources`, the v7 prompt step), which was still
+planned-only — per the session's create-don't-defer instruction both
+phases were built in one session, in roadmap order. D11-1…5 and D12-1…8
+were answered at kickoff exactly as recommended in the phase docs.
+
+### Description of actions
+
+**Phase 11 (authoring reach, prompt byok-v7, advertised 48 → 56):**
+
+- **11.1 — Instance-core extraction:** moved the container-generic core of
+  `describe_instances`/`put_2d_instances` out of
+  `EditorFunctions/index.js` into the new leaf module
+  `EditorFunctions/InstanceTools.js` (`describeInstancesInContainer`,
+  `putInstancesInContainer`, plus the shared helpers
+  `iterateOnInstances`, `makeGenericFailure`, `injectObjectSizeInfo`,
+  `getOccupiedSpaceDescription`, `getLayerNameForMessage`,
+  `extractRequiredString`, `makeWrongObjectInstanceIdsFailure` — index.js
+  imports them back; only the `EditorFunctionGenericOutput` TYPE still
+  flows index→InstanceTools (type-only, erased at runtime). Behavior-
+  preserving proof: `DescribeInstances.spec.js` + `Put2dInstances.spec.js`
+  (21 tests) green unchanged; new `InstanceTools.spec.js` (12 tests)
+  covers the functions directly, including external-layout containers.
+- **11.2/11.3 — external events & layouts:** new
+  `Byok/ByokExternalSceneTools.js` (4 tools). The event writer's apply
+  step became container-generic
+  (`byokApplyEventBatchesToEventsList` in `ByokLocalEventWriter.js`;
+  `byokApplySceneEventBatches` delegates). Writers create-if-missing with
+  `associated_scene`; not-found errors list the existing items. Arg-shape
+  decision (recorded): `add_external_events` takes `event_batches` (the
+  add_scene_events shape) OR whole-sheet `event_script` + `mode`
+  replace/insert — both forms the step named. The external-layout tools
+  borrow the associated scene's layers/objects (the editor's own rule).
+- **11.4 — effect catalog:** `list_effects` in the new
+  `Byok/ByokCatalogTools.js` over `enumerateEffectsMetadata`, compacted
+  (`{type, fullName, description, flags, properties:[{name,type,
+  defaultValue,description,choices?,isAdvanced,isDeprecated}]}`); grouped
+  properties arrive as section fields and are FLATTENED
+  (`flattenByokEffectProperties` — the PropertiesEditor schema nests
+  grouped properties under `children`, discovered while testing).
+- **11.5 — sprite internals:** new `Byok/ByokSpriteTools.js`
+  (`describe_sprite_frames` capped at 120 frames; `change_sprite_frames`
+  typed ops list: animations/frames/points/masks/adapt-flag; per-frame or
+  all_frames masks; polygons from vertices or a moved rectangle). libGD
+  wrapper-lifecycle rules encoded (re-resolve per op; `delete()` Sprite/
+  Point/Vector2f wrappers; Polygon2d wrappers NOT deleted — see Bugs).
+  Objects-modified notification threaded through a new optional
+  collaborator `onObjectsModifiedOutsideEditor` (orchestrator option +
+  seam wiring added).
+- **11.6 — resource import:** new `Byok/ByokResourceTools.js`
+  (`import_project_resources`): URL (download via the `local-file-download`
+  IPC), absolute path (copy + dedupe), project-relative (register in
+  place); `replace_existing` retargets in place; report-only usedBy via
+  `ObjectsUsingResourceCollector`; escape-the-folder refusal;
+  desktop-only failure otherwise. Core is dependency-injected
+  (`ByokResourceImportDeps`) so tests run on fakes.
+- **11.7 — extension internals:** `change_custom_function` gained
+  `parameters_to_add/_remove/_move` (validated, duplicate-skipping);
+  `change_custom_object` gained `children_to_add/_remove` with a usage
+  guard (the child NAME searched quoted in the serialized events of the
+  object's functions — a custom object has no separate events sheet, its
+  logic IS its functions' events; conservative refusal only);
+  `change_extension_properties` gained `dependencies_to_add/_remove` and
+  always outputs the current dependency list.
+- **11.8 — surface:** 8 names + schemas + `BYOK_ONLY_TOOL_NAMES` entries;
+  cap 48 → 56; prompt `byok-v7` with the new `authoring-reach` knowledge
+  section; 6 new eval tasks (`authoring-reach` category; harness 30 → 36).
+
+**Phase 12 (discovery/runtime, prompt byok-v8):**
+
+- **12.1 — starter summaries:** `get_game_starter_summary` in
+  `ByokCatalogTools.js` over `listAllExamples`/`getExample` (list capped
+  at 80 headers + optional `search` narrowing — small extension over the
+  doc, recorded; one-slug summaries with capped description; near-miss
+  slugs on unknown; explicit offline message). Catalog fetches are
+  injectable (`setByokCatalogFetchersForTests`) and cached per session
+  (failures not cached). Advertised in `BYOK_NO_PROJECT_TOOL_NAMES` next
+  to `initialize_project` (the "advertised set 63" of the roadmap counts
+  the 56 + 7 new tool NAMES; the per-list split is 62 default + 2
+  no-project = 64 without a project — the arithmetic note lives in
+  `ByokToolSchema.js`'s cap comment).
+- **12.2 — store discovery + seam install:** `search_object_asset_store`
+  / `search_resource_store` over `listAllPublicAssets`/`listAllResources`
+  (public/free only per D12-2; ≤ 10 trimmed hits; objectType/tag and
+  resource-type filters). The seam stubs at `ByokSeam.js` were REPLACED by
+  `byokSearchAndInstallAsset` (search → `getPublicAsset` → required
+  extensions via the existing `ensureExtensionInstalled` hook →
+  `addAssetToProject` with `requestedObjectName`) and
+  `byokSearchAndInstallResources` (hits registered by their direct URL
+  with `setOrigin('gdevelop-asset-store', url)` — the resource-store
+  convention; nothing downloaded, resources load at preview like any URL
+  resource; already-exists dedupe). `getAssetStoreTagForNewObject` stays
+  null. The old unavailable-dependency seam spec flipped to the real
+  implementation.
+- **12.3 — command palette + shortcut:** `OPEN_ASK_AI` ("Open Ask AI")
+  across the four standard touchpoints (`CommandsList.js`,
+  `DefaultShortcuts.js` `CmdOrCtrl+Alt+KeyA` — conflict-checked against
+  every default (none shares the combo; asserted by test),
+  `MainFrameCommands.js` `useCommand`, `MainFrame/index.js`
+  `onOpenAskAi: () => openAskAi()`), reassignable through the existing
+  shortcuts preferences. New `MainFrameCommands.spec.js` (3 tests:
+  metadata, conflict-free default, registration+dispatch through a real
+  CommandManager).
+- **12.4 — MCP prompts/resources + read-notes:** new pure modules
+  `Mcp/ByokMcpPrompts.js` (skills → prompts/list metadata, prompts/get
+  body-as-user-message) and `Mcp/ByokMcpResources.js`
+  (`gdevelop://project/notes` while a project host is registered +
+  `gdevelop://docs/<path>` per bundled page; reads capped like read_doc;
+  unknown URIs → null → -32602). `ByokMcpProtocol.js` gained the four
+  methods (optional handlers; empty lists / -32602 without a host) and
+  advertises `capabilities: {tools, prompts, resources}` (all
+  `listChanged: false`). Host bag + seam registration gained
+  `listSkillPrompts` (getByokSkills) and `readProjectNotes` (the merged
+  notes text); `useByokMcpServer.js` wires the four handlers.
+  `read_project_notes` BYOK tool added next to its writer.
+- **12.5 — debugger/profiler tools:** `ByokPreviewSession.js` gained the
+  debugger channel: DebuggerId capture from `onConnectionOpened`
+  (first connection after launch = this session's preview), targeted
+  request/response (`sendMessage(debuggerId, {…, messageId})` + response
+  routing in the parsed-message handler — never the broadcasting
+  `sendMessageWithResponse`), a pushed-message buffer + bounded
+  `waitForPushedDebuggerMessage`, connection-closed failures for pending
+  work, and the stop() fix (below). `inspectState` switched to the
+  targeted channel (cross-preview safe now). New
+  `Byok/ByokDebuggerTools.js`: `read_runtime_details` (getStatus + a
+  targeted refresh through the same reducer), `control_runtime`
+  (pause/play/resume/getStatus; commandIgnored surfaced typed — the
+  runtime's own gameplay-test guard), `profile_runtime`
+  (profiler.start → duration → profiler.stop → await the PUSHED
+  profiler.output, 10 s bound; duration default 2 s, cap 60 s). All
+  three `modifiesProject: false` (runtime state, not project state —
+  they pass the MCP read-only gate). The session holder moved to
+  module level in `ByokRuntimeTools.js`
+  (`getOrCreateByokPreviewSession`) so the perception and debugger
+  tools share ONE session.
+- **12.6 — surface/docs:** 7 names + schemas (62 default + 2 no-project;
+  cap 56 → 62 with the counting note), `BYOK_ONLY_TOOL_NAMES` for the 4
+  BYOK-only names, prompt `byok-v8` (discovery/runtime lines in
+  authoring-reach; the no-project section now says to pick a real slug
+  from `get_game_starter_summary` — the "plan from your own knowledge"
+  guidance is gone), 5 new eval tasks (`discovery-runtime` category;
+  harness 36 → 41), `phase5-tool-decisions.md` exclusions flipped with
+  Phase 12 pointers, `AIflow.md` refreshed (§1/§2.2/§4.2 stale claims +
+  §5.4 rewritten to the current whitelist), AGENTS.md §2 updated,
+  usertasks Tasks 13 + 14 filed.
+
+**Gates (from `newIDE\app`):** `npm test -- --watchAll=false` **208
+suites / 2264 passed / 1 skipped** (was 198/2146 before the session); `npm
+run lint` 0 problems; `flow check` 0 errors (via the direct
+`flow-win64-v0.299.0` binary after the known pipe stall);
+`npm run check-format` clean. Electron side untouched (git confirms).
+
+### Bugs found
+
+1. **`stop_preview` never closed the preview window** (pre-existing; the
+   Phase 12 survey's quirk, confirmed and FIXED).
+   `ByokPreviewSession.stop()` called `closePreview()` with no argument;
+   `LocalPreviewLauncher.closePreview(windowId)` →
+   `closePreviewWindow(undefined)` → `find(entry => entry.previewWindow.id
+   === undefined)` matches nothing, so the IPC silently closed NO window
+   while the tool reported success. Repro: start_preview → stop_preview →
+   the game window stays open. Root cause: the Electron window id of a
+   preview never reaches the renderer (the `preview-open` IPC returns
+   nothing), so a targeted close is impossible with the existing IPC.
+   Fix: stop() prefers the launcher's `closeAllPreviews` (the working
+   counterpart; accepted scope: the BYOK v1 one-preview rule), falling
+   back to the legacy call only when absent. Regression-tested
+   (`ByokPreviewSession.spec.js`).
+2. **The system prompt's tool list was one growth-step away from silent
+   truncation** (pre-existing, latent; FOUND and FIXED). The `tools`
+   knowledge section carried `budgetTokens: 2100, degradable: false` —
+   the composer TRUNCATES non-degradable sections over budget, and the
+   Phase 12 names pushed the 63-entry list past it (caught by the
+   prompt/spec sync test listing every schema name). Fix: budget raised
+   to 2800 with the comment updated; the sync test now guards it.
+3. **Deleting a `gd.Polygon2d` wrapper after `VectorPolygon2d.push_back`
+   corrupts the WASM heap** (upstream lifecycle asymmetry, discovered
+   while testing `change_sprite_frames`). Repro: push a created polygon
+   into `sprite.getCustomCollisionMask()`, `delete()` it, then any later
+   libGD call dies with "memory access out of bounds". The editor's own
+   code (`PolygonsList.addCollisionMask`, `CollisionMaskHelper`) never
+   deletes Polygon2d wrappers — unlike Sprite/Point/Vector2f wrappers,
+   which are deleted after their push_backs. Fix on our side: the safe
+   pattern encoded in `ByokSpriteTools.applyPolygonMaskToFrame` (+ test).
+   Upstream leak + asymmetry filed in `outofscoped.md`.
+
+### Issues found
+
+- The PropertiesEditor schema NESTS grouped effect properties under
+  `children` section fields — the first `list_effects` implementation
+  emitted section markers with undefined types. Fixed via flattening
+  (`flattenByokEffectProperties`); test covers a grouped fake effect.
+- `EditorFunctions/TestHelpers.js` exposes no `MakeInstances.js`-style
+  fixture (the Phase 11 doc guessed one); the new specs follow the
+  existing inline-factory style instead.
+- Phase docs' "advertised set 63" arithmetic doesn't match the per-list
+  split (62 + 2 no-project); resolved by documenting the counting in the
+  validator cap comment rather than bending the no-project design.
+- The knowledge-sections `?string`-style optional-property invariance
+  (Flow) bit the new optional handler/hook fields: optional props on
+  exact object types are INVARIANT — fixed with Flow's own suggestion
+  (`+` readonly variance on `ByokMcpToolHandlers`' four optional methods
+  and `PutInstancesInContainerOptions.toolsVersion`).
+- Known-v1 limitations recorded in the tool outputs + QA tasks:
+  external-events/layout editors don't live-redraw after BYOK writes
+  (OOS entry filed); BYOK-only tools read sprite default sizes as 0
+  without the Pixi loader (documented in describe_external_layout's
+  note; the `getPixiResourcesLoader` collaborator hook exists for a
+  later wiring).
+
+### Files worked on
+
+New (17): `newIDE\app\src\EditorFunctions\InstanceTools.js`(+spec),
+`...\AiGeneration\Byok\ByokExternalSceneTools.js`(+spec),
+`ByokCatalogTools.js`(+spec), `ByokSpriteTools.js`(+spec),
+`ByokResourceTools.js`(+spec), `ByokDebuggerTools.js`(+spec),
+`Mcp\ByokMcpPrompts.js`(+spec), `Mcp\ByokMcpResources.js`(+spec),
+`MainFrame\MainFrameCommands.spec.js`.
+Modified (28): `EditorFunctions\index.js` (the 11.1 delegation),
+`AiGeneration\Byok\ByokExtraTools.js`(+spec),
+`ByokExtensionTools.js`(+spec), `ByokLocalEventWriter.js`,
+`ByokOrchestrator.js`(+spec), `ByokPreviewSession.js`(+spec),
+`ByokPrompts.js`(+spec), `ByokRuntimeTools.js`, `ByokSeam.js`(+spec),
+`ByokToolSchema.js`(+spec), `Knowledge\ByokKnowledgeSections.js`,
+`Mcp\ByokMcpProtocol.js`(+spec), `Mcp\ByokMcpToolHost.js`,
+`Mcp\useByokMcpServer.js`, `useByokChatSeam.js`, `evals\
+\ByokEvalHarness.spec.js`, `CommandPalette\CommandsList.js`,
+`KeyboardShortcuts\DefaultShortcuts.js`, `MainFrame\MainFrameCommands.js`,
+`MainFrame\index.js` (one audited line), `scripts\run-byok-evals.js`,
+`scripts\byok-eval-task-prompts.js`. Docs: `REVIEW\AIflow.md`,
+`REVIEW\phase5-tool-decisions.md`, `REVIEW\outofscoped.md`,
+`REVIEW\usertasks.md` (Tasks 13/14), `AGENTS.md` §2.
+
+### Audit greps (run 2026-09-24, outputs as captured)
+
+```
+== grep 1: unavailable-dependency stubs left (expect only generate_events):
+src/AiGeneration/Byok/ByokSeam.spec.js:256:    // used to be `makeUnavailableDependency` stubs — they now run the
+src/AiGeneration/Byok/ByokSeam.js:151:const makeUnavailableDependency = (name: string) => async (): Promise<any> => {
+src/AiGeneration/Byok/ByokSeam.js:208:        generateEvents: makeUnavailableDependency('generate_events'),
+
+== grep 2: BYOK_TOOL_NAMES length + no-project:
+BYOK_TOOL_NAMES (with digits): 62
+BYOK_NO_PROJECT_TOOL_NAMES: 'initialize_project', 'get_game_starter_summary'
+BYOK_ONLY_TOOL_NAMES: 35
+
+== grep 3: new tool registrations in ByokExtraTools:
+545:  ...getByokExtensionTools(),
+548:  ...getByokExternalSceneTools(),
+551:  ...getByokCatalogTools(),
+554:  ...getByokSpriteTools(),
+557:  ...getByokResourceTools(),
+560:  ...getByokDebuggerTools(),
+
+== grep 4: modifiesProject flags of the new tools:
+ByokDebuggerTools.js:59/104/155: modifiesProject: false   (all three)
+ByokExternalSceneTools.js:98: false / 203: true / 294: false / 350: true
+
+== grep 5: command + shortcut:
+KeyboardShortcuts/DefaultShortcuts.js:32: OPEN_ASK_AI: 'CmdOrCtrl+Alt+KeyA'
+MainFrame/MainFrameCommands.js:188: useCommand('OPEN_ASK_AI', true, {
+CommandPalette/CommandsList.js:79: | 'OPEN_ASK_AI';
+CommandPalette/CommandsList.js:235: OPEN_ASK_AI: {
+MainFrame/index.js:5641: onOpenAskAi: () => openAskAi(),
+
+== grep 6: stub/TODO leftovers in the new modules: (none)
+
+== grep 7: MCP prompts/resources wiring:
+useByokMcpServer.js:155-175: listPrompts/getPrompt/listResources/readResource over the host
+useByokChatSeam.js:723: listSkillPrompts (host bag registration)
+
+== grep 8: eval task count: 41 prompts in byok-eval-task-prompts.js
+```
+
+**Triage:** OOS — 2 new entries (Polygon2d wrapper lifecycle; external
+editors live-redraw), see `outofscoped.md`. Deferred — `no deferred`
+(the Phase 12 §5 deferrals were already recorded in the phase doc).
+UT — Tasks 13 + 14 filed (`usertasks.md`).

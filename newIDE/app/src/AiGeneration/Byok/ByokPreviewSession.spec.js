@@ -7,11 +7,16 @@ import {
 } from './ByokPreviewSession';
 
 // A fake debugger server recording subscriptions — the lifecycle contract
-// (start subscribes, stop unsubscribes, no dangling listeners).
+// (start subscribes, stop unsubscribes, no dangling listeners). `sendMessage`
+// records the targeted recipient and answers with `nextResponse` (echoing
+// the messageId) through the registered callbacks.
 const makeFakeDebuggerServer = () => {
   const registeredCallbacks: Array<any> = [];
-  return {
+  const sentMessages: Array<{| id: string, message: Object |}> = [];
+  const fakeServer: any = {
     registeredCallbacks,
+    sentMessages,
+    nextResponse: { command: 'response', payload: {} },
     registerCallbacks: (callbacks: any) => {
       registeredCallbacks.push(callbacks);
       return () => {
@@ -20,7 +25,23 @@ const makeFakeDebuggerServer = () => {
       };
     },
     sendMessageWithResponse: (jest.fn(): any),
+    sendMessage: (jest.fn(): any).mockImplementation(
+      (id: string, message: Object) => {
+        sentMessages.push({ id, message });
+        const response = {
+          ...fakeServer.nextResponse,
+          messageId: message.messageId,
+        };
+        for (const callbacks of registeredCallbacks) {
+          callbacks.onHandleParsedMessage({
+            id,
+            parsedMessage: response,
+          });
+        }
+      }
+    ),
   };
+  return fakeServer;
 };
 
 const makeFakeLauncher = (debuggerServer: any): ByokPreviewLauncher => ({
@@ -28,6 +49,40 @@ const makeFakeLauncher = (debuggerServer: any): ByokPreviewLauncher => ({
   closePreview: jest.fn(),
   getPreviewDebuggerServer: () => debuggerServer,
 });
+
+const makeFakeLauncherWithCloseAll = (
+  debuggerServer: any
+): ByokPreviewLauncher => ({
+  ...makeFakeLauncher(debuggerServer),
+  closeAllPreviews: jest.fn(),
+});
+
+/** Simulate the preview connecting its debugger client. */
+const emitConnectionOpened = (debuggerServer: any, id: string) => {
+  for (const callbacks of debuggerServer.registeredCallbacks) {
+    callbacks.onConnectionOpened({ id, debuggerIds: [id] });
+  }
+};
+
+const emitConnectionClosed = (debuggerServer: any, id: string) => {
+  for (const callbacks of debuggerServer.registeredCallbacks) {
+    callbacks.onConnectionClosed({ id });
+  }
+};
+
+/** Simulate the runtime pushing a message (no messageId). */
+const emitPushedMessage = (
+  debuggerServer: any,
+  command: string,
+  payload: Object
+) => {
+  for (const callbacks of debuggerServer.registeredCallbacks) {
+    callbacks.onHandleParsedMessage({
+      id: 'fake-preview',
+      parsedMessage: { command, payload },
+    });
+  }
+};
 
 const emitLog = (debuggerServer: any, payload: Object) => {
   for (const callbacks of debuggerServer.registeredCallbacks) {
@@ -166,10 +221,10 @@ describe('createByokPreviewSession', () => {
     expect(session.getNewErrors()).toHaveLength(0);
   });
 
-  it('reads the runtime state through a refresh round-trip', async () => {
+  it('reads the runtime state through a targeted refresh round-trip', async () => {
     const debuggerServer = makeFakeDebuggerServer();
-    (debuggerServer.sendMessageWithResponse: any).mockResolvedValue({
-      command: 'dump',
+    debuggerServer.nextResponse = {
+      command: 'response',
       payload: {
         _variables: { Score: 10 },
         _sceneStack: {
@@ -186,12 +241,13 @@ describe('createByokPreviewSession', () => {
           ],
         },
       },
-    });
+    };
     const session = createByokPreviewSession({
       getPreviewLauncher: () => makeFakeLauncher(debuggerServer),
       getProject: () => ({ getFirstLayout: () => 'Scene 1' }),
     });
     await session.start({});
+    emitConnectionOpened(debuggerServer, 'preview-ws-1');
 
     const result = await session.inspectState();
     expect(result.success).toBe(true);
@@ -201,6 +257,11 @@ describe('createByokPreviewSession', () => {
     expect(state.scenes[0].instances.Player[0].x).toBe(123);
     expect(state.scenes[0].variables).toEqual({ Health: 5 });
     expect(state.globalVariables).toEqual({ Score: 10 });
+    // Targeted: the refresh went to the session's own connection only.
+    expect(debuggerServer.sentMessages).toHaveLength(1);
+    expect(debuggerServer.sentMessages[0].id).toBe('preview-ws-1');
+    expect(debuggerServer.sentMessages[0].message.command).toBe('refresh');
+    expect(debuggerServer.sentMessages[0].message.messageId).toBeDefined();
   });
 
   it('refuses state reads without a running preview, and reports crashes', async () => {
@@ -228,5 +289,113 @@ describe('reduceByokRuntimeDump', () => {
       scenes: [],
       globalVariables: {},
     });
+  });
+});
+
+describe('createByokPreviewSession: the debugger channel (Phase 12)', () => {
+  const makeStartedSession = async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const session = createByokPreviewSession({
+      getPreviewLauncher: () => makeFakeLauncher(debuggerServer),
+      getProject: () => ({ getFirstLayout: () => 'Scene 1' }),
+    });
+    await session.start({});
+    return { debuggerServer, session };
+  };
+
+  it('captures the debugger id of its own connection', async () => {
+    const { debuggerServer, session } = await makeStartedSession();
+    expect(session.getDebuggerState()).toEqual({
+      connected: false,
+      debuggerId: null,
+    });
+
+    emitConnectionOpened(debuggerServer, 'preview-ws-7');
+    expect(session.getDebuggerState()).toEqual({
+      connected: true,
+      debuggerId: 'preview-ws-7',
+    });
+
+    emitConnectionClosed(debuggerServer, 'preview-ws-7');
+    expect(session.getDebuggerState().connected).toBe(false);
+  });
+
+  it('sends targeted commands with a response correlation id', async () => {
+    const { debuggerServer, session } = await makeStartedSession();
+    emitConnectionOpened(debuggerServer, 'preview-ws-1');
+
+    const response = await session.sendDebuggerCommand({
+      command: 'pause',
+    });
+    expect(response.messageId).toBeDefined();
+    expect(debuggerServer.sentMessages).toHaveLength(1);
+    expect(debuggerServer.sentMessages[0].id).toBe('preview-ws-1');
+    expect(debuggerServer.sentMessages[0].message.command).toBe('pause');
+  });
+
+  it('refuses commands before a connection is captured', async () => {
+    const { session } = await makeStartedSession();
+    await expect(
+      session.sendDebuggerCommand({ command: 'pause' })
+    ).rejects.toThrow('not connected');
+  });
+
+  it('fails pending work typed when the connection closes', async () => {
+    const { debuggerServer, session } = await makeStartedSession();
+    emitConnectionOpened(debuggerServer, 'preview-ws-1');
+    // Make sendMessage silent so the request stays pending.
+    (debuggerServer.sendMessage: any).mockImplementation(() => {});
+    const pending = session.sendDebuggerCommand({ command: 'refresh' });
+    emitConnectionClosed(debuggerServer, 'preview-ws-1');
+    await expect(pending).rejects.toThrow('connection was closed');
+  });
+
+  it('resolves pushed messages from the buffer and from live pushes', async () => {
+    const { debuggerServer, session } = await makeStartedSession();
+    emitPushedMessage(debuggerServer, 'profiler.output', {
+      framesAverageMeasures: [{ timeSpent: 12 }],
+    });
+
+    const buffered = await session.waitForPushedDebuggerMessage({
+      command: 'profiler.output',
+      timeoutMs: 100,
+    });
+    expect(buffered.framesAverageMeasures).toHaveLength(1);
+
+    const livePromise = session.waitForPushedDebuggerMessage({
+      command: 'profiler.output',
+      timeoutMs: 1000,
+    });
+    emitPushedMessage(debuggerServer, 'profiler.output', {
+      framesAverageMeasures: [{ timeSpent: 34 }],
+    });
+    const live = await livePromise;
+    expect(live.framesAverageMeasures[0].timeSpent).toBe(34);
+
+    await expect(
+      session.waitForPushedDebuggerMessage({
+        command: 'profiler.output',
+        timeoutMs: 50,
+      })
+    ).rejects.toThrow('arrived within');
+  });
+
+  it('stop() prefers closeAllPreviews (the no-window-id quirk fix)', async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const launcher = makeFakeLauncherWithCloseAll(debuggerServer);
+    const session = createByokPreviewSession({
+      getPreviewLauncher: () => launcher,
+      getProject: () => ({ getFirstLayout: () => 'Scene 1' }),
+    });
+    await session.start({});
+    emitConnectionOpened(debuggerServer, 'preview-ws-1');
+
+    const stopResult = session.stop();
+    expect(stopResult.success).toBe(true);
+    expect(launcher.closeAllPreviews).toHaveBeenCalledTimes(1);
+    // The legacy closePreview(windowId) path is NOT used when the working
+    // one exists — it would close nothing.
+    expect(launcher.closePreview).toHaveBeenCalledTimes(0);
+    expect(session.getDebuggerState().connected).toBe(false);
   });
 });

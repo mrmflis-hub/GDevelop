@@ -3,7 +3,10 @@ import {
   editorFunctions,
   editorFunctionsWithoutProject,
 } from '../../EditorFunctions';
-import { unserializeFromJSObject } from '../../Utils/Serializer';
+import {
+  serializeToJSON,
+  unserializeFromJSObject,
+} from '../../Utils/Serializer';
 import { parseByokEventScript } from './ByokEventScriptParser';
 import type { ByokExtraTool, ByokExtraToolResult } from './ByokExtraTools';
 
@@ -348,6 +351,253 @@ const writeFunctionEventsFromScript = (
   }
 };
 
+/**
+ * Apply the parameter operations of change_custom_function (Phase 11):
+ * parameters_to_add / parameters_to_remove / parameters_to_move, executed
+ * in that order. Returns one message per applied change; a wrong name or a
+ * duplicate is skipped with the reason (the rest still applies).
+ */
+export const applyFunctionParameterChanges = (
+  eventsFunction: any,
+  args: Object
+): Array<string> => {
+  const parameters = eventsFunction.getParameters();
+  const messages: Array<string> = [];
+
+  if (Array.isArray(args.parameters_to_add)) {
+    for (const parameter of args.parameters_to_add) {
+      if (!parameter || typeof parameter !== 'object') continue;
+      const name =
+        typeof parameter.name === 'string' ? parameter.name.trim() : '';
+      if (!name) {
+        messages.push('skipped an unnamed parameter');
+        continue;
+      }
+      if (parameters.hasParameterNamed(name)) {
+        messages.push(`"${name}" already exists (skipped)`);
+        continue;
+      }
+      const metadata = parameters.insertNewParameter(
+        name,
+        parameters.getParametersCount()
+      );
+      metadata.setType(
+        typeof parameter.type === 'string' ? parameter.type : 'expression'
+      );
+      if (typeof parameter.description === 'string') {
+        metadata.setDescription(parameter.description);
+      }
+      messages.push(`added "${name}"`);
+    }
+  }
+
+  if (Array.isArray(args.parameters_to_remove)) {
+    for (const name of args.parameters_to_remove) {
+      if (typeof name !== 'string') continue;
+      if (!parameters.hasParameterNamed(name)) {
+        messages.push(`"${name}" not found (skipped)`);
+        continue;
+      }
+      parameters.removeParameter(name);
+      messages.push(`removed "${name}"`);
+    }
+  }
+
+  if (Array.isArray(args.parameters_to_move)) {
+    for (const move of args.parameters_to_move) {
+      if (!move || typeof move !== 'object') continue;
+      const name = typeof move.name === 'string' ? move.name : '';
+      const toIndex = move.to_index;
+      if (!name || typeof toIndex !== 'number') {
+        messages.push('skipped an invalid move');
+        continue;
+      }
+      const boundedIndex = Math.max(
+        0,
+        Math.min(Math.round(toIndex), parameters.getParametersCount() - 1)
+      );
+      let fromIndex = -1;
+      for (let index = 0; index < parameters.getParametersCount(); index++) {
+        if (parameters.getParameterAt(index).getName() === name) {
+          fromIndex = index;
+          break;
+        }
+      }
+      if (fromIndex === -1) {
+        messages.push(`"${name}" not found (skipped)`);
+        continue;
+      }
+      parameters.moveParameter(fromIndex, boundedIndex);
+      messages.push(`moved "${name}" to ${boundedIndex}`);
+    }
+  }
+
+  return messages;
+};
+
+/**
+ * Whether a child object name appears in the events of any function of the
+ * custom object (quoted, to limit false positives) — the usage guard of
+ * children_to_remove. A custom object has no separate events sheet: its
+ * logic IS its functions' events. Conservative: a false positive only
+ * refuses and asks the model to read the events first.
+ */
+export const isChildObjectNameUsedInEvents = (
+  eventsBasedObject: any,
+  childObjectName: string
+): boolean => {
+  const functions = eventsBasedObject.getEventsFunctions();
+  const quotedName = JSON.stringify(childObjectName);
+  for (let index = 0; index < functions.getEventsFunctionsCount(); index++) {
+    if (
+      serializeToJSON(
+        functions.getEventsFunctionAt(index).getEvents()
+      ).includes(quotedName)
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Apply the children operations of change_custom_object (Phase 11):
+ * children_to_add (name + object type) and children_to_remove (guarded by
+ * the usage check). Returns the messages; nothing is applied when the
+ * guard refuses (the failure is returned instead).
+ */
+export const applyCustomObjectChildrenChanges = (
+  project: any,
+  eventsBasedObject: any,
+  args: Object
+): {| messages: Array<string>, failure: ByokExtraToolResult | null |} => {
+  const messages: Array<string> = [];
+  const childObjects = eventsBasedObject.getObjects();
+
+  if (Array.isArray(args.children_to_add)) {
+    for (const child of args.children_to_add) {
+      if (!child || typeof child !== 'object') continue;
+      const name = typeof child.name === 'string' ? child.name.trim() : '';
+      const objectType =
+        typeof child.object_type === 'string' ? child.object_type : '';
+      if (!name || !objectType) {
+        messages.push('skipped a child without name or object_type');
+        continue;
+      }
+      if (childObjects.hasObjectNamed(name)) {
+        messages.push(`"${name}" already exists (skipped)`);
+        continue;
+      }
+      childObjects.insertNewObject(
+        project,
+        objectType,
+        name,
+        childObjects.getObjectsCount()
+      );
+      messages.push(`added child "${name}" (${objectType})`);
+    }
+  }
+
+  if (Array.isArray(args.children_to_remove)) {
+    for (const name of args.children_to_remove) {
+      if (typeof name !== 'string') continue;
+      if (!childObjects.hasObjectNamed(name)) {
+        messages.push(`"${name}" not found (skipped)`);
+        continue;
+      }
+      if (isChildObjectNameUsedInEvents(eventsBasedObject, name)) {
+        return {
+          messages: [],
+          failure: makeFailure(
+            `Child "${name}" is used by the custom object's events — read them (they live in the object's functions), remove the usages, then remove the child.`
+          ),
+        };
+      }
+      childObjects.removeObject(name);
+      messages.push(`removed child "${name}"`);
+    }
+  }
+
+  return { messages, failure: null };
+};
+
+/** The current dependency list of an extension, as plain names. */
+export const listByokExtensionDependencies = (
+  extension: any
+): Array<string> => {
+  const dependencies = extension.getAllDependencies();
+  const names: Array<string> = [];
+  for (let index = 0; index < dependencies.size(); index++) {
+    names.push(dependencies.at(index).getName());
+  }
+  return names;
+};
+
+/**
+ * Apply the dependency operations of change_extension_properties
+ * (Phase 11): dependencies_to_add / dependencies_to_remove.
+ */
+export const applyExtensionDependencyChanges = (
+  extension: any,
+  args: Object
+): {| messages: Array<string>, failure: ByokExtraToolResult | null |} => {
+  const messages: Array<string> = [];
+
+  if (Array.isArray(args.dependencies_to_add)) {
+    for (const dependency of args.dependencies_to_add) {
+      if (!dependency || typeof dependency !== 'object') continue;
+      const name =
+        typeof dependency.name === 'string' ? dependency.name.trim() : '';
+      if (!name) {
+        messages.push('skipped an unnamed dependency');
+        continue;
+      }
+      if (listByokExtensionDependencies(extension).includes(name)) {
+        messages.push(`"${name}" already exists (skipped)`);
+        continue;
+      }
+      const metadata = extension.addDependency();
+      metadata.setName(name);
+      metadata.setExportName(
+        typeof dependency.export_name === 'string' && dependency.export_name
+          ? dependency.export_name
+          : name
+      );
+      metadata.setVersion(
+        typeof dependency.version === 'string' && dependency.version
+          ? dependency.version
+          : '1.0.0'
+      );
+      metadata.setDependencyType(
+        dependency.dependency_type === 'npm' ? 'npm' : 'cordova'
+      );
+      messages.push(`added dependency "${name}"`);
+    }
+  }
+
+  if (Array.isArray(args.dependencies_to_remove)) {
+    for (const name of args.dependencies_to_remove) {
+      if (typeof name !== 'string') continue;
+      const dependencies = extension.getAllDependencies();
+      let index = -1;
+      for (let position = 0; position < dependencies.size(); position++) {
+        if (dependencies.at(position).getName() === name) {
+          index = position;
+          break;
+        }
+      }
+      if (index === -1) {
+        messages.push(`"${name}" not found (skipped)`);
+        continue;
+      }
+      extension.removeDependencyAt(index);
+      messages.push(`removed dependency "${name}"`);
+    }
+  }
+
+  return { messages, failure: null };
+};
+
 /** Map a function_type string to the gd.EventsFunction enum value. */
 const readFunctionType = (value: any): number | null => {
   switch (value) {
@@ -528,15 +778,23 @@ const changeExtensionPropertiesTool: ByokExtraTool = {
     if (appliedProperties.length > 0) {
       messages.push(`properties changed: ${appliedProperties.join(', ')}`);
     }
+
+    const dependencies = applyExtensionDependencyChanges(extension, args);
+    if (dependencies.failure) return dependencies.failure;
+    if (dependencies.messages.length > 0) {
+      messages.push(`dependencies: ${dependencies.messages.join(', ')}`);
+    }
+
     if (messages.length === 0) {
       return makeFailure(
-        'Nothing to change: pass new_name, changed_properties or delete_this_extension.'
+        'Nothing to change: pass new_name, changed_properties, dependencies_to_add/dependencies_to_remove or delete_this_extension.'
       );
     }
     return {
       output: {
         success: true,
         message: `Extension updated (${messages.join('; ')}).`,
+        dependencies: listByokExtensionDependencies(extension),
       },
       didModifyProject: true,
     };
@@ -679,9 +937,19 @@ const changeCustomObjectTool: ByokExtraTool = {
       messages.push(`properties: ${appliedProperties.join(', ')}`);
     }
 
+    const children = applyCustomObjectChildrenChanges(
+      project,
+      eventsBasedObject,
+      args
+    );
+    if (children.failure) return children.failure;
+    if (children.messages.length > 0) {
+      messages.push(`children: ${children.messages.join(', ')}`);
+    }
+
     if (messages.length === 0 && !fullName && !description && !defaultName) {
       return makeFailure(
-        'Nothing to change: pass new_name, full_name, description, default_name, changed_properties or delete_this_custom_object.'
+        'Nothing to change: pass new_name, full_name, description, default_name, changed_properties, children_to_add/children_to_remove or delete_this_custom_object.'
       );
     }
     gd.WholeProjectRefactorer.ensureObjectEventsFunctionsProperParameters(
@@ -1059,6 +1327,14 @@ const changeCustomFunctionTool: ByokExtraTool = {
       }
     }
 
+    const parameterMessages = applyFunctionParameterChanges(
+      eventsFunction,
+      args
+    );
+    if (parameterMessages.length > 0) {
+      messages.push(`parameters: ${parameterMessages.join(', ')}`);
+    }
+
     const eventScript = readOptionalString(args, 'event_script');
     if (eventScript) {
       const writeFailure = writeFunctionEventsFromScript(
@@ -1072,7 +1348,7 @@ const changeCustomFunctionTool: ByokExtraTool = {
 
     if (messages.length === 0) {
       return makeFailure(
-        'Nothing to change: pass new_name, changed_settings, event_script or delete_this_function.'
+        'Nothing to change: pass new_name, changed_settings, parameters_to_add, parameters_to_remove, parameters_to_move, event_script or delete_this_function.'
       );
     }
     markExtensionModified(extensionName, true);

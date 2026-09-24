@@ -563,3 +563,62 @@ real clients, real ports and real windows. **Prerequisite:** Task 1 done
 **Regression:** hosted AI and BYOK chat flows unaffected; the settings tab
 renders correctly in the web build (toggle disabled with the desktop-only
 explainer).
+
+## Task 13 — Phase 11 desktop QA: authoring reach (external sheets/layouts, effects, sprites, resources)
+
+*Filed by the Phase 11+12 implementation session (2026-09-24). Everything
+below needs the desktop app; the unit suites cover the headless paths.*
+
+- [ ] External events: `add_external_events` with `create_if_missing` +
+      `associated_scene`, then open the sheet in the project manager — the
+      events written by the agent are there; `read_external_events_source`
+      round-trips; an external-events editor open DURING a write shows the
+      changes after close/reopen (v1 limitation: no live redraw — recorded).
+- [ ] External layouts: `put_external_layout_instances` creates
+      `CoinField`, the layout editor shows the placed instances; a scene
+      event "Create objects from external layout" spawns them in a preview.
+- [ ] `list_effects` output vs the Effects editor list (same types); pick a
+      listed type through `change_scene_properties_layers_effects_groups`
+      and see the effect applied in the scene editor.
+- [ ] Sprites: `change_sprite_frames` on a real sprite (set_frame_image,
+      add_point, set_polygon_mask all_frames) — the sprite editor shows the
+      changes after reopen; no WASM crash after long op lists.
+- [ ] `import_project_resources`: a real URL download into the project
+      folder; an absolute-path copy with dedupe; `replace_existing`
+      retarget keeps object references working in a preview. Web build:
+      the desktop-only failure message.
+- [ ] Extension internals: parameters_to_add/move/remove on a function used
+      by events (references follow); children add/remove with the usage
+      guard; dependencies add/remove then check the export dialog's
+      dependency list.
+
+## Task 14 — Phase 12 desktop QA: discovery, runtime steering, palette, MCP prompts/resources
+
+*Filed per `Phase12.md` Appendix A.*
+
+- [ ] Catalog tools against the real network: `get_game_starter_summary`
+      lists real templates; a chosen slug drives `initialize_project`
+      end-to-end; `search_object_asset_store` for a known term returns
+      ranked results; `search_resource_store` → `import_project_resources`
+      → the sound plays in a preview.
+- [ ] `create_or_replace_object` with `search_terms` ("add an enemy")
+      installs a real asset in a BYOK chat (the old
+      unavailable-dependency failure is gone); required extensions install.
+- [ ] Command palette lists "Open Ask AI"; `Ctrl+Alt+A` opens the panel;
+      reassignment through the shortcuts preferences works; verify no clash
+      with the user's other shortcuts on the desktop build.
+- [ ] MCP Inspector: `prompts/list` + `prompts/get` expose the skill
+      library; `resources/list` + `resources/read` serve the notes and the
+      docs pages; capabilities advertise tools+prompts+resources; Claude
+      Code reads a skill prompt + the notes resource without any tool
+      call; Phase 10 behavior (gate, activity log, adapter) still green.
+- [ ] Runtime tools against a real preview: pause while playing (the game
+      freezes), `read_runtime_details` shows the paused state,
+      `profile_runtime` on a busy scene returns framesAverageMeasures;
+      the Debugger editor open concurrently still works and vice versa;
+      the profiler output path survives stop.
+- [ ] `stop_preview` actually closes the preview window (the
+      closeAllPreviews fix) — and note whether other preview windows close
+      too (accepted v1 scope: the BYOK one-preview rule).
+- [ ] Offline: catalog tools fail with the explicit offline message;
+      runtime tools fail typed when no BYOK preview runs.

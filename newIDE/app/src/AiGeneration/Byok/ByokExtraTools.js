@@ -5,6 +5,7 @@ import {
 } from './ByokLocalEventWriter';
 import { makeByokRuntimeTools } from './ByokRuntimeTools';
 import type { ByokRuntimeToolDeps } from './ByokRuntimeTools';
+import { getByokDebuggerTools } from './ByokDebuggerTools';
 // Importing the engine reference module also registers its always-on
 // cheat-sheet knowledge section.
 import { searchByokEngineReference } from './ByokEngineReference';
@@ -21,6 +22,10 @@ import {
 } from './ByokProjectNotes';
 import type { ByokSubAgentKind, ByokSubAgentRunResult } from './ByokSubAgents';
 import { getByokExtensionTools } from './ByokExtensionTools';
+import { getByokExternalSceneTools } from './ByokExternalSceneTools';
+import { getByokCatalogTools } from './ByokCatalogTools';
+import { getByokSpriteTools } from './ByokSpriteTools';
+import { getByokResourceTools } from './ByokResourceTools';
 import {
   getByokProjectSnapshot,
   listByokProjectSnapshots,
@@ -44,6 +49,10 @@ export type ByokExtraToolCollaborators = {|
   // mid-flight — see the getter injection in AskAiEditorContainer).
   getProject: () => any,
   onSceneEventsModifiedOutsideEditor: (changes: any) => void,
+  // Fired by tools that mutate objects directly (sprite frames): the same
+  // payload the registry tools send, so open editors redraw. Optional —
+  // hosts without it still apply the changes.
+  onObjectsModifiedOutsideEditor?: (changes: any) => void,
   // The perception tools' dependencies (screenshots, previews, the image
   // pipeline, single registry calls) — absent in environments without
   // them, where the tools answer with actionable failures.
@@ -382,6 +391,42 @@ const makeUpdateProjectNotesTool = (): ByokExtraTool => ({
 });
 
 /**
+ * read_project_notes (Phase 12): the read side of the per-project memory —
+ * the merged notes of the chat's project, the same content the MCP
+ * notes resource serves. update_project_notes stays the only writer.
+ */
+const makeReadProjectNotesTool = (): ByokExtraTool => ({
+  name: 'read_project_notes',
+  modifiesProject: false,
+  run: async (args, collaborators) => {
+    const identifier =
+      collaborators.getProjectNotesIdentifier &&
+      collaborators.getProjectNotesIdentifier();
+    if (!identifier) {
+      return {
+        output: {
+          success: false,
+          message: 'No project is open: there are no notes to read yet.',
+        },
+        didModifyProject: false,
+      };
+    }
+    const notes = await loadByokProjectNotes(identifier);
+    return {
+      output: {
+        success: true,
+        message:
+          notes.conventions || notes.inProgress || notes.decisions
+            ? 'The notes of this project.'
+            : 'The notes of this project are empty — nothing was recorded yet.',
+        notes,
+      },
+      didModifyProject: false,
+    };
+  },
+});
+
+/**
  * The sub-agent delegation tools (Phase 8.1): `run_explorer_agent` (the
  * scout — same name as the hosted tool, so models porting the habit work)
  * and `run_review_agent`. Both resolve here BEFORE the editor registry,
@@ -490,6 +535,7 @@ const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   makeSearchDocsTool(),
   makeReadDocTool(),
   makeUpdateProjectNotesTool(),
+  makeReadProjectNotesTool(),
   makeSubAgentTool('run_explorer_agent', 'scout'),
   makeSubAgentTool('run_review_agent', 'reviewer'),
   makeRestoreProjectPointTool(),
@@ -497,6 +543,21 @@ const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   // Events-based extension authoring (Phase 8.4), ported from the upstream
   // v18 branch and driving libGD directly.
   ...getByokExtensionTools(),
+  // External events & external layouts (Phase 11): dedicated tools over the
+  // same EventScript and instance pipelines the scene tools use.
+  ...getByokExternalSceneTools(),
+  // Catalogs (Phase 11): the effect-type catalog; grows in Phase 12 with the
+  // public starter/asset/resource store catalogs.
+  ...getByokCatalogTools(),
+  // Sprite internals (Phase 11): animations/directions/frames, points and
+  // collision masks of Sprite objects.
+  ...getByokSpriteTools(),
+  // Resource import/replace (Phase 11): URL / absolute path / in-project
+  // sources, desktop-only.
+  ...getByokResourceTools(),
+  // Debugger/profiler tools (Phase 12): pause, dump and profile the preview
+  // this chat launched — targeted, never cross-preview.
+  ...getByokDebuggerTools(),
 ];
 
 /** All the intercepted tools (a fresh read: the list may grow per phase). */
