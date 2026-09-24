@@ -19,14 +19,14 @@ means building a client-side orchestrator that reuses the existing tool registry
 types (`src\Utils\GDevelopServices\Generation.js`), while adding as little code
 as possible to existing files.
 
-The roadmap is `REVIEW/Phase1.md` → `REVIEW/Phase9.md`, worked strictly in
+The roadmap is `REVIEW/Phase1.md` → `REVIEW/Phase12.md`, worked strictly in
 order: each phase assumes the previous one's acceptance criteria (ACs) all
 pass. `REVIEW/report.md` is the original architecture survey;
 `REVIEW/AIflow.md` maps the AI prompt/tool flow as actually built.
 
 ## 2. Where the project stands — keep this section current
 
-Status as of 2026-09-23 (update at the end of every session):
+Status as of 2026-09-24 (update at the end of every session):
 
 - **Implemented** — Phases 1–7 committed (owner commits `0802d2d21e` and
   `e81697cbe6` on `master`): settings UI, client engine, Electron
@@ -66,8 +66,17 @@ Status as of 2026-09-23 (update at the end of every session):
   persistence (`ByokBenchmarkStore.js`), the notes-identifier live ref, the
   `Utils/Serializer.js` project-self-unserialization guard, and the
   duplicate `onOpenAskAi` Props key. QA Task 12 open (MCP desktop QA).
-- **Planned, not started:** nothing (Phases 1–10 all built; what remains is
-  the human QA list in `usertasks.md`).
+- **Planned, not started:** **Phase 11** (`Phase11.md`, planned 2026-09-24
+  — authoring reach: external events/layouts tools, effect catalog,
+  sprite-frame internals, resource import/replace, extension internals;
+  prompt → `byok-v7`) and **Phase 12** (`Phase12.md`, planned 2026-09-24 —
+  discovery/runtime/integration: starter summaries, local asset/resource
+  store search + seam wiring, command palette + shortcut, MCP
+  prompts/resources + read-notes, debugger/profiler tools; prompt →
+  `byok-v8`). Owner green-lit the 10-item audit backlog on 2026-09-24
+  (record in `usertasks.md`); D11-1…5 / D12-1…8 are answered at
+  implementation kickoff. After both: only the human QA list in
+  `usertasks.md`.
 
 - **Audits:** every 2026-09-21 audit B-finding is fixed. The remaining open
   findings are consolidated in `REVIEW/audit2209.md` (full detail) and triaged
@@ -81,7 +90,9 @@ Status as of 2026-09-23 (update at the end of every session):
 - **Owner decisions:** all 16 decisions of 2026-09-22 are **answered**
   (canonical record in `usertasks.md`; dispositions in the triage docs), as
   are the 5 Phase 10 decisions (D10-1…D10-5, answered 2026-09-23 by the
-  "implement this" order on the presented recommendations).
+  "implement this" order on the presented recommendations), as is the
+  2026-09-24 surface-audit backlog: the owner picked 10 of the audit's
+  unconnected candidates, planned as `Phase11.md` + `Phase12.md`.
   Every approved/queued item now has a committed phase home: the fixes
   batch is `Phase7.md` step 7.0 (D10, O1, O4, O5–O11, O13), F2's halves
   are `Phase7.md` step 7.1 + `Phase9.md` step 9.1, the owner's
@@ -265,7 +276,7 @@ and 2026-09-21 (Phases 5–9). If a line number, function name, or structure has
 shifted upstream:
 
 - Re-locate the equivalent spot yourself (search, don't guess).
-*Last updated: 2026-09-23.*
+*Last updated: 2026-09-24.*
   `file:line`.
 - Keep the *intent* of the step (the ACs), not the literal line numbers.
 
@@ -274,4 +285,4 @@ manual in the same session and say so in the worklog.
 
 ---
 
-*Last updated: 2026-09-23.*
+*Last updated: 2026-09-24.*

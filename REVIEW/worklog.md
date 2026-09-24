@@ -1703,3 +1703,130 @@ items (Phase 9 leftovers closed by implementation; the two Phase 8
 accepted limitations moved from `outofscoped.md` into `deferred.md` as
 by-design); one `usertasks.md` addition (QA Task 12 + the D10-1…D10-5
 answered record).
+
+---
+
+## 2026-09-23 (later) — Read-only audit: AI-connectable surfaces not yet connected
+
+**Date:** 2026-09-23 (second session block, same day).
+
+**Description of actions:** Verification sweep, ordered by the owner in chat:
+"verify if there are any surfaces left in the engine that could still be
+connected to AI and are currently not." Dispatched one wave of 5 read-only
+Explore subagents (hosted-AI call sites, UI entry points, tool-registry gap
+analysis, non-chat AI features, MCP coverage), then verified the two spots
+where subagent reports disagreed with each other directly against source
+(`ByokToolSchema.js` docblock + `BYOK_TOOL_NAMES`/`BYOK_ONLY_TOOL_NAMES`,
+`REVIEW/phase5-tool-decisions.md`). No code was changed. Findings delivered
+in chat: (A) hosted-only AI features deliberately not ported to BYOK — asset/
+resource store *discovery* (`search_object_asset_store`/`search_resource_store`,
+Generation.js:992/1046), `run_edit_agent`, `run_tests`, `get_game_starter_summary`
+— all recorded as deliberate exclusions in `REVIEW/phase5-tool-decisions.md`;
+BYOK-configured users still trigger two hosted calls by design
+(`AskAiEditorContainer.js:465` summaries fetch on tab activation,
+`AiRequestContext.js:1374` `fetchAiSettings` on mount). (B) Editor surfaces
+with no contextual AI entry point (Asset Store, Debugger/Profiler, Resources
+panel, extension editor, GameDashboard, project-properties/effects/variables
+dialogs, object editors, ProjectManager, Export/Share, In-app tutorial;
+command palette has no AI command/shortcut) — all 12 existing entry points
+funnel through `MainFrame/index.js:1105` `openAskAi` and are BYOK-covered.
+(C) Engine capabilities with zero AI tool coverage: external events/external
+layouts, audio import/replace, sprite-frame/animation/collision-mask/point
+editing, resource ops beyond rename/delete, object-type-specific authoring
+(particles, tile maps, 3D models, Spine, shape painter), effect-type
+discovery (no enumerate-metadata tool), extension-editor internals
+(custom-object children, post-creation parameter declarations), extension
+marketplace browse/updates, loading-screen/platform assets/export,
+leaderboards/analytics/monetization config, multiplayer lobby config, game
+i18n, storage inspection, debugger-only surfaces (profiler, live instance
+editing). (D) MCP covers the full advertised surface + `get_project_overview`
+(`Byok/Mcp/ByokMcpTools.js:72-91`); possible additions are MCP-native
+prompts/resources primitives for skills/notes/docs and a read-notes tool;
+sub-agent tools refuse gracefully over MCP by design. Candidate work items
+were presented in chat as a numbered decision list (owner preference); none
+filed into triage docs pending the owner's answer.
+
+**Bugs found:** none (read-only session). Two preliminary subagent misreads
+were caught by source verification before reporting: (1) a claim that BYOK
+users "lose event generation" — false, `add_scene_events`/`generate_events`
+are locally implemented (`Byok/ByokExtraTools.js:120` + `ByokLocalEventWriter`);
+the `ByokSeam.js:204` stub only covers the legacy hosted dependency; (2) a
+claim that the store-search stubs are advertised-then-fail in BYOK chats —
+false, they are excluded from `BYOK_TOOL_NAMES` (`ByokToolSchema.js:110-113`).
+
+**Issues found:** minor observations, no action taken: dead export
+`onSendByokNoopFeedback` (`AskAiEditorContainer.js:157`, never imported);
+`run_explorer_agent`/`run_review_agent` are advertised over MCP but always
+refuse there (host bag omits `runSubAgent`, `useByokChatSeam.js:678` —
+graceful, by design); `REVIEW/AIflow.md` BYOK sections are stale (describe
+the Phase-5 11-tool whitelist, pre-Phase-6; registry table itself matches
+code exactly).
+
+**Files worked on:** modified — `REVIEW/worklog.md` (this entry). No other
+file created or modified; the audit read only
+`newIDE/app/src/AiGeneration/**`, `newIDE/app/src/EditorFunctions/**`,
+`newIDE/app/src/MainFrame/**`, `newIDE/app/src/Utils/GDevelopServices/Generation.js`,
+and `REVIEW/phase5-tool-decisions.md` / `REVIEW/AIflow.md`.
+
+**Triage:** `no OOS` (candidate surfaces are unapproved scope, presented in
+chat for owner decision; entries would move to `outofscoped.md` only if
+green-lit), `no deferred`, `no UT`.
+
+---
+
+## 2026-09-24 — Planning session: Phase 11 + Phase 12 (audit backlog)
+
+**Date:** 2026-09-24.
+
+**Description of actions:** The owner green-lit 10 of the 2026-09-23 audit
+candidates ("plan them in Phase11 and Phase 12, more or less equal amount
+of work"). Dispatched one wave of 5 read-only feasibility surveys (asset/
+resource store search, starter-template data sources, debugger/profiler
+architecture, resource-import + sprite-internals machinery, effects
+metadata + external events/layouts + extension-editor internals), then
+wrote `REVIEW/Phase11.md` (authoring reach: external events/layouts tools,
+`list_effects`, sprite-frame internals, `import_project_resources`,
+extension children/parameters/dependencies; one behavior-preserving
+extraction of the instance-tool cores from `EditorFunctions\index.js` into
+`EditorFunctions\InstanceTools.js`; prompt → `byok-v7`, 48 → 56 tools) and
+`REVIEW/Phase12.md` (discovery/runtime/integration: local
+`get_game_starter_summary`, `search_object_asset_store`/
+`search_resource_store` over the auth-free public catalogs + wiring the
+`ByokSeam.js` search collaborators, command-palette entry + `Ctrl+Alt+A`,
+MCP `prompts`/`resources` + `read_project_notes`, debugger/profiler tools;
+prompt → `byok-v8`, 63 tools). The owner's item 4 (store discovery) was
+conditional on feasibility — verified possible (public catalogs are
+no-auth static CDN JSON; the install path already runs client-side), so it
+is planned with the verification recorded. Updated `AGENTS.md` §2 (status
+date, planned-not-started, owner-decisions line, roadmap line Phase1→12,
+last-updated footers) and recorded the green-light in `usertasks.md`
+("Phase 11/12 green-light — presented and answered 2026-09-24"). Phase docs
+carry the per-phase design decisions D11-1…D11-5 and D12-1…D12-8 with
+recommendations, to be answered at implementation kickoff (owner's
+established walkthrough pattern). No code changed.
+
+**Bugs found:** none (planning session; no code touched). One pre-existing
+quirk found by the debugger survey and folded into Phase 12 step 12.5:
+`ByokPreviewSession.js:251-253` `stop()` calls `closePreview()` without
+the window id `LocalPreviewLauncher.closePreview` expects.
+
+**Issues found:** feasibility notes recorded in the phase docs' design
+notes, in particular: the two IDE↔preview debugger gotchas (the renderer
+`sendMessageWithResponse` broadcasts to ALL connected previews — Phase 12
+tools must target the session's own `DebuggerId`; profiler stats are
+push-only on stop); the store-search replacement must NOT call the old AI
+endpoints (`createAssetSearch`/`createResourceSearch` need login — the
+plan uses the public catalogs instead); `get_game_starter_summary` is
+online-only (no bundled template catalog exists in the tree — consistent
+with the UI's own offline degradation).
+
+**Files worked on:** created — `REVIEW/Phase11.md`, `REVIEW/Phase12.md`;
+modified — `AGENTS.md`, `REVIEW/usertasks.md`, `REVIEW/worklog.md` (this
+entry), agent memory files (outside the repo). Surveys read only.
+
+**Triage:** `no OOS` (the green-lit items have phase homes now —
+`Phase11.md`/`Phase12.md` — so they do not sit in the backlog doc),
+`no deferred` (the unpicked audit candidates were already by-design in
+`deferred.md` or are listed in the new phases' §5 deferrals), `no UT` new
+QA tasks yet (desktop QA Tasks 13/14 get filed by their implementation
+sessions; `Phase12.md` Appendix A drafts the checklist).

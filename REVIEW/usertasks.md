@@ -481,6 +481,41 @@ They are all reversible constants (a default, a folder, a doc appendix).
    recommended** — dev-time wiring; the settings card copies a generic JSON
    config snippet.
 
+## Phase 11/12 green-light — presented and answered 2026-09-24
+
+The 2026-09-23 surface audit ended with a numbered candidate list in chat.
+On 2026-09-24 the owner picked ten items ("These seem to be the most
+alluring to implement. Please Plan them in Phase11 and Phase 12 to have
+more or less equal amount of work") — this approves them as scope with the
+following phase homes:
+
+1. `get_game_starter_summary` local summarizer (no-project templates) →
+   `Phase12.md` step 12.1.
+2. External events + external layouts tools → `Phase11.md` steps 11.2/11.3.
+3. Effect-catalog tool (`list_effects`) → `Phase11.md` step 11.4.
+4. Local store-discovery replacement — owner's "IF it's possible then
+   yes": verified possible on 2026-09-24 (the public asset/resource and
+   example catalogs are auth-free static JSON, no Generation API, and the
+   install paths already run client-side) → `Phase12.md` step 12.2.
+5. Command-palette entry + Ask-AI keyboard shortcut → `Phase12.md` step 12.3.
+6. + 10. MCP-native skills/prompts/notes primitives + a `read_project_notes`
+   tool (owner's items 6 and 10 are the same work) → `Phase12.md` step 12.4.
+7. Resource import/replace + sprite-internals tools → `Phase11.md` steps
+   11.5/11.6.
+8. Extension-editor internals (custom-object children, post-creation
+   parameter declarations, dependencies) → `Phase11.md` step 11.7.
+9. Debugger/profiler connection (against the BYOK-launched preview) →
+   `Phase12.md` step 12.5.
+
+Not picked, stays deferred: leaderboard/analytics/multiplayer/export
+tooling, image/audio generation, object-type-specific authoring
+(particles/tile maps/3D/Spine/shape painter), child-property editing after
+creation, dependency auto-resolution, live in-game instance editing — see
+`Phase11.md` §5 and `Phase12.md` §5. The per-phase design decisions
+(D11-1…D11-5 in `Phase11.md` §2, D12-1…D12-8 in `Phase12.md` §2) carry
+recommendations in the docs and are answered at implementation kickoff,
+per the established pattern.
+
 ## Task 12 — Phase 10 desktop QA: the GDevelop MCP server
 
 **Why you:** the MCP endpoint lives in the Electron main process and needs
