@@ -1,5 +1,6 @@
 // @flow
 import {
+  BYOK_CORE_TOOL_NAMES,
   BYOK_NO_PROJECT_TOOL_NAMES,
   BYOK_TOOL_NAMES,
   getByokAdvertisedToolNames,
@@ -87,7 +88,7 @@ describe('validateByokToolSchemas', () => {
     // the surface grows again.
     // The cap moved to 48 (Phase 8), 56 (Phase 11) then 62 (Phase 12) —
     // see the counting comment in ByokToolSchema.js.
-    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(62);
+    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(64);
     expect(BYOK_TOOL_NAMES.length).toBeGreaterThanOrEqual(30);
     expect(validateByokToolSchemas()).toEqual([]);
   });
@@ -170,18 +171,21 @@ describe('BYOK_TOOL_NAMES (the v4 whitelist)', () => {
 });
 
 describe('advertisement and dispatchability', () => {
-  it('advertises initialize_project only while no project is open', () => {
+  it('advertises the core set (+ no-project tools without a project) since 13.5', () => {
     const withProject = getByokAdvertisedToolNames({ hasOpenedProject: true });
     const withoutProject = getByokAdvertisedToolNames({
       hasOpenedProject: false,
     });
 
-    expect(withProject).toEqual(BYOK_TOOL_NAMES);
+    expect(withProject).toEqual(BYOK_CORE_TOOL_NAMES);
     expect(withoutProject).toEqual([
-      ...BYOK_TOOL_NAMES,
+      ...BYOK_CORE_TOOL_NAMES,
       ...BYOK_NO_PROJECT_TOOL_NAMES,
     ]);
     expect(withoutProject).toContain('initialize_project');
+    // The non-core catalog stays dispatchable, just not advertised.
+    expect(withProject).not.toContain('list_effects');
+    expect(getByokDispatchableToolNames()).toContain('list_effects');
   });
 
   it('dispatches the unadvertised generate_events alias too', () => {
@@ -433,6 +437,49 @@ describe('getByokToolSchemas', () => {
       'done',
       'voided',
     ]);
+  });
+
+  it('pins the Phase 11 extended-tool fields (the model discovers them here)', () => {
+    const findSchema = (name: string) => {
+      const schema = schemas.find(candidate => candidate.name === name);
+      if (!schema) throw new Error(`${name} schema not found`);
+      return schema;
+    };
+
+    // change_extension_properties: dependency management.
+    const extensionProperties = findSchema('change_extension_properties')
+      .parameters.properties;
+    expect(
+      Object.keys(extensionProperties.dependencies_to_add.items.properties)
+    ).toEqual(['name', 'export_name', 'version', 'dependency_type']);
+    expect(extensionProperties.dependencies_to_remove.items.type).toBe(
+      'string'
+    );
+
+    // change_custom_object: child management (with initial values).
+    const objectProperties = findSchema('change_custom_object').parameters
+      .properties;
+    const childItems = objectProperties.children_to_add.items.properties;
+    expect(Object.keys(childItems)).toEqual([
+      'name',
+      'object_type',
+      'initial_properties',
+    ]);
+    expect(Object.keys(childItems.initial_properties.items.properties)).toEqual(
+      ['name', 'value']
+    );
+    expect(objectProperties.children_to_remove.items.type).toBe('string');
+
+    // change_custom_function: parameter management (incl. type changes).
+    const functionProperties = findSchema('change_custom_function').parameters
+      .properties;
+    expect(
+      Object.keys(functionProperties.parameters_to_add.items.properties)
+    ).toEqual(['name', 'type', 'description']);
+    expect(functionProperties.parameters_to_remove.items.type).toBe('string');
+    expect(
+      Object.keys(functionProperties.parameters_to_move.items.properties)
+    ).toEqual(['name', 'to_index']);
   });
 });
 

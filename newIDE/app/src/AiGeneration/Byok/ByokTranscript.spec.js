@@ -551,3 +551,88 @@ describe('byokToolResultToFunctionCallOutput with images', () => {
     });
   });
 });
+
+describe('user message attached images (Phase 13.3)', () => {
+  const makeAttachedUserMessage = (
+    text: string,
+    imageIds: Array<string>
+  ): any => ({
+    type: 'message',
+    status: 'completed',
+    role: 'user',
+    content: [{ type: 'user_request', status: 'completed', text }],
+    images: imageIds,
+  });
+
+  const makeImageRegistry = () => {
+    const images: any = {
+      'img-1': {
+        id: 'img-1',
+        dataUrl: 'data:image/png;base64,AAA',
+        width: 512,
+        height: 512,
+        approxTokens: 334,
+      },
+    };
+    return (id: string) => images[id] || null;
+  };
+
+  it('replays as a multi-part user message with the image parts', () => {
+    const messages: Array<any> = byokMessagesForTranscriptItem(
+      makeAttachedUserMessage('What is on this picture?', ['img-1']),
+      {
+        imagesEnabled: true,
+        survivingImageIds: new Set(['img-1']),
+        getImage: makeImageRegistry(),
+      }
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe('user');
+    expect(Array.isArray(messages[0].content)).toBe(true);
+    expect(messages[0].content[0]).toEqual({
+      type: 'text',
+      text: 'What is on this picture?',
+    });
+    expect(messages[0].content[1]).toEqual({
+      type: 'image_url',
+      image_url: { url: 'data:image/png;base64,AAA' },
+    });
+  });
+
+  it('degrades to the plain text message when images are disabled', () => {
+    const messages: Array<any> = byokMessagesForTranscriptItem(
+      makeAttachedUserMessage('Describe it', ['img-1']),
+      {
+        imagesEnabled: false,
+        survivingImageIds: new Set(['img-1']),
+        getImage: makeImageRegistry(),
+      }
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(typeof messages[0].content).toBe('string');
+    expect(messages[0].content).toBe('Describe it');
+  });
+
+  it('counts toward the transcript image ids (the eviction rule)', () => {
+    const transcript: Array<AiRequestMessage> = [
+      makeAttachedUserMessage('Hello', ['img-1']),
+    ];
+    expect(getByokTranscriptImageIds(transcript)).toEqual(['img-1']);
+    expect(getByokSurvivingImageIds(transcript, 1)).toEqual(new Set(['img-1']));
+    expect(getByokSurvivingImageIds(transcript, 0)).toEqual(new Set());
+  });
+
+  it('a user message without images replays as plain text', () => {
+    const messages: Array<any> = byokMessagesForTranscriptItem({
+      type: 'message',
+      status: 'completed',
+      role: 'user',
+      content: [
+        { type: 'user_request', status: 'completed', text: 'Plain message' },
+      ],
+    });
+    expect(messages).toEqual([{ role: 'user', content: 'Plain message' }]);
+  });
+});

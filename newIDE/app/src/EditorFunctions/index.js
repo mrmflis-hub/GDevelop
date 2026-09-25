@@ -3416,6 +3416,11 @@ const put2dInstances: EditorFunction = {
     PixiResourcesLoader,
   }) => {
     const scene_name = extractRequiredString(args, 'scene_name');
+    // Extracted before the scene check (like the pre-11.1 code) so a call
+    // with an unknown scene AND a missing required arg still fails on the
+    // missing arg. putInstancesInContainer re-extracts them from args.
+    extractRequiredString(args, 'layer_name');
+    extractRequiredString(args, 'brush_kind');
     if (!project.hasLayoutNamed(scene_name)) {
       return makeSceneNotFoundFailure(project, scene_name);
     }

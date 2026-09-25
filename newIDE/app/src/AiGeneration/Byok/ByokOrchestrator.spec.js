@@ -1348,11 +1348,14 @@ describe('ByokOrchestrator: project creation and live getters (Phase 5)', () => 
       expect(
         secondCallOptions.tools.map((tool: any) => tool.function.name)
       ).not.toContain('initialize_project');
+      // The "no project" instructions swap out (13.5's task catalog
+      // mentions the starter summary in both states, by design — the
+      // section swap is the observable).
       expect(firstCallOptions.messages[0].content).toContain(
-        'get_game_starter_summary'
+        'No project is opened'
       );
       expect(secondCallOptions.messages[0].content).not.toContain(
-        'get_game_starter_summary'
+        'No project is opened'
       );
     } finally {
       createdProject.delete();
@@ -1921,5 +1924,37 @@ describe('ByokOrchestrator: images (Phase 6)', () => {
       expect(call.apiKey).toBe('sk-test');
       expect(call.options.model).toBe('test-model');
     });
+  });
+
+  it('attaches the picked image ids to the user message and its replay (Phase 13.3)', async () => {
+    const { registerByokImage, getByokImage } = require('./ByokImageContent');
+    const image = registerByokImage({
+      dataUrl: 'data:image/png;base64,QATTACH',
+      width: 64,
+      height: 64,
+    });
+    mockSendByokChatCompletion.mockResolvedValue(
+      makeResponse({ text: 'Got it!' })
+    );
+    const { orchestrator, aiRequest } = makeOrchestrator({});
+
+    await orchestrator.startNewChat('What is on this picture?', [image.id]);
+
+    const firstMessage: any = (aiRequest.output || [])[0];
+    expect(firstMessage.role).toBe('user');
+    expect(firstMessage.images).toEqual([image.id]);
+
+    // The replay materializes the image part for the model.
+    const sentOptions = mockSendByokChatCompletion.mock.calls[0][0].options;
+    const firstUserMessage = sentOptions.messages.find(
+      (message: any) => message.role === 'user'
+    );
+    expect(Array.isArray(firstUserMessage.content)).toBe(true);
+    expect(firstUserMessage.content).toEqual(
+      expect.arrayContaining([
+        { type: 'image_url', image_url: { url: image.dataUrl } },
+      ])
+    );
+    expect(getByokImage(image.id)).not.toBe(null);
   });
 });

@@ -477,13 +477,14 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
         function_name: 'DoThing',
         parameters_to_add: [
           { name: 'Label', type: 'string', description: 'A label.' },
-          { name: 'Speed', type: 'string' }, // duplicate: skipped
+          { name: 'Speed', type: 'expression' }, // duplicate: skipped
         ],
       },
       collaborators
     );
     expect(added.output.success).toBe(true);
     expect(added.output.message).toContain('parameters');
+    expect(added.output.message).toContain('already exists (skipped)');
 
     const eventsFunction = project
       .getEventsFunctionsExtension('Internals')
@@ -519,6 +520,108 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     expect(removed.output.success).toBe(true);
     expect(parameters.hasParameterNamed('Label')).toBe(false);
     expect(parameters.getParametersCount()).toBe(1);
+  });
+
+  it('changes an existing parameter type through the usage refactor', async () => {
+    const collaborators = makeCollaborators(project);
+    await makeExtensionWithFunction(collaborators);
+
+    // The same hook the extension editor triggers on a type change: the
+    // spy proves it is called with the function and the parameter, and
+    // that the temporary scoped containers are released afterwards.
+    const changeParameterType = jest.spyOn(
+      gd.WholeProjectRefactorer,
+      'changeParameterType'
+    );
+    // Count delete() on the wrappers this op creates (the established
+    // constructor-replacement pattern, see ByokSpriteTools.spec.js).
+    const originalObjectsContainer = gd.ObjectsContainer;
+    const containerFunction = originalObjectsContainer.Function;
+    let containerDeletes = 0;
+    const CountedObjectsContainer = function(): any {
+      const instance = new (originalObjectsContainer: any)(containerFunction);
+      const originalDelete = instance.delete.bind(instance);
+      instance.delete = () => {
+        containerDeletes += 1;
+        originalDelete();
+      };
+      return instance;
+    };
+    (gd: any).ObjectsContainer = CountedObjectsContainer;
+    const changed = await runTool(
+      'change_custom_function',
+      {
+        extension_name: 'Internals',
+        function_name: 'DoThing',
+        parameters_to_add: [{ name: 'Speed', type: 'sceneName' }],
+      },
+      collaborators
+    );
+    (gd: any).ObjectsContainer = originalObjectsContainer;
+    expect(changed.output.success).toBe(true);
+    expect(changed.output.message).toContain(
+      'changed the type of "Speed" to sceneName'
+    );
+    expect(changeParameterType).toHaveBeenCalledTimes(1);
+    const calledWith = changeParameterType.mock.calls[0];
+    expect(calledWith[0]).toBe(project);
+    expect(calledWith[4]).toBe('Speed');
+    // The parameter objects container passed to the refactorer is one of
+    // the temporary wrappers: it must have been deleted (freed).
+    expect(containerDeletes).toBe(1);
+    changeParameterType.mockRestore();
+
+    const parameters = project
+      .getEventsFunctionsExtension('Internals')
+      .getEventsFunctions()
+      .getEventsFunction('DoThing')
+      .getParameters();
+    expect(parameters.getParameter('Speed').getType()).toBe('sceneName');
+  });
+
+  it('changes a parameter type inside a custom behavior function', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension',
+      { extension_name: 'Internals' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_behavior',
+      { extension_name: 'Internals', custom_behavior_name: 'Magnet' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_function',
+      {
+        extension_name: 'Internals',
+        custom_behavior_name: 'Magnet',
+        function_name: 'DoThing',
+        function_type: 'Action',
+        parameters: [{ name: 'Force', type: 'expression' }],
+      },
+      collaborators
+    );
+
+    const changed = await runTool(
+      'change_custom_function',
+      {
+        extension_name: 'Internals',
+        custom_behavior_name: 'Magnet',
+        function_name: 'DoThing',
+        parameters_to_add: [{ name: 'Force', type: 'string' }],
+      },
+      collaborators
+    );
+    expect(changed.output.success).toBe(true);
+    const parameters = project
+      .getEventsFunctionsExtension('Internals')
+      .getEventsBasedBehaviors()
+      .get('Magnet')
+      .getEventsFunctions()
+      .getEventsFunction('DoThing')
+      .getParameters();
+    expect(parameters.getParameter('Force').getType()).toBe('string');
   });
 
   it('adds and removes custom-object children, with the usage guard', async () => {
@@ -626,6 +729,62 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
       "used by the custom object's events"
     );
     expect(eventsBasedObject.getObjects().hasObjectNamed('Icon')).toBe(true);
+  });
+
+  it('adds a child with initial property values, reporting unknown ones', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension',
+      { extension_name: 'Internals' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_object',
+      { extension_name: 'Internals', custom_object_name: 'Scoreboard' },
+      collaborators
+    );
+    // Declare a property on the custom object type: children of this type
+    // can then receive initial values for it.
+    await runTool(
+      'change_custom_object',
+      {
+        extension_name: 'Internals',
+        custom_object_name: 'Scoreboard',
+        changed_properties: [{ property_name: 'Level', new_value: '1' }],
+      },
+      collaborators
+    );
+
+    const added = await runTool(
+      'change_custom_object',
+      {
+        extension_name: 'Internals',
+        custom_object_name: 'Scoreboard',
+        children_to_add: [
+          {
+            name: 'Board',
+            object_type: 'Internals::Scoreboard',
+            initial_properties: [
+              { name: 'Level', value: '3' },
+              { name: 'not_a_property', value: 'x' },
+            ],
+          },
+        ],
+      },
+      collaborators
+    );
+    expect(added.output.success).toBe(true);
+    expect(added.output.message).toContain('added child "Board"');
+    // The known property applies; the unknown one is reported, not fatal.
+    expect(added.output.message).toContain('not_a_property');
+
+    const eventsBasedObject = project
+      .getEventsFunctionsExtension('Internals')
+      .getEventsBasedObjects()
+      .get('Scoreboard');
+    const board = eventsBasedObject.getObjects().getObject('Board');
+    const properties = board.getConfiguration().getProperties();
+    expect(properties.get('Level').getValue()).toBe('3');
   });
 
   it('adds and removes extension dependencies, always listing them', async () => {

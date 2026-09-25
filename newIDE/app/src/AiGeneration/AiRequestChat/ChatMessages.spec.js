@@ -327,3 +327,82 @@ describe('ChatMessages: tool result images (O4)', () => {
     expect(JSON.stringify(component.toJSON())).toContain('Here is your game!');
   });
 });
+
+describe('ChatMessages: user message attached images (Phase 13.3)', () => {
+  it('renders the images attached to a user message, after the message', () => {
+    const image = registerByokImage({
+      dataUrl: 'data:image/png;base64,fakeattachedbytes',
+      width: 280,
+      height: 280,
+    });
+    const aiRequest = {
+      id: 'byok-test-chat',
+      mode: 'orchestrator',
+      status: 'ready',
+      error: null,
+      gameId: null,
+      output: [
+        {
+          type: 'message',
+          status: 'completed',
+          role: 'user',
+          content: [
+            {
+              type: 'user_request',
+              status: 'completed',
+              text: 'What is on this picture?',
+            },
+          ],
+          images: [image.id],
+        },
+      ],
+    };
+
+    const component = renderChat({
+      aiRequest,
+      getToolResultImage: getByokImage,
+    });
+
+    const imageElements = component.root.findAll(
+      element =>
+        element.type === 'img' &&
+        element.props.alt === 'Attachment sent with the message'
+    );
+    expect(imageElements).toHaveLength(1);
+    expect(imageElements[0].props.src).toBe(image.dataUrl);
+  });
+
+  it('renders nothing for attachments without the lookup prop (hosted side)', () => {
+    const aiRequest = {
+      id: 'server-test-chat',
+      mode: 'orchestrator',
+      status: 'ready',
+      error: null,
+      gameId: null,
+      output: [
+        {
+          type: 'message',
+          status: 'completed',
+          role: 'user',
+          content: [
+            {
+              type: 'user_request',
+              status: 'completed',
+              text: 'Hello',
+            },
+          ],
+          images: ['img-only-byok-would-know'],
+        },
+      ],
+    };
+
+    const component = renderChat({ aiRequest });
+    expect(
+      component.root.findAll(
+        element =>
+          element.type === 'img' &&
+          element.props.alt === 'Attachment sent with the message'
+      )
+    ).toHaveLength(0);
+  });
+});

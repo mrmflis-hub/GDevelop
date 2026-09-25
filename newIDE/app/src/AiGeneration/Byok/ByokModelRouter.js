@@ -5,6 +5,7 @@ import {
   type ByokProvider,
   type ByokReasoningEffort,
   type ByokSettings,
+  getByokProviderModelSettings,
   isByokReasoningEffort,
 } from './ByokTypes';
 
@@ -113,6 +114,7 @@ export const buildLegacyMigrationProviders = (
       name: 'Provider 1',
       endpointUrl: settings.endpointUrl,
       keyRef: '',
+      modelSettings: [],
     },
   ];
 };
@@ -169,6 +171,39 @@ export type ByokResolvedTarget = {|
   source: 'chat-override' | 'policy' | 'global',
 |};
 
+/**
+ * Overlay the provider's per-model advanced settings (Phase 13.4) on a
+ * resolved target: a temperature/max-tokens value set for THIS provider's
+ * model wins over the profile-level value; null keeps whatever was already
+ * resolved. Pure helper of the resolvers below.
+ */
+const applyProviderModelSettings = (
+  settings: ByokSettings,
+  target: ByokResolvedTarget
+): ByokResolvedTarget => {
+  if (!target.modelName) return target;
+  const provider = settings.providers.find(
+    entry => entry.id === target.providerId
+  );
+  if (!provider) return target;
+  const modelSettings = getByokProviderModelSettings(
+    provider,
+    target.modelName
+  );
+  if (!modelSettings) return target;
+  return {
+    ...target,
+    temperature:
+      modelSettings.temperature !== null
+        ? modelSettings.temperature
+        : target.temperature,
+    maxTokens:
+      modelSettings.maxTokens !== null
+        ? modelSettings.maxTokens
+        : target.maxTokens,
+  };
+};
+
 const targetFromProfile = (
   settings: ByokSettings,
   profile: ByokModelProfile,
@@ -177,14 +212,14 @@ const targetFromProfile = (
   const provider = settings.providers.find(
     entry => entry.id === profile.providerId
   );
-  return {
+  return applyProviderModelSettings(settings, {
     providerId: provider ? provider.id : '',
     endpointUrl: provider ? provider.endpointUrl : settings.endpointUrl,
     modelName: profile.modelName,
     temperature: profile.temperature,
     maxTokens: profile.maxTokens,
     source,
-  };
+  });
 };
 
 const globalTarget = (settings: ByokSettings): ByokResolvedTarget => ({
@@ -219,14 +254,14 @@ export const resolveByokModelTarget = ({
     const provider = settings.providers.find(
       entry => entry.id === chatSelection.providerId
     );
-    return {
+    return applyProviderModelSettings(settings, {
       providerId: provider ? provider.id : '',
       endpointUrl: provider ? provider.endpointUrl : settings.endpointUrl,
       modelName: chatSelection.modelName,
       temperature: profile.temperature,
       maxTokens: profile.maxTokens,
       source: 'chat-override',
-    };
+    });
   }
 
   const routed = resolveByokRoutingProfile(settings, callKind);
@@ -338,4 +373,36 @@ export const listByokModelChoices = ({
     uniqueChoices.push(choice);
   }
   return uniqueChoices.sort((a, b) => (a.label < b.label ? -1 : 1));
+};
+
+/**
+ * The Phase 13.4 routing-pair migration: profiles saved by the older
+ * settings UI carry a model name but no provider id — the model then went
+ * to the global endpoint. With provider+model pairs, such a profile falls
+ * back to the first registered provider (the legacy single endpoint, once
+ * migrated). Returns a settings copy with the profiles filled in, or null
+ * when there was nothing to migrate (pure; the caller decides to persist).
+ */
+export const migrateByokRoutingProfiles = (
+  settings: ByokSettings
+): ByokSettings | null => {
+  if (settings.providers.length === 0) return null;
+  const fallbackProviderId = settings.providers[0].id;
+  let didChange = false;
+  const migrateProfile = (profile: ByokModelProfile): ByokModelProfile => {
+    if (!profile.modelName.trim()) return profile;
+    if (
+      profile.providerId &&
+      settings.providers.some(provider => provider.id === profile.providerId)
+    ) {
+      return profile;
+    }
+    if (profile.providerId === fallbackProviderId) return profile;
+    didChange = true;
+    return { ...profile, providerId: fallbackProviderId };
+  };
+  const fastProfile = migrateProfile(settings.fastProfile);
+  const strongProfile = migrateProfile(settings.strongProfile);
+  if (!didChange) return null;
+  return { ...settings, fastProfile, strongProfile };
 };

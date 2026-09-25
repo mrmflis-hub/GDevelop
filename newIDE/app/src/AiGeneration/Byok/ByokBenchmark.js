@@ -4,6 +4,10 @@ import {
   type ByokChatCompletionResponse,
 } from './ByokTypes';
 import { parseByokEventScript } from './ByokEventScriptParser';
+import {
+  getByokToolSchemasForNames,
+  toOpenAiToolsFormat,
+} from './ByokToolSchema';
 
 /**
  * The built-in mini-benchmark (Phase 9.5): four fixed tasks a model must
@@ -17,6 +21,15 @@ import { parseByokEventScript } from './ByokEventScriptParser';
  * builder (which reads it back into a plain shape) are injected, so tests
  * run on fakes and the settings tab wires the real ones.
  */
+
+/**
+ * The `max_tokens` sent with every benchmark call. The tasks are small and
+ * the loop is round-capped, but an uncapped reasoning model can still burn
+ * an enormous token budget on a trivial prompt — the cap keeps a benchmark
+ * run a bounded expense (QA 2026-09-24: a four-task run once cost ~1M
+ * tokens with no tools sent and no cap).
+ */
+export const BYOK_BENCHMARK_MAX_OUTPUT_TOKENS = 4096;
 
 /**
  * A 64×64 PNG with four colored quadrants (red top-left, green top-right,
@@ -202,6 +215,9 @@ export const scoreByokBenchmarkTask = (
 
 export type ByokBenchmarkSendCompletion = ({|
   messages: Array<ByokChatMessage>,
+  // The OpenAI-format `tools` array of the running task (the schemas of its
+  // `toolNames`). Empty for tasks without tools (the vision task).
+  tools: Array<Object>,
 |}) => Promise<ByokChatCompletionResponse>;
 
 export type ByokBenchmarkExecutor = ({|
@@ -269,6 +285,11 @@ export const runByokBenchmarkTask = async ({
   let toolCallCount = 0;
   let totalTokens = 0;
   let answerText = '';
+  // The task's own tools, in the OpenAI format the endpoint expects. Without
+  // them the model cannot emit tool calls at all — it can only talk about
+  // the work (QA 2026-09-24: every tool task failed for exactly that
+  // reason), so the schemas travel with each request.
+  const tools = toOpenAiToolsFormat(getByokToolSchemasForNames(task.toolNames));
   const messages: Array<ByokChatMessage> = [
     {
       role: 'system',
@@ -280,7 +301,7 @@ export const runByokBenchmarkTask = async ({
 
   try {
     for (rounds = 1; rounds <= maxRounds; rounds++) {
-      const response = await sendCompletion({ messages });
+      const response = await sendCompletion({ messages, tools });
       totalTokens += usageTotalOf(response);
       const toolCalls = extractToolCalls(response);
       answerText = extractAnswerText(response);

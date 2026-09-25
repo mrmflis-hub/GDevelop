@@ -21,13 +21,18 @@ const ENDPOINT_ERROR_MESSAGE =
   'The GDevelop MCP endpoint is unreachable — is GDevelop running with the MCP server enabled?';
 const PARSE_ERROR_CODE = -32700;
 
+// Electron's userData folder follows the app's productName, "GDevelop 5"
+// (with the space) — not the npm package name "gdevelop". Getting this
+// wrong silently disables the discovery-file wiring for every client.
+const APP_DATA_FOLDER_NAME = 'GDevelop 5';
+
 const resolveDefaultDiscoveryPath = (platform, homeDir) => {
   if (platform === 'win32') {
     return path.join(
       homeDir,
       'AppData',
       'Roaming',
-      'GDevelop',
+      APP_DATA_FOLDER_NAME,
       DISCOVERY_FILE_NAME
     );
   }
@@ -36,11 +41,16 @@ const resolveDefaultDiscoveryPath = (platform, homeDir) => {
       homeDir,
       'Library',
       'Application Support',
-      'GDevelop',
+      APP_DATA_FOLDER_NAME,
       DISCOVERY_FILE_NAME
     );
   }
-  return path.join(homeDir, '.config', 'GDevelop', DISCOVERY_FILE_NAME);
+  return path.join(
+    homeDir,
+    '.config',
+    APP_DATA_FOLDER_NAME,
+    DISCOVERY_FILE_NAME
+  );
 };
 
 const parseCliArgs = argv => {

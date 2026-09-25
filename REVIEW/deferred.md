@@ -181,3 +181,121 @@ them.
   the packaged-adapter story in a packaging phase.
 - **Standing proposal to the owner:** keep v1 tools-only; revisit the list
   above only after real client use.
+
+
+## 2026-09-24 — Owner QA round 1 follow-ups (found via the durable chat transcript)
+
+### 1. Tool-schema descriptions teach the hosted placeholder syntax
+
+- **What:** several BYOK tool descriptions (ported from the hosted v15
+  harness vocabulary) include or imply the `<parameter name="x">value</parameter>`
+  placeholder convention. A weak model (mimo-v2.6-flash via cometAPI)
+  copied that literal syntax into an argument VALUE in a real chat
+  (`create_scene` got `background_color: "<parameter name=\"background_color\">#1c3b1c"`),
+  producing silent garbage where the handler does not strictly validate.
+- **Why deferred:** the fix is a sweep over ~62 schema descriptions (and a
+  decision on how much hosted-harness phrasing to keep), mid-QA; the
+  strong models ignore it and weak models also fail on many other axes.
+- **When to tackle:** the next prompt/schema-quality pass (a natural fit
+  with a future `byok-v9` prompt revision).
+- **Standing proposal to the owner:** rewrite schema descriptions to plain
+  JSON-argument language (no placeholder syntax) in a dedicated pass, and
+  add strict type validation on stringly-typed style arguments
+  (colors, positions) so garbage fails loudly.
+
+### 2. Gameplay-test harness API is under-documented for the model
+
+- **What:** in the QA chat the model wrote `stack.replace("Forest")` — a
+  guessed API that does not exist in the gameplay-test harness — and
+  burned a test round on the TypeError.
+- **Why deferred:** the harness API surface (getSceneStack, stepFrames,
+  getObjects, assert, screenshots...) needs a concise reference either in
+  the `run_gameplay_test` tool description or the knowledge/skills
+  library; doing it well deserves its own step, not a mid-QA patch.
+- **When to tackle:** next prompt/knowledge pass (with item 1).
+- **Standing proposal to the owner:** add a compact harness-API cheat
+  sheet to the tool description and a knowledge section example.
+
+### 3. Hosted `ai-request-summary` refresh runs while a BYOK chat is on screen
+
+- **What:** with the Ask AI panel open, `AiRequestContext` keeps fetching
+  `GET /generation/ai-request-summary` (hosted chat list). During QA this
+  read as "AskAI routes through GDevelop completions" in the network tab.
+  It is a list refresh, not a model call, and BYOK chats never appear in it.
+- **Why deferred:** upstream behavior in a shared file; suppressing it
+  when BYOK is enabled would also freeze the list of the owner's existing
+  HOSTED chats (still shown in the history panel). Any change is a UX
+  product call.
+- **When to tackle:** only if the owner wants a cleaner BYOK story
+  (e.g. label the history sections "GDevelop AI" vs "Your endpoint (BYOK)"
+  or pause the refresh while a BYOK chat is selected).
+- **Standing proposal to the owner:** leave the polling; optionally add
+  the history-section labels in a polish pass.
+
+## 2026-09-24 — Accepted limitation + polish candidates (from QA session 5, CometAPI desktop QA)
+
+### OpenAI-style models that reject `tools` + `reasoning_effort` in chat/completions (gpt-6-luna on CometAPI)
+
+- **What:** on `api.cometapi.com/v1`, `gpt-6-luna` answers every
+  chat/completions call that carries `tools` with `invalid_request_error`
+  ("Function tools with reasoning_effort are not supported for gpt-6-luna
+  … use /v1/responses or set reasoning_effort to 'none'"). The gateway
+  forces a non-none default effort even when the client omits the
+  parameter, so BYOK (which sends `reasoning_effort` only as
+  low/medium/high, and never `none`) cannot use such models for agentic
+  chats at all. Verified by curl: the identical request with
+  `"reasoning_effort":"none"` succeeds.
+- **Why deferred:** it is a per-endpoint gateway behavior, not a BYOK bug;
+  the general fix is a capability-probe extension ("on 400 naming
+  reasoning_effort, remember to send `none` instead of dropping it") which
+  touches `ByokClient.js` degradation logic and the settings effort
+  dropdown (add a "none/auto" option).
+- **When to tackle:** next robustness pass on `ByokClient` degradation.
+- **Standing proposal to the owner:** extend the existing
+  reasoning-effort degradation to fall back to `reasoning_effort: "none"`
+  for models whose 400 names the parameter, and expose "none" in the
+  effort dropdown.
+
+### glm-5.3-flash on CometAPI returns 200 with an unusable body after very large tool outputs
+
+- **What:** after the `get_game_starter_summary` output (the full 286-entry
+  catalog, ~100 KB) is in the conversation, every subsequent glm-5.3-flash
+  request returns HTTP 200 with a ~2 kB body the orchestrator cannot use;
+  the chat dies with the "unknown" error classification and retries fail
+  identically (including the compaction call, so a poisoned chat cannot
+  self-compact). Deterministic across two sessions and a retry; curl
+  confirms the same 200-with-error envelope for oversized inputs.
+- **Why deferred:** endpoint-side behavior; BYOK already surfaces the
+  error row, keeps the work, does not count the failed request, and offers
+  Retry. A client-side mitigation (paging the starter-catalog output)
+  would change a Phase 12 tool contract for one gateway's bug.
+- **When to tackle:** if CometAPI fixes their envelope, nothing to do;
+  otherwise consider capping `get_game_starter_summary` output size in a
+  Phase 12 polish pass.
+- **Standing proposal to the owner:** accept as an endpoint limitation;
+  prefer gpt-6-class or mimo models with endpoints that handle large
+  tool outputs, or self-host.
+
+---
+
+## Deferred 2026-09-25 (Phase 13 session)
+
+- **Auto-rebuild on RAG backend switch.** The RAG tab's backend dropdown
+  invalidates the index (the manifest records the backend) but does not
+  automatically start the rebuild/upload the phase text describes — the
+  user clicks "Rebuild index". *Why deferred:* the rebuild downloads/loads
+  the embedder and can take minutes; auto-triggering a long-running,
+  token-free but battery-heavy job from a dropdown felt worse than one
+  explicit click, and the consent dialog (D13-9) already gates the button.
+  *When to tackle:* a Phase 13 polish pass if the owner prefers the
+  automatic behavior. *Standing proposal:* keep the explicit rebuild; add
+  a "rebuild needed" hint on the status card (one line).
+- **A real-MiniLM evaluation run of `search_knowledge`.** The shipped eval
+  (24 queries, ≥70% top-3) runs with the deterministic hashing embedder so
+  CI never downloads a model; the real MiniLM's ranking is expected to be
+  strictly better but was not measured (needs the ~25 MB download — a
+  desktop QA item, `usertasks.md` Task 15). *Why deferred:* CI must stay
+  offline (D13-9 consent). *When to tackle:* with the desktop QA pass.
+- **`search_knowledge` over MCP, speech/audio attachments, multi-file
+  project upload** — already listed as explicitly deferred by Phase 13 §5;
+  recorded here so the deferral survives the phase doc.

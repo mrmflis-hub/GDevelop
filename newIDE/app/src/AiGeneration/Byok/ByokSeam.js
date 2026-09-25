@@ -8,6 +8,7 @@ import {
   type ByokSettings,
   getByokSettings,
   isByokFullyConfigured,
+  BYOK_TOOLS_VERSION,
 } from './ByokTypes';
 
 /**
@@ -199,7 +200,10 @@ export const createByokEditorFunctionCallExecutor = (
         i18n: deps.i18n,
         editorCallbacks: deps.editorCallbacks,
         toolOptions: null,
-        toolsVersion: null,
+        // The BYOK agent runs script batches (run_script), like the hosted
+        // v15 orchestrator: an idempotent no-op is a success (it must not
+        // kill the rest of a script). Null would mean pre-v12 semantics.
+        toolsVersion: BYOK_TOOLS_VERSION,
         functionCalls,
         relatedAiRequestId: context.aiRequestId,
         getRelatedAiRequestLastMessages:

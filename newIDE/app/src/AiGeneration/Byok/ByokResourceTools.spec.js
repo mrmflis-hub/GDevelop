@@ -262,6 +262,61 @@ describe('ByokResourceTools', () => {
       expect(results[0].error).toContain('outside the project folder');
     });
 
+    it('refuses a sibling folder whose name extends the project folder name', async () => {
+      // "/projects/game2/x.png" must NOT count as inside "/projects/game"
+      // (the substring check the upstream helper uses would accept it).
+      const sibling = path.resolve(PROJECT_FOLDER, '..', 'game2', 'x.png');
+      const { deps } = makeDeps(makeFakeFs([sibling]));
+
+      const results = await importByokProjectResources({
+        project,
+        entries: [{ source: '../game2/x.png' }],
+        replaceExisting: false,
+        deps,
+      });
+
+      expect(results[0].status).toBe('failed');
+      expect(results[0].error).toContain('outside the project folder');
+    });
+
+    it('registers the font, video and json kinds end to end', async () => {
+      const fs = makeFakeFs([
+        path.join(PROJECT_FOLDER, 'main.ttf'),
+        path.join(PROJECT_FOLDER, 'cutscene.mp4'),
+        path.join(PROJECT_FOLDER, 'levels.json'),
+      ]);
+      const { deps } = makeDeps(fs);
+
+      const results = await importByokProjectResources({
+        project,
+        entries: [
+          { source: 'main.ttf' },
+          { source: 'cutscene.mp4' },
+          { source: 'levels.json' },
+        ],
+        replaceExisting: false,
+        deps,
+      });
+
+      expect(results.map(result => result.status)).toEqual([
+        'registered',
+        'registered',
+        'registered',
+      ]);
+      expect(results.map(result => result.kind)).toEqual([
+        'font',
+        'video',
+        'json',
+      ]);
+      const manager = project.getResourcesManager();
+      expect(manager.getResource('main.ttf').getFile()).toBe('main.ttf');
+      expect(manager.getResource('cutscene.mp4').getFile()).toBe(
+        'cutscene.mp4'
+      );
+      expect(manager.getResource('levels.json').getFile()).toBe('levels.json');
+      expect(fs.copies).toEqual([]);
+    });
+
     it('fails an entry with an unknown kind and keeps going', async () => {
       const { deps } = makeDeps(
         makeFakeFs([path.join(PROJECT_FOLDER, 'ok.png')])

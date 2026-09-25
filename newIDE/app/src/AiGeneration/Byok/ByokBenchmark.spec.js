@@ -203,6 +203,48 @@ describe('ByokBenchmark: the runner', () => {
     expect(result.totalTokens).toBe(30);
   });
 
+  it('sends the task tool schemas with every request (QA 2026-09-24 regression)', async () => {
+    const seenTools: Array<any> = [];
+    const result = await runByokBenchmarkTask({
+      task:
+        getByokBenchmarkTask('write-event-batch') || BYOK_BENCHMARK_TASKS[1],
+      scratchProject: {},
+      sendCompletion: async ({ tools }: any): Promise<any> => {
+        seenTools.push(tools);
+        return {
+          choices: [{ message: { role: 'assistant', content: 'Done.' } }],
+        };
+      },
+      executeToolCalls: makeExecutor(),
+      snapshotProject: () => goodSnapshot(),
+    });
+    // One round: the plain answer ends the loop — but the schema of the
+    // task's tool traveled with the request, so the model CAN call it.
+    expect(seenTools.length).toBe(1);
+    expect(seenTools[0].map(tool => tool.function.name)).toEqual([
+      'add_scene_events',
+    ]);
+    expect(seenTools[0][0].type).toBe('function');
+    expect(result.rounds).toBe(1);
+  });
+
+  it('sends no tools for the task that needs none', async () => {
+    let seenTools: any = null;
+    await runByokBenchmarkTask({
+      task: getByokBenchmarkTask('read-screenshot') || BYOK_BENCHMARK_TASKS[3],
+      scratchProject: {},
+      sendCompletion: async ({ tools }: any): Promise<any> => {
+        seenTools = tools;
+        return {
+          choices: [{ message: { role: 'assistant', content: 'green' } }],
+        };
+      },
+      executeToolCalls: makeExecutor(),
+      snapshotProject: () => goodSnapshot(),
+    });
+    expect(seenTools).toEqual([]);
+  });
+
   it('reports a failing task with the scorer reason and never throws', async () => {
     const result = await runByokBenchmarkTask({
       task:

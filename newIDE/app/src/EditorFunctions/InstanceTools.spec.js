@@ -3,12 +3,17 @@ import {
   describeInstancesInContainer,
   extractRequiredString,
   getLayerNameForMessage,
+  getOccupiedSpaceDescription,
+  INSTANCE_POSITION_SEMANTICS_MESSAGE,
+  injectObjectSizeInfo,
   iterateOnInstances,
   makeGenericFailure,
   makeWrongObjectInstanceIdsFailure,
   putInstancesInContainer,
 } from './InstanceTools';
 import { makeFakeLaunchFunctionOptionsWithProject } from './TestHelpers';
+import type { ObjectSizeInfo } from './Utils';
+import type { EditorFunctionGenericOutput } from './index';
 
 const gd: libGDevelop = global.gd;
 
@@ -92,6 +97,91 @@ describe('InstanceTools', () => {
     it('names the base layer by its real (empty) name', () => {
       expect(getLayerNameForMessage('')).toBe('the base layer ("")');
       expect(getLayerNameForMessage('UI')).toBe('layer "UI"');
+    });
+  });
+
+  describe('getOccupiedSpaceDescription', () => {
+    it('describes the space from the position and size (origin at the min corner)', () => {
+      expect(getOccupiedSpaceDescription([10, 20], [32, 32], null)).toBe(
+        'X 10 to 42, Y 20 to 52'
+      );
+    });
+
+    it('shifts the min corner by the origin, scaled to the actual size', () => {
+      const objectSizeInfo: ObjectSizeInfo = {
+        width: 64,
+        height: 64,
+        depth: null,
+        originX: 16,
+        originY: 32,
+        originZ: null,
+        centerX: null,
+        centerY: null,
+        centerZ: null,
+      };
+      // The origin (16;32 at the default 64x64 size) scales to 8;16 for a
+      // 32x32 instance, so the occupied space starts before the position.
+      expect(
+        getOccupiedSpaceDescription([10, 20], [32, 32], objectSizeInfo)
+      ).toBe('X 2 to 34, Y 4 to 36');
+    });
+  });
+
+  describe('injectObjectSizeInfo', () => {
+    const makeSizeInfo = (width: number | null): ObjectSizeInfo => ({
+      width,
+      height: width,
+      depth: null,
+      originX: 0,
+      originY: 0,
+      originZ: null,
+      centerX: null,
+      centerY: null,
+      centerZ: null,
+    });
+
+    it('attaches the size info and hints about objects without a known size', () => {
+      const output: EditorFunctionGenericOutput = {
+        success: true,
+        message: 'Done.',
+      };
+      const knownSize = makeSizeInfo(32);
+      const unknownSize = makeSizeInfo(null);
+
+      // The enriched output carries the optional fields the injection set.
+      const result: any = injectObjectSizeInfo(output, {
+        Player: knownSize,
+        Score: unknownSize,
+      });
+      expect(result.objectSizeInfo.Player).toBe(knownSize);
+      expect(result.hints).toHaveLength(1);
+      expect(result.hints[0].code).toBe('no-intrinsic-size');
+      expect(result.hints[0].objectNames).toEqual(['Score']);
+    });
+
+    it('keeps hints a previous injection added', () => {
+      const unknownSize = makeSizeInfo(null);
+      const emptyOutput: EditorFunctionGenericOutput = {
+        success: true,
+        message: '',
+      };
+      const result: any = injectObjectSizeInfo(
+        injectObjectSizeInfo(emptyOutput, { Score: unknownSize }),
+        { Timer: unknownSize }
+      );
+      expect(result.hints).toHaveLength(2);
+      expect(result.hints[1].objectNames).toEqual(['Timer']);
+    });
+  });
+
+  describe('INSTANCE_POSITION_SEMANTICS_MESSAGE', () => {
+    it('explains the origin-based positioning', () => {
+      expect(INSTANCE_POSITION_SEMANTICS_MESSAGE).toContain(
+        'origin, NOT its center'
+      );
+      expect(INSTANCE_POSITION_SEMANTICS_MESSAGE).toContain(
+        'center an instance'
+      );
     });
   });
 

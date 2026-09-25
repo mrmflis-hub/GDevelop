@@ -18,6 +18,10 @@ import {
   DEFAULT_BYOK_SETTINGS,
   type ByokSettings,
 } from '../../AiGeneration/Byok/ByokTypes';
+import {
+  DEFAULT_BYOK_RAG_SETTINGS,
+  type ByokRagSettings,
+} from '../../AiGeneration/Byok/Rag/ByokRagTypes';
 
 const electron = optionalRequire('electron');
 const remote = optionalRequire('@electron/remote');
@@ -258,6 +262,7 @@ export type PreferencesValues = {|
   showAiAskButtonInTitleBar: boolean,
   automaticallyUseCreditsForAiRequests: boolean,
   byok: ByokSettings,
+  byokRag: ByokRagSettings,
   automaticallyApplyAiRequestEditsByProjectId: { [string]: boolean },
   useBackgroundSerializerForSaving: boolean,
   disableNpmScriptConfirmation: boolean,
@@ -461,6 +466,7 @@ export const initialPreferences = {
     showAiAskButtonInTitleBar: true,
     automaticallyUseCreditsForAiRequests: false,
     byok: DEFAULT_BYOK_SETTINGS,
+    byokRag: DEFAULT_BYOK_RAG_SETTINGS,
     automaticallyApplyAiRequestEditsByProjectId: {},
     useBackgroundSerializerForSaving: false,
     disableNpmScriptConfirmation: false,

@@ -55,6 +55,11 @@ const {
 const { readByokUserSkills } = require('./ByokUserSkills');
 const { registerByokChatFileHandlers } = require('./ByokChatFiles');
 const { registerByokMcpServer } = require('./ByokMcpServer');
+const { registerByokRagFileHandlers } = require('./ByokRagFiles');
+const {
+  ensureStarted: ensureByokQdrantStarted,
+  registerByokQdrant,
+} = require('./ByokQdrant');
 const {
   setWindowFileIdentifier,
   clearWindowFileIdentifier,
@@ -506,6 +511,12 @@ app.on('ready', function() {
   // clients reach through the stdio adapter. The renderer owns the tools —
   // this side only validates, forwards and keeps the discovery file.
   registerByokMcpServer(ipcMain, app);
+  registerByokRagFileHandlers(ipcMain, app);
+  registerByokQdrant(ipcMain, app);
+  // The managed Qdrant (BYOK RAG) starts with the app once installed.
+  app.on('ready', () => {
+    ensureByokQdrantStarted(app);
+  });
 
   // BYOK perception: capture a screenshot of an open preview window (the
   // last one when no id is given) as base64 PNG — works while the window is

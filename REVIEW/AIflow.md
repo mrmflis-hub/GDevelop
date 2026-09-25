@@ -231,38 +231,59 @@ Utils.js:102-108).
 
 ### 4.2 BYOK flow: the one prompt owned by this repo
 
-`AiGeneration\Byok\ByokPrompts.js` — version **`byok-v8`** (Phases 5→12 grew it; the composer with token budgets landed in Phase 7)
-(`BYOK_AGENT_PROMPT_VERSION`, :13; bump on any behavioral change). Assembled by
-`buildByokSystemPrompt({toolNames, hasOpenedProject})` (:60-76) and injected as
-the OpenAI `system` message (ByokOrchestrator.js:210-211). Sections, in order:
+`AiGeneration\Byok\ByokPrompts.js` — version **`byok-v8`** (bump history in the
+file header: v7 = Phase 11 authoring reach, v8 = Phase 12 discovery/runtime)
+(`BYOK_AGENT_PROMPT_VERSION`, :35). `buildByokSystemPrompt({toolNames,
+hasOpenedProject, …})` (:44) no longer concatenates hardcoded sections: it
+composes **knowledge sections** through
+`composeByokPromptSections(getByokKnowledgeSections(), context)`
+(ByokPrompts.js:61-63 + `Knowledge\ByokKnowledgeSections.js`), each with its
+own token budget; oversized degradable sections degrade to their summary line,
+non-degradable ones truncate loudly, and the composition logs its token
+estimate. The result is injected as the OpenAI `system` message. Core
+sections, in priority order (id · priority):
 
-1. **ROLE** (:15-17) — "You are an assistant editing GDevelop games through
-   tools. Never invent tool names… Prefer the smallest edit that satisfies the
-   request — do not re-create or rewrite objects, scenes or events that already
-   match what is asked for."
-2. **Tool list** (:25-37) — `- name: first sentence of description` for each
-   whitelisted tool. First sentences only: the full descriptions travel with
-   the `tools` array every request, duplicating them would double prompt tokens.
-3. **Project context** (:39-45) — with project open: the user message carries a
-   simplified JSON snapshot, **stale after any edit — inspect before editing**
-   (`describe_instances`, `read_scene_events`, `read_game_project_json`).
-   Without a project: tell the user to open one (BYOK cannot create projects —
-   `initialize_project` is not whitelisted).
-4. **Output rules** (:47-50) — plain text only when done or to ask for a
-   missing piece; always use tools, never describe an edit instead of making
-   it; one batch of tool calls per turn; never batch calls that depend on
-   another call's result.
-5. **Planning** (:52-53) — multi-step requests call `create_or_update_plan`
-   first and keep it updated.
-6. **Single agent** (:55) — "do the work yourself… There are no sub-agents to
-   delegate to — never ask for one."
+1. `role` · 10 — "You are an assistant editing GDevelop games through tools.
+   Never invent tool names… Prefer the smallest edit that satisfies the
+   request."
+2. `tools` · 20 — `- name: first sentence of description` for each whitelisted
+   tool, **`degradable: false`, budget 2800 tokens** (raised in Phase 12: the
+   composer truncates a non-degradable section over budget, and the full name
+   list must never truncate). Full descriptions travel with the `tools` array.
+3. `project-context` · 30 — with a project open, the user message carries a
+   simplified JSON snapshot, **stale after any edit — inspect before editing**.
+   Without a project, the no-project guidance applies (BYOK **can** create
+   projects: `initialize_project` and `get_game_starter_summary` are the
+   no-project set, and the starter summary steers template choice).
+4. `project-notes` · 40 (only when notes exist) — the durable conventions /
+   in-progress / decisions notes (readable by the model through
+   `read_project_notes` too).
+5. `output-rules` · 50, `planning` · 60 — plain text only when done; one batch
+   of tool calls per turn; `create_or_update_plan` for multi-step requests
+   **plus the F2 progress discipline** (one-sentence progress update with each
+   completed to-do item).
+6. `agents-policy` · 70 — the Phase 8 delegation policy: `run_explorer_agent`
+   (read-only scout) and `run_review_agent` (fresh-context reviewer) exist;
+   edits always happen in the main conversation; the **completion gate** rules
+   (claim done only after verification) and the skill pointers.
+7. `event-script-core` · 75, `script-batching` · 80, `look-verify` · 90,
+   `hybrid-grounding` · 100 — the EventScript syntax card, the `run_script`
+   batching rules, the screenshot/preview verification loop and the
+   screenshot+state pairing discipline.
+8. `authoring-reach` · 105 — the Phase 11/12 surfaces: external events &
+   layouts (the spawn-point mechanic), `list_effects` ("never guess an effect
+   type"), sprite frame ops, `import_project_resources`, the store-search
+   tools and the runtime-steering trio.
+9. `skills-appendix` · 110, `custom-instructions` — the metadata-only skill
+   list (load one with `load_skill`) and the user's custom instructions.
 
-Per-turn request shape (ByokOrchestrator.js:202-250, ByokClient.js):
-`{model, messages: [system, …transcript] , tools, reasoning_effort?}` with the
-fresh snapshot appended to the **last user message** as
-`[Current simplified project snapshot, as JSON — may be slightly stale after
-your edits]` (:229), and tool outputs capped at 20 000 chars (:55). Tools are
-serialized by `toOpenAiToolsFormat` (ByokToolSchema.js:445-456).
+One more section registers itself by side effect:
+`Knowledge\ByokGameDesignPack.js` (`game-design-core` · 210, degradable — see
+§7). Per-turn request shape (ByokOrchestrator.js, ByokClient.js):
+`{model, messages: [system, …transcript], tools, reasoning_effort?}` with the
+fresh snapshot appended to the **last user message**, and tool outputs capped
+at 20 000 chars. Tools are serialized by `toOpenAiToolsFormat`
+(ByokToolSchema.js).
 
 ---
 
@@ -381,28 +402,48 @@ installs a real public asset).
 
 ## 6. Skills
 
-**Verdict: no "skills" concept exists in this repository.** Case-insensitive
-sweep over `newIDE\app\src`: the only three hits are a course-description test
-fixture (`fixtures\GDevelopServicesTestData\index.js:3643`), Learn-section
-marketing copy (`HomePage\LearnSection\MainPage.js:188`, the lone locale string
-too), and a word-list entry in `ProjectNameGenerator.js:986`. No skill-named
-file exists anywhere. The closest analogues in the architecture are the
-**sub-agents** (explorer/edit/tester, hosted only) and the **script agent**
-(`run_script`) — capability groupings, not "skills" in the prompt sense.
+*(Supersedes the original 2026-09-13 survey verdict "no skills concept exists"
+— that was true of upstream master, and Phase 7 built the BYOK skills system
+on top of it.)*
+
+BYOK ships a local skills system since Phase 7:
+
+- `AiGeneration\Byok\ByokSkills.js` — the registry: built-in skills live as
+  markdown in `src\AiGeneration\Byok\skills\*` (`build-workflow` — the
+  game-building pipeline the agents policy points at before any "build me X"
+  request, `extend-with-js` — JavaScript/custom-object authoring rules — plus
+  topic skills: `platformer-game`, `top-down-shooter`, `physics-2d-recipes`,
+  `eventscript-authoring`, `hud-and-menus`, `save-system`, `juice-and-game-feel`
+  …), and **user skills** are read from a workspace folder on top of them (the
+  user-skills reading added with Phase 7). A generated index
+  (`ByokBuiltinSkills.generated.js`, via
+  `scripts\generate-byok-skills-index.js`) keeps the metadata fresh.
+- The model discovers skills through the `skills-appendix` knowledge section
+  (metadata only: name + one-line description — cheap even when the bodies
+  are big) and loads a body on demand through the **`load_skill`** tool
+  (BYOK-only, Phase 7). The completion-relevant content is asserted in
+  `ByokPrompts.spec.js` / `ByokKnowledgeSections.spec.js`.
+- Skills are also exposed to external MCP clients as prompts
+  (`Byok\Mcp\ByokMcpPrompts.js`, Phase 12).
+
+The closest upstream analogues remain the hosted **sub-agents** (BYOK grew its
+own scout/reviewer in Phase 8) and the **script agent** (`run_script`).
 
 ## 7. Game-design system messages
 
-**Verdict: none client-side.** No "game design" / "level design" / "events
-sheet" guidance text exists anywhere in `src\AiGeneration` (grep-verified). The
-hosted orchestrator's game-design knowledge — how to structure events, genre
-conventions, difficulty, what makes a good GDevelop game — lives entirely in
-the server-side system prompts (repo fingerprints only: `toolsVersion v15`
-comment in Utils.js:102-108, `systemPromptTemplateHash` in Generation.js:173).
-The BYOK prompt (§4.2) is operational only. Consequence for architecture work:
-**any game-design system-message layer for BYOK is greenfield** — the natural
-home is a new section in `ByokPrompts.js` (with a `BYOK_AGENT_PROMPT_VERSION`
-bump), or a separate `ByokGameDesignKnowledge.js` module merged into the system
-prompt, keeping the file-per-concern isolation the folder already follows.
+*(Supersedes the original "none client-side" verdict — Phase 7.4 added the
+BYOK game-design pack.)*
+
+`Knowledge\ByokGameDesignPack.js` registers a `game-design-core` knowledge
+section (priority 210, degradable, imported for its side effect in
+`ByokPrompts.js:13`). It carries the design-first discipline the hosted
+server prompts were assumed to own: draft a 5-line design (core loop, player
+verbs, win/lose, feel) in the plan before editing, then verify against it.
+Its presence is pinned by `ByokPrompts.spec.js` (`expect(prompt).toContain(
+'Design first')`). Deeper genre/level-design knowledge remains
+server-side-only in the hosted flow (repo fingerprints:
+`systemPromptTemplateHash` in Generation.js:173); extending the pack is a
+section edit plus a `BYOK_AGENT_PROMPT_VERSION` bump.
 
 ---
 

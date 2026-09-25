@@ -255,6 +255,8 @@ export const AskAiStandAloneForm = ({
     editorFunctionsWithoutProject,
     onSceneEventsModifiedOutsideEditor: () => {},
     onInstancesModifiedOutsideEditor: () => {},
+    onExternalLayoutModifiedOutsideEditor: () => {},
+    onExternalEventsModifiedOutsideEditor: () => {},
     onObjectsModifiedOutsideEditor: () => {},
     onObjectGroupsModifiedOutsideEditor: () => {},
     onProjectItemRenamedOutsideEditor: () => {},
@@ -763,6 +765,9 @@ export const AskAiStandAloneForm = ({
           userMessage,
         }: {|
           userMessage: string,
+          // Never used here (no BYOK chat lives in the standalone form),
+          // but the prop's contract allows it.
+          byokImageIds?: Array<string>,
         |}) => {
           if (!aiRequestIdForForm) return;
           await onSendMessage({

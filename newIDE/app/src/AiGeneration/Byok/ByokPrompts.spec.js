@@ -35,15 +35,45 @@ describe('ByokPrompts', () => {
     expect(prompt).toContain('initialize_project');
   });
 
-  it('contains each tool name only in the tool list line, with its summary', () => {
+  it('lists the requested tools in the tools line (names only since 13.5)', () => {
     const prompt = buildByokSystemPrompt({
       toolNames: ['create_scene'],
       hasOpenedProject: true,
     });
 
-    expect(prompt).toContain('- create_scene:');
-    // The tools that were not requested are not listed.
-    expect(prompt).not.toContain('- describe_instances:');
+    expect(prompt).toContain('create_scene');
+    // The tools that were not requested are not advertised.
+    expect(prompt).not.toContain('describe_instances,');
+    // The prose duplicates of the schema descriptions are gone (13.5).
+    expect(prompt).not.toContain('- create_scene:');
+  });
+
+  it('carries the retrieval map and the task catalog (13.5, D13-6)', () => {
+    const prompt = buildByokSystemPrompt({
+      toolNames: ['create_scene'],
+      hasOpenedProject: true,
+    });
+    expect(prompt).toContain('You can search');
+    expect(prompt).toContain('search_tools');
+    expect(prompt).toContain('search_reference');
+    expect(prompt).toContain('load_skill');
+    // Common tasks are advertised by name.
+    expect(prompt).toContain('Save system, checkpoints, persistence');
+    expect(prompt).toContain('Platformer movement, level design');
+  });
+
+  it('carries the pinned EventScript block in every request (13.6)', () => {
+    for (const hasOpenedProject of [true, false]) {
+      const prompt = buildByokSystemPrompt({
+        toolNames: ['create_scene'],
+        hasOpenedProject,
+      });
+      expect(prompt).toContain('EventScript syntax (always in view');
+      expect(prompt).toContain('Canonical complete examples');
+      expect(prompt).toContain('if Collision(Player, Coin):');
+      expect(prompt).toContain('ResetTimer("SpawnTimer")');
+      expect(prompt).toContain('Scene("MainMenu")');
+    }
   });
 
   it('swaps in the no-project instructions when no project is opened', () => {
@@ -95,7 +125,7 @@ describe('ByokPrompts', () => {
 describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
   it('pins the prompt version', () => {
     // Bumped to byok-v8 in Phase 12 (discovery + runtime guidance).
-    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v8');
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v9');
   });
 
   it('teaches the F2 obligatory to-do list and per-item progress updates', () => {

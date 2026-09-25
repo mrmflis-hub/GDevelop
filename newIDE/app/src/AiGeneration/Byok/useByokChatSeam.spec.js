@@ -5,7 +5,12 @@ import reactTestRenderer from 'react-test-renderer';
 import { useByokChatSeam } from './useByokChatSeam';
 import { sendByokChatCompletionWithRetries } from './ByokClient';
 import { saveByokKey } from './ByokKeyStorage';
-import { getByokChat, listByokChats } from './ByokChatStore';
+import {
+  getByokChat,
+  listByokChats,
+  setByokChatPersistence,
+} from './ByokChatStore';
+import { createByokChatFileStore } from './ByokChatPersistence';
 import { isByokAiRequestId } from './ByokSeam';
 import { useEnsureExtensionInstalled } from '../UseEnsureExtensionInstalled';
 import { getByokMcpToolHost, setByokMcpToolHost } from './Mcp/ByokMcpToolHost';
@@ -364,3 +369,143 @@ describe('useByokChatSeam — the MCP tool host (Phase 10)', () => {
     expect(extraResult.output.message).toContain('nested');
   });
 });
+
+describe('useByokChatSeam: Phase 13 (toggle, bottom bar, history rail)', () => {
+  const makeMemoryBackend = () => {
+    const files: Map<string, string> = new Map();
+    return {
+      listFiles: async () =>
+        Array.from(files.entries()).map(([fileName, content]) => ({
+          fileName,
+          sizeBytes: content.length,
+        })),
+      readFile: async (fileName: string) => files.get(fileName) || null,
+      writeFile: async (fileName: string, content: string) => {
+        files.set(fileName, content);
+      },
+      deleteFile: async (fileName: string) => {
+        files.delete(fileName);
+      },
+      moveFile: async (from: string, to: string) => {
+        if (!files.has(from)) return;
+        files.set(to, String(files.get(from)));
+        files.delete(from);
+      },
+      getTotalBytes: async () =>
+        Array.from(files.values()).reduce(
+          (sum, content) => sum + content.length,
+          0
+        ),
+    };
+  };
+
+  beforeEach(() => {
+    setByokChatPersistence(null);
+    // Same re-implementation as the suite above: the jest preset resets
+    // every mock's implementation before each test.
+    mockUseEnsureExtensionInstalled.mockImplementation(() => ({
+      ensureExtensionInstalled: (jest.fn(async () => {}): any),
+    }));
+  });
+
+  it('exposes the toggle synced with the preferences setting, both ways', () => {
+    const updateByokPreferences = (jest.fn(): any);
+    // Off by default (not enabled / not configured).
+    const off = renderSeam(makeOptions({ updateByokPreferences }));
+    expect(off.getSeam().byokToggleState.isEnabled).toBe(false);
+
+    // Flipping it writes the same `enabled` field the Preferences checkbox
+    // drives — the rest of the settings is preserved.
+    off.getSeam().byokToggleState.onToggle(true);
+    expect(updateByokPreferences).toHaveBeenCalledTimes(1);
+    const writtenSettings = updateByokPreferences.mock.calls[0][0];
+    expect(writtenSettings.enabled).toBe(true);
+
+    // Configured + enabled reads as on.
+    const on = renderSeam(
+      makeOptions({
+        updateByokPreferences,
+        preferencesValues: {
+          byok: {
+            enabled: true,
+            endpointUrl: 'https://api.example.com/v1',
+            modelName: 'm1',
+          },
+        },
+      })
+    );
+    expect(on.getSeam().byokToggleState.isEnabled).toBe(true);
+  });
+
+  it('exposes the chat controls (bottom bar) only on a selected BYOK chat', async () => {
+    const { getSeam } = renderSeam(makeOptions());
+    await act(async () => {});
+    expect(getSeam().byokChatControls).toBe(null);
+
+    // A hosted chat id never produces controls either: the controls gate on
+    // isByokAiRequestId.
+    const seam = getSeam();
+    seam.setSelectedByokChatId('byok-not-a-real-chat');
+    expect(getSeam().byokChatControls).toBe(null);
+  });
+
+  it('merges the persisted chats into the history and routes the rail actions', async () => {
+    const backend = makeMemoryBackend();
+    const store = createByokChatFileStore((backend: any), () => null);
+    setByokChatPersistence(store);
+
+    // One persisted-only chat on disk, one in-session chat.
+    const persistedChat = createByokAiRequestShellForTest('byok-persisted-1');
+    persistedChat.output.push({
+      type: 'message',
+      status: 'completed',
+      role: 'user',
+      content: [
+        { type: 'user_request', status: 'completed', text: 'Saved earlier' },
+      ],
+    });
+    await store.saveChat(persistedChat);
+
+    const { getSeam } = renderSeam(makeOptions());
+    await act(async () => {});
+    await getSeam().refreshByokHistoryChats();
+
+    let history = getSeam().byokHistoryChats;
+    expect(history.map((entry: any) => entry.id)).toContain('byok-persisted-1');
+
+    // Archive the persisted-only chat: the file marker moves.
+    await getSeam().setByokHistoryChatArchived('byok-persisted-1', true);
+    await getSeam().refreshByokHistoryChats();
+    history = getSeam().byokHistoryChats;
+    const archivedEntry = history.find(
+      (entry: any) => entry.id === 'byok-persisted-1'
+    );
+    expect(archivedEntry.archivedAt).toBeTruthy();
+
+    // Restore, then delete: the entry disappears.
+    await getSeam().setByokHistoryChatArchived('byok-persisted-1', false);
+    await getSeam().deleteByokHistoryChat('byok-persisted-1');
+    await getSeam().refreshByokHistoryChats();
+    expect(
+      getSeam().byokHistoryChats.some(
+        (entry: any) => entry.id === 'byok-persisted-1'
+      )
+    ).toBe(false);
+  });
+});
+
+// A minimal shell builder for persistence tests (the spec file's node
+// environment has no access to the transcript factory's defaults).
+function createByokAiRequestShellForTest(id: string): any {
+  return {
+    id,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    userId: '',
+    status: 'ready',
+    mode: 'orchestrator',
+    error: null,
+    output: [],
+    contextStats: null,
+  };
+}

@@ -162,6 +162,66 @@ describe('ByokExternalSceneTools', () => {
       ).toBe(1);
     });
 
+    it('writes into the external sheet without touching the scene events', async () => {
+      const sceneEventsCount = project
+        .getLayout('TestScene')
+        .getEvents()
+        .getEventsCount();
+      const result = await getTool('add_external_events').run(
+        {
+          external_events_name: 'UiSheet',
+          event_script: 'always:\n  Wait(1)',
+        },
+        makeCollaborators(project)
+      );
+
+      expect(result.output.success).toBe(true);
+      expect(
+        project
+          .getExternalEvents('UiSheet')
+          .getEvents()
+          .getEventsCount()
+      ).toBe(1);
+      // The external sheet is the ONLY target: the scene sheet is intact.
+      expect(
+        project
+          .getLayout('TestScene')
+          .getEvents()
+          .getEventsCount()
+      ).toBe(sceneEventsCount);
+    });
+
+    it('notifies the external events editor with the new event ids', async () => {
+      const notifications: Array<any> = [];
+      const result = await getTool('add_external_events').run(
+        {
+          external_events_name: 'UiSheet',
+          event_batches: [
+            {
+              placement_relation: 'insert_at_end',
+              event_script: 'always:\n  Wait(3)',
+            },
+            {
+              placement_relation: 'insert_at_end',
+              event_script: 'always:\n  Wait(4)',
+            },
+          ],
+        },
+        {
+          ...makeCollaborators(project),
+          onExternalEventsModifiedOutsideEditor: (changes: any) =>
+            notifications.push(changes),
+        }
+      );
+
+      expect(result.output.success).toBe(true);
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0].externalEventsName).toBe('UiSheet');
+      // The writer tags the whole applied group with ONE id per call —
+      // that's the id the editor highlights.
+      expect(notifications[0].newOrChangedAiGeneratedEventIds.size).toBe(1);
+    });
+
     it('refuses an associated scene that does not exist', async () => {
       const result = await getTool('add_external_events').run(
         {
@@ -231,6 +291,7 @@ describe('ByokExternalSceneTools', () => {
 
   describe('put_external_layout_instances', () => {
     it('creates the external layout and places instances in it', async () => {
+      const notifications: Array<any> = [];
       const result = await getTool('put_external_layout_instances').run(
         {
           external_layout_name: 'EnemySpawn',
@@ -242,11 +303,16 @@ describe('ByokExternalSceneTools', () => {
           object_name: 'Player',
           new_instances_count: 2,
         },
-        makeCollaborators(project)
+        {
+          ...makeCollaborators(project),
+          onExternalLayoutModifiedOutsideEditor: (changes: any) =>
+            notifications.push(changes),
+        }
       );
 
       expect(result.output.success).toBe(true);
       expect(result.didModifyProject).toBe(true);
+      expect(notifications).toEqual([{ externalLayoutName: 'EnemySpawn' }]);
       const container = project.getExternalLayout('EnemySpawn');
       expect(container.getInitialInstances().getInstancesCount()).toBe(2);
     });
@@ -301,6 +367,58 @@ describe('ByokExternalSceneTools', () => {
 
       expect(result.output.success).toBe(false);
       expect(result.output.message).toContain('Layer not found');
+    });
+
+    it('reports an already-satisfied put as a success (script-style no-op)', async () => {
+      const notifications: Array<any> = [];
+      const collaborators = {
+        ...makeCollaborators(project),
+        onExternalLayoutModifiedOutsideEditor: (changes: any) =>
+          notifications.push(changes),
+      };
+      const first = await getTool('put_external_layout_instances').run(
+        {
+          external_layout_name: 'SpawnPoint',
+          layer_name: '',
+          brush_kind: 'point',
+          brush_position: '0, 0',
+          object_name: 'Player',
+          new_instances_count: 1,
+        },
+        collaborators
+      );
+      expect(first.output.success).toBe(true);
+      expect(first.didModifyProject).toBe(true);
+      expect(notifications).toHaveLength(1);
+
+      const described = await getTool('describe_external_layout').run(
+        { external_layout_name: 'SpawnPoint' },
+        collaborators
+      );
+      const instanceId = described.output.instances[0].id;
+
+      // Re-asserting the current state of an existing instance is a no-op,
+      // which is a SUCCESS for the script-style BYOK agent (toolsVersion
+      // v12+, like the hosted orchestrator) and modifies nothing — so no
+      // editor refresh either.
+      const second = await getTool('put_external_layout_instances').run(
+        {
+          external_layout_name: 'SpawnPoint',
+          layer_name: '',
+          brush_kind: 'none',
+          existing_instance_ids: instanceId,
+        },
+        collaborators
+      );
+      expect(second.output.success).toBe(true);
+      expect(second.didModifyProject).toBe(false);
+      expect(notifications).toHaveLength(1);
+      expect(
+        project
+          .getExternalLayout('SpawnPoint')
+          .getInitialInstances()
+          .getInstancesCount()
+      ).toBe(1);
     });
   });
 });

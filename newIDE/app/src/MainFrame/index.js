@@ -105,6 +105,8 @@ import { type RenderEditorContainerPropsWithRef } from './EditorContainers/BaseE
 import {
   type SceneEventsOutsideEditorChanges,
   type InstancesOutsideEditorChanges,
+  type ExternalLayoutOutsideEditorChanges,
+  type ExternalEventsOutsideEditorChanges,
   type ObjectsOutsideEditorChanges,
   type ObjectGroupsOutsideEditorChanges,
   type ProjectItemRenamedOutsideEditorChanges,
@@ -4016,6 +4018,33 @@ const MainFrame = (props: Props): React.MixedElement => {
     [state.editorTabs]
   );
 
+  // The external-item fan-outs are guarded calls: only the external layout
+  // and external events editor containers implement them (the other editors
+  // have nothing to refresh for these items).
+  const onExternalLayoutModifiedOutsideEditor = React.useCallback(
+    (changes: ExternalLayoutOutsideEditorChanges) => {
+      for (const editor of getAllEditorTabs(state.editorTabs)) {
+        const editorRef: any = editor.editorRef;
+        if (editorRef && editorRef.onExternalLayoutModifiedOutsideEditor) {
+          editorRef.onExternalLayoutModifiedOutsideEditor(changes);
+        }
+      }
+    },
+    [state.editorTabs]
+  );
+
+  const onExternalEventsModifiedOutsideEditor = React.useCallback(
+    (changes: ExternalEventsOutsideEditorChanges) => {
+      for (const editor of getAllEditorTabs(state.editorTabs)) {
+        const editorRef: any = editor.editorRef;
+        if (editorRef && editorRef.onExternalEventsModifiedOutsideEditor) {
+          editorRef.onExternalEventsModifiedOutsideEditor(changes);
+        }
+      }
+    },
+    [state.editorTabs]
+  );
+
   const onObjectsModifiedOutsideEditor = React.useCallback(
     (changes: ObjectsOutsideEditorChanges) => {
       for (const editor of getAllEditorTabs(state.editorTabs)) {
@@ -5900,6 +5929,8 @@ const MainFrame = (props: Props): React.MixedElement => {
     onSceneObjectsDeleted: onSceneObjectsDeleted,
     onSceneEventsModifiedOutsideEditor: onSceneEventsModifiedOutsideEditor,
     onInstancesModifiedOutsideEditor: onInstancesModifiedOutsideEditor,
+    onExternalLayoutModifiedOutsideEditor: onExternalLayoutModifiedOutsideEditor,
+    onExternalEventsModifiedOutsideEditor: onExternalEventsModifiedOutsideEditor,
     onObjectsModifiedOutsideEditor: onObjectsModifiedOutsideEditor,
     onObjectGroupsModifiedOutsideEditor: onObjectGroupsModifiedOutsideEditor,
     onProjectItemRenamedOutsideEditor: onProjectItemRenamedOutsideEditor,

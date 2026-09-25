@@ -615,17 +615,33 @@ describe('ByokSettingsTab: models fetching', () => {
   });
 });
 
-describe('ByokSettingsTab: per-model context windows', () => {
-  it('persists a context window for the selected model via setMultipleValues', () => {
+describe('ByokSettingsTab: per-provider model settings (Phase 13.4)', () => {
+  const makeProvider = (overrides: Object = {}) => ({
+    id: 'provider-1',
+    name: 'Provider 1',
+    endpointUrl: 'https://api.example.com/v1',
+    keyRef: 'provider-1',
+    modelSettings: [
+      {
+        modelName: 'my-model',
+        temperature: null,
+        maxTokens: null,
+        contextWindowTokens: null,
+      },
+    ],
+    ...overrides,
+  });
+
+  it('persists a per-model context window into the provider settings', () => {
     const settings: ByokSettings = {
       ...DEFAULT_BYOK_SETTINGS,
-      modelName: 'my-model',
+      providers: [makeProvider()],
     };
     const { component, setMultipleValues } = renderTab(settings);
 
     const contextWindowField = findFieldByName(
       component,
-      'byok-context-window-my-model'
+      'byok-model-context-window-provider-1-my-model'
     );
     act(() => {
       contextWindowField.props.onChange({}, '4096');
@@ -636,60 +652,128 @@ describe('ByokSettingsTab: per-model context windows', () => {
 
     expect(setMultipleValues).toHaveBeenCalledWith({
       byok: {
-        ...DEFAULT_BYOK_SETTINGS,
-        modelName: 'my-model',
-        contextWindowByModel: { 'my-model': 4096 },
+        ...settings,
+        providers: [
+          makeProvider({
+            modelSettings: [
+              {
+                modelName: 'my-model',
+                temperature: null,
+                maxTokens: null,
+                contextWindowTokens: 4096,
+              },
+            ],
+          }),
+        ],
       },
     });
   });
 
-  it('prefills the context window reported by the server, marked as auto (server)', () => {
-    mockGetCachedByokModels.mockReturnValueOnce([
-      { id: 'my-model', contextWindowTokens: 32768 },
-    ]);
+  it('commits the temperature and max tokens of a model block', () => {
     const settings: ByokSettings = {
       ...DEFAULT_BYOK_SETTINGS,
-      modelName: 'my-model',
+      providers: [makeProvider()],
     };
-
-    const { component } = renderTab(settings);
-
-    const contextWindowField = findFieldByName(
-      component,
-      'byok-context-window-my-model'
-    );
-    // The field shows the raw (string) value while idle; the clamped number
-    // is persisted on blur only.
-    expect(contextWindowField.props.value).toBe('32768');
-    expect(JSON.stringify(component.toJSON())).toContain('auto (server)');
-  });
-
-  it('lets the user override an auto (server) context window', () => {
-    mockGetCachedByokModels.mockReturnValueOnce([
-      { id: 'my-model', contextWindowTokens: 32768 },
-    ]);
-    const settings: ByokSettings = {
-      ...DEFAULT_BYOK_SETTINGS,
-      modelName: 'my-model',
-    };
-
     const { component, setMultipleValues } = renderTab(settings);
-    const contextWindowField = findFieldByName(
+
+    const temperatureField = findFieldByName(
       component,
-      'byok-context-window-my-model'
+      'byok-model-temperature-provider-1-my-model'
     );
     act(() => {
-      contextWindowField.props.onChange({}, '16384');
+      temperatureField.props.onChange({}, '0.2');
     });
     act(() => {
-      contextWindowField.props.onBlur({ currentTarget: { value: '16384' } });
+      temperatureField.props.onBlur({ currentTarget: { value: '0.2' } });
+    });
+    expect(setMultipleValues).toHaveBeenCalledWith({
+      byok: {
+        ...settings,
+        providers: [
+          makeProvider({
+            modelSettings: [
+              {
+                modelName: 'my-model',
+                temperature: 0.2,
+                maxTokens: null,
+                contextWindowTokens: null,
+              },
+            ],
+          }),
+        ],
+      },
+    });
+  });
+
+  it('clamps a per-model context window on blur', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [makeProvider()],
+    };
+    const { component, setMultipleValues } = renderTab(settings);
+
+    const contextWindowField = findFieldByName(
+      component,
+      'byok-model-context-window-provider-1-my-model'
+    );
+    act(() => {
+      contextWindowField.props.onChange({}, '10');
+    });
+    act(() => {
+      contextWindowField.props.onBlur({ currentTarget: { value: '10' } });
     });
 
     expect(setMultipleValues).toHaveBeenCalledWith({
       byok: {
-        ...DEFAULT_BYOK_SETTINGS,
-        modelName: 'my-model',
-        contextWindowByModel: { 'my-model': 16384 },
+        ...settings,
+        providers: [
+          makeProvider({
+            modelSettings: [
+              {
+                modelName: 'my-model',
+                temperature: null,
+                maxTokens: null,
+                contextWindowTokens: 512,
+              },
+            ],
+          }),
+        ],
+      },
+    });
+  });
+
+  it('offers a Run benchmark button per model block', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [makeProvider()],
+    };
+    const { component } = renderTab(settings);
+    const json = JSON.stringify(component.toJSON());
+    expect(json).toContain('Run benchmark');
+    expect(json).toContain('my-model');
+  });
+
+  it('migrates old routing profiles to the first provider on load', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [makeProvider()],
+      strongProfile: {
+        providerId: '',
+        modelName: 'old-strong-model',
+        temperature: null,
+        maxTokens: null,
+      },
+    };
+    const { setMultipleValues } = renderTab(settings);
+    expect(setMultipleValues).toHaveBeenCalledWith({
+      byok: {
+        ...settings,
+        strongProfile: {
+          providerId: 'provider-1',
+          modelName: 'old-strong-model',
+          temperature: null,
+          maxTokens: null,
+        },
       },
     });
   });

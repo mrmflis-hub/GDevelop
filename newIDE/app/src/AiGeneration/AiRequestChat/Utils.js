@@ -85,6 +85,17 @@ export type ToolResultImagesRenderItem = {|
 |};
 
 /**
+ * The images attached to a user message with the "+" button (BYOK,
+ * Phase 13.3): rendered right after their message, from the same id lookup
+ * as the tool result screenshots.
+ */
+export type UserMessageImagesRenderItem = {|
+  type: 'user_message_images',
+  messageIndex: number,
+  imageIds: Array<string>,
+|};
+
+/**
  * A BYOK-local orchestrator notice (stall watchdog, "Context summarized",
  * rate-limit backoff): rendered as a centered info line, never sent to any
  * model.
@@ -108,6 +119,7 @@ export type RenderItem =
   | SuggestionsRenderItem
   | OrchestratorPlanRenderItem
   | ToolResultImagesRenderItem
+  | UserMessageImagesRenderItem
   | ByokNoticeRenderItem;
 
 /**

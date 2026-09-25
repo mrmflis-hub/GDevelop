@@ -14,6 +14,7 @@ import {
   type ObjectsOutsideEditorChanges,
   type ObjectGroupsOutsideEditorChanges,
   type WillDeleteObjectChanges,
+  type ExternalEventsOutsideEditorChanges,
 } from '../../EditorFunctions/OutsideEditorChanges';
 import ExternalPropertiesDialog, {
   type ExternalProperties,
@@ -206,6 +207,24 @@ export class ExternalEventsEditorContainer extends React.Component<
 
   onInstancesModifiedOutsideEditor(changes: InstancesOutsideEditorChanges) {
     // No thing to be done.
+  }
+
+  onExternalEventsModifiedOutsideEditor(
+    changes: ExternalEventsOutsideEditorChanges
+  ) {
+    if (changes.externalEventsName !== this.props.projectItemName) {
+      return;
+    }
+
+    if (this.editor) {
+      // Drop the selection and push a history entry, so the events sheet
+      // re-renders with the events written from outside (the same refresh
+      // the scene events editor gets).
+      this.editor.onEventsModifiedOutsideEditor({
+        newOrChangedAiGeneratedEventIds:
+          changes.newOrChangedAiGeneratedEventIds,
+      });
+    }
   }
 
   onObjectsModifiedOutsideEditor(changes: ObjectsOutsideEditorChanges) {

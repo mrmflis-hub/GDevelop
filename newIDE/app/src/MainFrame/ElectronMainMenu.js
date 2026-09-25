@@ -112,9 +112,16 @@ const ElectronMainMenu = ({
     !!limits.capabilities.classrooms &&
     limits.capabilities.classrooms.hideAskAi;
 
+  // The window of these events is a remote (@electron/remote) BrowserWindow.
+  // A window can be destroyed before its queued focus/blur event is
+  // dispatched here (closing a preview window that had focus, typically) —
+  // reading `id` or `title` on it would then throw "Object has been
+  // destroyed" and take the whole renderer down with an uncaught error.
+  // `isDestroyed` is the one member that stays callable, so it gates the rest.
   useAppEventListener({
     event: 'browser-window-focus',
     callback: window => {
+      if (!window || window.isDestroyed()) return;
       setFocusedWindowId(window.id);
       setIsFocusedOnMainWindow(isMainWindow(window.title));
     },
@@ -122,6 +129,7 @@ const ElectronMainMenu = ({
   useAppEventListener({
     event: 'browser-window-blur',
     callback: window => {
+      if (!window || window.isDestroyed()) return;
       setIsFocusedOnMainWindow(!isMainWindow(window.title));
     },
   });

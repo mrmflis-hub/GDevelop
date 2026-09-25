@@ -220,10 +220,15 @@ const effectChangeProperty = objectProperty('One effect change.', {
   'read_runtime_details',
   'control_runtime',
   'profile_runtime',
+  // The tool-discovery meta-tool (Phase 13.5): the advertised list is the
+  // core set, everything else is found through this one.
+  'search_tools',
+  // The on-device knowledge search (Phase 13.7).
+  'search_knowledge',
 ];
 
 /**
- * The tools advertised only while no project is open. With a project open
+ * The tools advertised ONLY while no project is open. With a project open
  * the runner refuses `initialize_project` anyway, so advertising it would
  * waste a slot of the (billed) tool list; without one, it is the entry
  * point of "make me a game from scratch". `get_game_starter_summary`
@@ -235,6 +240,61 @@ export const BYOK_NO_PROJECT_TOOL_NAMES: Array<string> = [
   'initialize_project',
   'get_game_starter_summary',
 ];
+
+/**
+ * The CORE tool set of the Phase 13.5 budget pass: the ~25-30 tools whose
+ * schemas are advertised inline on every turn (scene/object/instance/
+ * variable/events/preview/notes + the knowledge tools + the search_tools
+ * meta-tool). Every other tool of `BYOK_TOOL_NAMES` stays dispatchable but
+ * is NOT advertised — the model discovers it through `search_tools`, and
+ * executing a discovered tool works immediately (the executor knows every
+ * tool; only the schema injection needed the search).
+ */
+export const BYOK_CORE_TOOL_NAMES: Array<string> = [
+  // Reads (grounding before editing).
+  'describe_instances',
+  'read_events_source',
+  // Scene and object editing.
+  'create_scene',
+  'create_or_replace_object',
+  'inspect_object_properties_effects',
+  'change_object_properties_effects',
+  'add_behavior',
+  'inspect_scene_properties_layers_effects',
+  // Variables and instances.
+  'add_or_edit_variable',
+  'put_2d_instances',
+  // Events (the local EventScript writer) and scripting.
+  'create_or_update_plan',
+  'add_scene_events',
+  'run_script',
+  // Perception and preview.
+  'capture_scene_screenshot',
+  'start_preview',
+  'read_preview_logs',
+  'inspect_runtime_state',
+  // Notes and knowledge retrieval.
+  'update_project_notes',
+  'read_project_notes',
+  'search_reference',
+  'load_skill',
+  'search_docs',
+  'read_doc',
+  // The meta-tool of the tiered advertisement (13.5).
+  'search_tools',
+  // The knowledge/grep search (13.7).
+  'search_knowledge',
+  // The delegation tools the agents policy section teaches (13.5 kept them
+  // core: the section's instructions name them directly).
+  'run_explorer_agent',
+  'run_review_agent',
+];
+
+const BYOK_CORE_TOOL_NAMES_SET: Set<string> = new Set(BYOK_CORE_TOOL_NAMES);
+
+/** True for the tools advertised inline (the Phase 13.5 core set). */
+export const isByokCoreToolName = (name: string): boolean =>
+  BYOK_CORE_TOOL_NAMES_SET.has(name);
 
 /**
  * Every tool name the BYOK loop may dispatch: the default set, the
@@ -249,16 +309,29 @@ export const getByokDispatchableToolNames = (): Array<string> => [
 ];
 
 /**
- * The names of the tools sent to the model for a turn: the default set,
- * plus the no-project tools while no project is open (read at turn time,
- * so a chat that creates its project stops advertising initialize_project
- * on the next turn).
+ * The FULL tool list served over MCP `tools/list` (Phase 13.5): external
+ * clients are not budget-bound, so unlike the chat's core advertisement
+ * they see every dispatchable tool (minus the hosted-habit alias).
+ */
+export const getByokMcpToolNames = (options: {|
+  hasOpenedProject: boolean,
+|}): Array<string> =>
+  options.hasOpenedProject
+    ? BYOK_TOOL_NAMES.slice()
+    : [...BYOK_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES];
+
+/**
+ * The names of the tools sent to the model for a turn: the CORE set (13.5's
+ * tiered advertisement — the rest is discoverable via search_tools), plus
+ * the no-project tools while no project is open (read at turn time, so a
+ * chat that creates its project stops advertising initialize_project on the
+ * next turn).
  */
 export const getByokAdvertisedToolNames = (options: {|
   hasOpenedProject: boolean,
 |}): Array<string> => {
-  if (options.hasOpenedProject) return BYOK_TOOL_NAMES;
-  return [...BYOK_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES];
+  if (options.hasOpenedProject) return BYOK_CORE_TOOL_NAMES.slice();
+  return [...BYOK_CORE_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES];
 };
 
 const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
@@ -769,7 +842,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
           'Comma-separated ids of instances to move/erase/transform (from describe_instances).'
         ),
         new_instances_count: numberProperty(
-          'Number of instances to create. Defaults to 1 when creating without existing_instance_ids; omitted or 0 with existing_instance_ids only moves/transforms them.'
+          'Instances to create (default 1; omit to only move/transform existing ones).'
         ),
         row_count: numberProperty('Rows of the grid ("grid" brush).'),
         column_count: numberProperty('Columns of the grid ("grid" brush).'),
@@ -822,7 +895,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
           'Comma-separated ids of instances to move/erase/transform (from describe_instances).'
         ),
         new_instances_count: numberProperty(
-          'Number of instances to create. Defaults to 1 when creating without existing_instance_ids; omitted or 0 with existing_instance_ids only moves/transforms them.'
+          'Instances to create (default 1; omit to only move/transform existing ones).'
         ),
         instances_size: stringProperty(
           'Custom size of the instances, as "width,height,depth" in pixels.'
@@ -1253,7 +1326,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'change_extension_properties',
     description:
-      'Change the properties of an extension, rename it (updating every reference in the project), or delete it. Deletion is refused while the extension is still used, unless delete_even_if_used is true.',
+      'Change the properties of an extension, rename it (updating every reference in the project), or delete it. Deletion is refused while the extension is still used, unless delete_even_if_used is true. Its dependencies (other extensions it requires) are managed with dependencies_to_add/dependencies_to_remove.',
     parameters: {
       type: 'object',
       properties: {
@@ -1267,6 +1340,26 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
             ),
             new_value: stringProperty('The new value.'),
           })
+        ),
+        dependencies_to_add: arrayProperty(
+          'The dependencies (other extensions this extension requires) to add.',
+          objectProperty('One dependency.', {
+            name: stringProperty('Name of the required extension.'),
+            export_name: stringProperty(
+              'Optional export name, if it differs from the name.'
+            ),
+            version: stringProperty(
+              'Optional required version (e.g. "1.0.0").'
+            ),
+            dependency_type: enumProperty(
+              'The kind of dependency (the default is cordova).',
+              ['cordova', 'npm']
+            ),
+          })
+        ),
+        dependencies_to_remove: arrayProperty(
+          'The names of the dependencies to remove.',
+          stringProperty('Name of the dependency.')
         ),
         delete_this_extension: booleanProperty(
           'Set to true to delete the extension.'
@@ -1304,7 +1397,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'change_custom_object',
     description:
-      'Change a custom object (rename it with project-wide reference updates, change its properties or metadata), or delete it. Deletion is refused while its object type is used.',
+      'Change a custom object (rename it with project-wide reference updates, change its properties or metadata), or delete it. Deletion is refused while its object type is used. Its child objects are managed with children_to_add/children_to_remove.',
     parameters: {
       type: 'object',
       properties: {
@@ -1322,6 +1415,26 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
               'New value of the property, as a string.'
             ),
           })
+        ),
+        children_to_add: arrayProperty(
+          'The child objects to add to this custom object.',
+          objectProperty('One child.', {
+            name: stringProperty('Name of the child object.'),
+            object_type: stringProperty(
+              'Object type of the child (e.g. "Sprite", "Text", or an extension custom object type).'
+            ),
+            initial_properties: arrayProperty(
+              'Optional initial values of the child object properties (only for types that expose properties, like custom objects).',
+              objectProperty('One property value.', {
+                name: stringProperty('Name of the property.'),
+                value: stringProperty('Value of the property, as a string.'),
+              })
+            ),
+          })
+        ),
+        children_to_remove: arrayProperty(
+          'The names of the child objects to remove. Refused while the child is still used by the custom object functions.',
+          stringProperty('Name of the child object.')
         ),
         delete_this_custom_object: booleanProperty(
           'Set to true to delete the custom object.'
@@ -1433,7 +1546,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'change_custom_function',
     description:
-      'Change a function (rename it with project-wide reference updates, change its settings) or replace its events — or delete it.',
+      'Change a function (rename it with project-wide reference updates, change its settings) or replace its events — or delete it. Its parameters are managed with parameters_to_add/parameters_to_remove/parameters_to_move.',
     parameters: {
       type: 'object',
       properties: {
@@ -1455,6 +1568,27 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
             new_value: stringProperty(
               'The new value, as a string (booleans as "true"/"false").'
             ),
+          })
+        ),
+        parameters_to_add: arrayProperty(
+          'The parameters to add, after the existing ones. Naming an existing parameter and passing a type changes that parameter type (its usages in the project are refactored); without a type, an existing name is skipped.',
+          objectProperty('One parameter.', {
+            name: stringProperty('Parameter name.'),
+            type: stringProperty(
+              'Parameter type (expression, string, objectList, behavior, sceneName…).'
+            ),
+            description: stringProperty('Optional parameter description.'),
+          })
+        ),
+        parameters_to_remove: arrayProperty(
+          'The names of the parameters to remove.',
+          stringProperty('Parameter name.')
+        ),
+        parameters_to_move: arrayProperty(
+          'The parameter re-orderings.',
+          objectProperty('One move.', {
+            name: stringProperty('Parameter name.'),
+            to_index: numberProperty('New (0-based) index of the parameter.'),
           })
         ),
         event_script: stringProperty(
@@ -1769,6 +1903,54 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
       required: [],
     },
   },
+  {
+    name: 'search_tools',
+    description:
+      'Search the full tool catalog (the tools not listed in the system prompt are all usable — discover them here). Returns each matching tool with its complete parameter schema, so you can call it immediately.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'Keywords matched against the tool names and descriptions, e.g. "external layout", "sprite animation", "asset store".',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'search_knowledge',
+    description:
+      'Grep-like search over the full on-device knowledge corpus: the engine reference (every action, condition, expression, object, behavior), the bundled documentation, the skills and runnable EventScript examples. Exact/tag search always works; semantic ranking when the local RAG index is built.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'What to look for, e.g. "collision variable increment", "play music", "timer spawn".',
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional facets to filter by (e.g. ["action"], ["example", "timer"], ["skill"]).',
+        },
+        kind: {
+          type: 'string',
+          description:
+            'Optional corpus filter: engine-reference, docs, skill, example, user-docs.',
+        },
+        chunk_id: {
+          type: 'string',
+          description:
+            'Read the chunks AROUND a hit (its neighbors in the same document) instead of searching.',
+        },
+      },
+      required: [],
+    },
+  },
 ];
 
 /**
@@ -1776,6 +1958,42 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
  */
 export const getByokToolSchemas = (): Array<ByokToolSchema> => {
   return BYOK_TOOL_SCHEMAS;
+};
+
+/**
+ * Search the whole tool catalog by keywords (the `search_tools` meta-tool of
+ * Phase 13.5): every term that matches the name or the description scores,
+ * name matches weigh more, exact name matches win outright. Pure and
+ * deterministic, so the prompt's task catalog can be tested against it.
+ */
+export const searchByokToolSchemas = (
+  query: string,
+  resultLimit: number = 10
+): Array<ByokToolSchema> => {
+  const trimmedQuery = query.trim().toLowerCase();
+  if (!trimmedQuery) return [];
+  const terms = trimmedQuery.split(/\s+/).filter(term => !!term);
+
+  const scored: Array<{| schema: ByokToolSchema, score: number |}> = [];
+  for (const schema of BYOK_TOOL_SCHEMAS) {
+    const name = schema.name.toLowerCase();
+    const description = schema.description.toLowerCase();
+    let score = 0;
+    if (name === trimmedQuery) score += 1000;
+    if (name.includes(trimmedQuery)) score += 100;
+    let matchedTerms = 0;
+    for (const term of terms) {
+      if (name.includes(term) || description.includes(term)) matchedTerms++;
+    }
+    score += matchedTerms * 20;
+    if (terms.length > 1 && matchedTerms === terms.length) score += 30;
+    if (score > 0) scored.push({ schema, score });
+  }
+
+  scored.sort(
+    (a, b) => b.score - a.score || (a.schema.name < b.schema.name ? -1 : 1)
+  );
+  return scored.slice(0, resultLimit).map(entry => entry.schema);
 };
 
 /**
@@ -1902,6 +2120,9 @@ export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
   'read_runtime_details',
   'control_runtime',
   'profile_runtime',
+  // The tool-discovery meta-tool (13.5) and the knowledge search (13.7).
+  'search_tools',
+  'search_knowledge',
 ];
 
 const BYOK_ONLY_TOOL_NAMES_SET: Set<string> = new Set(BYOK_ONLY_TOOL_NAMES);
@@ -1972,22 +2193,28 @@ export const validateByokToolSchemas = (
       problems.push(`Whitelisted tool "${toolName}" has no schema.`);
     }
   }
-  // The cap grew with Phase 6 (perception + gameplay tests, 9 tools),
-  // Phase 7 (search_reference + load_skill) and Phase 8 (sub-agents,
-  // extension authoring, restore points), then Phase 11 (authoring reach:
-  // external events/layouts, effects, sprite frames, resources → 56) and
-  // Phase 12 (discovery/runtime: the two store searches plus the four
-  // BYOK-only tools → 62 in this list; `get_game_starter_summary` joins
-  // initialize_project in the no-project list, so a no-project chat
-  // advertises 64 names — the roadmap's "advertised set 63" counts the 56
-  // + 7 new tool names). The descriptions stay concise, and the skills
-  // system (7.6) is the mechanism to scope per-task tool subsets later.
-  if (BYOK_TOOL_NAMES.length > 62) {
+  // The dispatchable list grew phase by phase: 62 names at the end of
+  // Phase 12, plus search_tools in Phase 13.5 (63) — the ADVERTISED set is
+  // the much smaller core list (BYOK_CORE_TOOL_NAMES), which is what the
+  // 13.5 token budget guards; this cap only stops the dispatchable
+  // whitelist from growing unnoticed.
+  if (BYOK_TOOL_NAMES.length > 64) {
     problems.push(
       `The default tool set has ${
         BYOK_TOOL_NAMES.length
-      } tools — the cap is 62.`
+      } tools — the cap is 64.`
     );
+  }
+
+  // Every core (advertised) name must be a real whitelisted tool: a typo
+  // here would silently drop a tool from the model's view.
+  for (const coreName of BYOK_CORE_TOOL_NAMES) {
+    if (
+      !BYOK_TOOL_NAMES.includes(coreName) &&
+      !BYOK_NO_PROJECT_TOOL_NAMES.includes(coreName)
+    ) {
+      problems.push(`Core tool "${coreName}" is not in the whitelist.`);
+    }
   }
 
   for (const schema of schemas) {

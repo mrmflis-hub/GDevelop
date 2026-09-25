@@ -19,6 +19,7 @@ import {
   type ObjectsOutsideEditorChanges,
   type ObjectGroupsOutsideEditorChanges,
   type WillDeleteObjectChanges,
+  type ExternalLayoutOutsideEditorChanges,
 } from '../../EditorFunctions/OutsideEditorChanges';
 import ExternalPropertiesDialog, {
   type ExternalProperties,
@@ -275,6 +276,18 @@ export class ExternalLayoutEditorContainer extends React.Component<
 
   onInstancesModifiedOutsideEditor(changes: InstancesOutsideEditorChanges) {
     if (changes.scene !== this.getLayout()) {
+      return;
+    }
+
+    if (this.editor) {
+      this.editor.onInstancesModifiedOutsideEditor();
+    }
+  }
+
+  onExternalLayoutModifiedOutsideEditor(
+    changes: ExternalLayoutOutsideEditorChanges
+  ) {
+    if (changes.externalLayoutName !== this.props.projectItemName) {
       return;
     }
 

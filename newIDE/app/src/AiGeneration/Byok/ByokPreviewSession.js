@@ -163,6 +163,56 @@ type PushedWaiter = {|
 |};
 
 /**
+ * The launch options the preview launcher reads (`PreviewOptions` in
+ * ExportAndShare/PreviewLauncher.flow.js — an exact object whose preference
+ * fields are GETTERS, which is why a hand-rolled `{ sceneName, ... }` fails
+ * with "options.getIsMenuBarHiddenInPreview is not a function"). The BYOK
+ * preview is a plain one-window gameplay preview: every in-game-edition,
+ * capture and tutorial field is off, and the two preference getters use the
+ * same values the gameplay-test runner launches with (GameplayTestRunner.js).
+ */
+export const makeByokPreviewLaunchOptions = ({
+  project,
+  sceneName,
+  isMenuBarHiddenInPreview = true,
+  isAlwaysOnTopInPreview = false,
+}: {|
+  project: any,
+  sceneName: string,
+  isMenuBarHiddenInPreview?: boolean,
+  isAlwaysOnTopInPreview?: boolean,
+|}): Object => ({
+  project,
+  sceneName,
+  externalLayoutName: null,
+  eventsBasedObjectType: null,
+  eventsBasedObjectVariantName: null,
+  networkPreview: false,
+  hotReload: false,
+  shouldReloadProjectData: true,
+  shouldReloadLibraries: true,
+  shouldGenerateScenesEventsCode: true,
+  shouldReloadResources: false,
+  shouldHardReload: false,
+  fullLoadingScreen: false,
+  fallbackAuthor: null,
+  authenticatedPlayer: null,
+  isForInGameEdition: false,
+  isForGameplayTest: false,
+  editorId: '',
+  getIsMenuBarHiddenInPreview: () => isMenuBarHiddenInPreview,
+  getIsAlwaysOnTopInPreview: () => isAlwaysOnTopInPreview,
+  captureOptions: null,
+  onCaptureFinished: async () => {},
+  inAppTutorialMessageInPreview: '',
+  inAppTutorialMessagePositionInPreview: '',
+  editorCameraState3D: null,
+  inGameEditorSettings: null,
+  numberOfWindows: 1,
+  previewWindows: null,
+});
+
+/**
  * Create the BYOK preview session. `getPreviewLauncher` and `getProject`
  * are injected (in the app they resolve the launcher MainFrame registered
  * for gameplay tests, and the live project); tests inject fakes.
@@ -313,6 +363,12 @@ export const createByokPreviewSession = (options: {|
       // is missed. The connection id is captured the same way: whoever
       // connects right after the launch IS this session's preview.
       unregisterCallbacks = debuggerServer.registerCallbacks({
+        // The debugger server fan-out invokes every registered callback
+        // (server state changes, server errors, connection errors), so each
+        // one must be present — a missing callback crashes the whole app.
+        onServerStateChanged: () => {},
+        onErrorReceived: () => {},
+        onConnectionErrored: () => {},
         onConnectionOpened: ({ id }: {| id: string |}) => {
           if (debuggerId === null) debuggerId = id;
         },
@@ -328,18 +384,12 @@ export const createByokPreviewSession = (options: {|
           handleParsedMessage(parsedMessage),
       });
       try {
-        await previewLauncher.launchPreview({
-          project,
-          sceneName: sceneName || project.getFirstLayout(),
-          externalLayoutName: null,
-          networkPreview: false,
-          hotReload: false,
-          shouldReloadProjectData: true,
-          shouldReloadLibraries: true,
-          shouldGenerateScenesCode: true,
-          numberOfWindows: 1,
-          fullLoadingScreen: false,
-        });
+        await previewLauncher.launchPreview(
+          makeByokPreviewLaunchOptions({
+            project,
+            sceneName: sceneName || project.getFirstLayout(),
+          })
+        );
       } catch (error) {
         if (unregisterCallbacks) unregisterCallbacks();
         unregisterCallbacks = null;

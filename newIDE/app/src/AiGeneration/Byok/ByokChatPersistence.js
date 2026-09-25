@@ -298,7 +298,9 @@ export const collectByokChatImageEntries = (
   const entries: { [imageId: string]: any } = {};
   const output = chat.output || [];
   for (const message of output) {
-    if (message.type !== 'function_call_output') continue;
+    // Both referencing kinds count (tool outputs and the user messages'
+    // attached images, Phase 13.3) — anything the transcript points at must
+    // survive a reload.
     const images = (message: any).images;
     if (!Array.isArray(images)) continue;
     for (const imageId of images) {

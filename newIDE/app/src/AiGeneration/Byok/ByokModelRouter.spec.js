@@ -1,5 +1,9 @@
 // @flow
-import { DEFAULT_BYOK_SETTINGS, type ByokSettings } from './ByokTypes';
+import {
+  DEFAULT_BYOK_SETTINGS,
+  type ByokProvider,
+  type ByokSettings,
+} from './ByokTypes';
 import {
   type ByokCallKind,
   buildLegacyMigrationProviders,
@@ -7,6 +11,7 @@ import {
   getByokEffortOptions,
   isFastByokCallKind,
   listByokModelChoices,
+  migrateByokRoutingProfiles,
   makeByokProviderId,
   removeByokProvider,
   resolveByokModelTarget,
@@ -67,12 +72,14 @@ describe('ByokModelRouter: target resolution order', () => {
         name: 'Alpha',
         endpointUrl: 'https://alpha.example.com/v1',
         keyRef: 'prov-a',
+        modelSettings: [],
       },
       {
         id: 'prov-b',
         name: 'Beta',
         endpointUrl: 'https://beta.example.com/v1',
         keyRef: '',
+        modelSettings: [],
       },
     ],
     fastProfile: {
@@ -181,6 +188,7 @@ describe('ByokModelRouter: target resolution order', () => {
             name: 'Other',
             endpointUrl: 'https://other.example.com/v1',
             keyRef: 'other',
+            modelSettings: [],
           },
         ],
       }),
@@ -198,23 +206,26 @@ describe('ByokModelRouter: target resolution order', () => {
 
 describe('ByokModelRouter: provider registry CRUD', () => {
   it('upserts by id, preserving the other entries', () => {
-    const first = {
+    const first: ByokProvider = {
       id: 'p1',
       name: 'One',
       endpointUrl: 'https://one/v1',
       keyRef: 'p1',
+      modelSettings: [],
     };
-    const second = {
+    const second: ByokProvider = {
       id: 'p2',
       name: 'Two',
       endpointUrl: 'https://two/v1',
       keyRef: 'p2',
+      modelSettings: [],
     };
-    const updated = {
+    const updated: ByokProvider = {
       id: 'p1',
       name: 'One renamed',
       endpointUrl: 'https://one-new/v1',
       keyRef: 'p1',
+      modelSettings: [],
     };
 
     let providers = upsertByokProvider([], first);
@@ -228,9 +239,9 @@ describe('ByokModelRouter: provider registry CRUD', () => {
   });
 
   it('removes only the targeted provider', () => {
-    const providers = [
-      { id: 'p1', name: 'One', endpointUrl: '', keyRef: '' },
-      { id: 'p2', name: 'Two', endpointUrl: '', keyRef: '' },
+    const providers: Array<ByokProvider> = [
+      { id: 'p1', name: 'One', endpointUrl: '', keyRef: '', modelSettings: [] },
+      { id: 'p2', name: 'Two', endpointUrl: '', keyRef: '', modelSettings: [] },
     ];
     expect(removeByokProvider(providers, 'p1').map(p => p.id)).toEqual(['p2']);
     expect(removeByokProvider(providers, 'nope')).toHaveLength(2);
@@ -257,7 +268,13 @@ describe('ByokModelRouter: provider registry CRUD', () => {
         makeSettings({
           endpointUrl: 'https://x/v1',
           providers: [
-            { id: 'p', name: 'P', endpointUrl: 'https://x/v1', keyRef: 'p' },
+            {
+              id: 'p',
+              name: 'P',
+              endpointUrl: 'https://x/v1',
+              keyRef: 'p',
+              modelSettings: [],
+            },
           ],
         })
       )
@@ -398,6 +415,7 @@ describe('ByokModelRouter: the chat model dropdown choices', () => {
             name: 'Alpha',
             endpointUrl: 'https://a/v1',
             keyRef: 'a',
+            modelSettings: [],
           },
         ],
       }),
@@ -419,5 +437,132 @@ describe('ByokModelRouter: the chat model dropdown choices', () => {
       modelsByProviderId: { '': ['m1', 'm1'] },
     });
     expect(choices).toHaveLength(1);
+  });
+});
+
+describe('ByokModelRouter: the Phase 13.4 routing-pair migration', () => {
+  const makeProvider = (id: string): ByokProvider => ({
+    id,
+    name: `Provider ${id}`,
+    endpointUrl: `https://${id}.example.com/v1`,
+    keyRef: id,
+    modelSettings: [],
+  });
+
+  it('fills an old provider-less profile with the first provider', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [makeProvider('p1'), makeProvider('p2')],
+      strongProfile: {
+        providerId: '',
+        modelName: 'old-strong',
+        temperature: null,
+        maxTokens: null,
+      },
+    };
+    const migrated: any = migrateByokRoutingProfiles(settings);
+    expect(migrated).not.toBe(null);
+    expect(migrated.strongProfile.providerId).toBe('p1');
+    expect(migrated.strongProfile.modelName).toBe('old-strong');
+  });
+
+  it('keeps profiles that already point at a real provider', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [makeProvider('p1')],
+      fastProfile: {
+        providerId: 'p1',
+        modelName: 'fast-model',
+        temperature: null,
+        maxTokens: null,
+      },
+    };
+    expect(migrateByokRoutingProfiles(settings)).toBe(null);
+  });
+
+  it('returns null without providers or without model names', () => {
+    expect(migrateByokRoutingProfiles(DEFAULT_BYOK_SETTINGS)).toBe(null);
+    const withProviders: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [makeProvider('p1')],
+    };
+    expect(migrateByokRoutingProfiles(withProviders)).toBe(null);
+  });
+
+  it('re-points a profile whose provider no longer exists', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [makeProvider('p1')],
+      fastProfile: {
+        providerId: 'deleted-provider',
+        modelName: 'fast-model',
+        temperature: null,
+        maxTokens: null,
+      },
+    };
+    const migrated: any = migrateByokRoutingProfiles(settings);
+    expect(migrated).not.toBe(null);
+    expect(migrated.fastProfile.providerId).toBe('p1');
+  });
+});
+
+describe('ByokModelRouter: per-provider model settings overlay (13.4)', () => {
+  const makeProvider = (modelSettings: Array<any>) => ({
+    id: 'p1',
+    name: 'Provider 1',
+    endpointUrl: 'https://p1.example.com/v1',
+    keyRef: 'p1',
+    modelSettings,
+  });
+
+  it('lets a per-model temperature/max-tokens win over the profile values', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [
+        makeProvider([
+          {
+            modelName: 'tuned-model',
+            temperature: 0.3,
+            maxTokens: 2048,
+            contextWindowTokens: null,
+          },
+        ]),
+      ],
+      strongProfile: {
+        providerId: 'p1',
+        modelName: 'tuned-model',
+        temperature: 0.9,
+        maxTokens: null,
+      },
+    };
+    const target = resolveByokModelTarget({
+      settings,
+      chatSelection: null,
+      callKind: 'main',
+    });
+    expect(target.endpointUrl).toBe('https://p1.example.com/v1');
+    expect(target.modelName).toBe('tuned-model');
+    expect(target.temperature).toBe(0.3);
+    expect(target.maxTokens).toBe(2048);
+  });
+
+  it('keeps the profile values when the model has no block', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      providers: [makeProvider([])],
+      strongProfile: {
+        providerId: 'p1',
+        modelName: 'plain-model',
+        temperature: 0.9,
+        maxTokens: null,
+      },
+    };
+    const target = resolveByokModelTarget({
+      settings,
+      chatSelection: null,
+      callKind: 'main',
+    });
+    expect(target.temperature).toBe(0.9);
+    expect(target.maxTokens).toBe(null);
   });
 });

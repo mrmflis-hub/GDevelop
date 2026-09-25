@@ -6,6 +6,10 @@ import {
 import { applyEventsChanges } from '../../EditorFunctions/ApplyEventsChanges';
 import { renderEventSourceById } from '../../EventsSheet/EventsTree/TextRenderer/EventScriptSourceView';
 import { parseByokEventScript } from './ByokEventScriptParser';
+import {
+  makeByokEventScriptRetryHint,
+  type ByokEventScriptRetryHint,
+} from './ByokEventScriptExamples';
 
 /**
  * The local replacement of the hosted `add_scene_events`: parses the
@@ -37,6 +41,10 @@ export type ByokEventWriterOutput = {|
   appliedCount?: number,
   aiGeneratedEventId?: string,
   errors?: Array<string>,
+  // The Phase 13.6 validator-repair injection: on a rejected batch, the
+  // example most relevant to the failing construct — a complete, runnable
+  // correction instead of the bare syntax complaint.
+  retryHint?: ByokEventScriptRetryHint,
 |};
 
 /**
@@ -115,20 +123,37 @@ const parseBatchEventScript = (
 
   const parseResult = parseByokEventScript(eventScript);
   if (parseResult.error) {
+    const message = `Batch ${batchIndex} EventScript is not valid (line ${
+      parseResult.error.lineNumber
+    }, column ${parseResult.error.columnNumber}): ${
+      parseResult.error.message
+    }\nOffending line: ${parseResult.error.lineText.trim()}`;
     return {
       generatedEvents: null,
-      failure: {
-        success: false,
-        message: `Batch ${batchIndex} EventScript is not valid (line ${
-          parseResult.error.lineNumber
-        }, column ${parseResult.error.columnNumber}): ${
-          parseResult.error.message
-        }\nOffending line: ${parseResult.error.lineText.trim()}`,
-      },
+      failure: withByokRetryHint(
+        { success: false, message },
+        parseResult.error.lineText
+      ),
     };
   }
 
   return { generatedEvents: JSON.stringify(parseResult.events), failure: null };
+};
+
+/**
+ * Attach the retryHint to a failure output when the example bank has a
+ * relevant example (13.6): the hint rides on the same JSON the model reads.
+ */
+const withByokRetryHint = (
+  failure: ByokEventWriterOutput,
+  offendingLine: string
+): ByokEventWriterOutput => {
+  const retryHint = makeByokEventScriptRetryHint(
+    failure.message,
+    offendingLine
+  );
+  if (!retryHint) return failure;
+  return { ...failure, retryHint };
 };
 
 /**
@@ -214,14 +239,15 @@ const buildBatchChange = (
         project
       );
     } catch (error) {
+      const message = `Batch ${batchIndex} could not be turned into events: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
       return {
         change: null,
-        failure: {
-          success: false,
-          message: `Batch ${batchIndex} could not be turned into events: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        },
+        failure: withByokRetryHint(
+          { success: false, message },
+          batch.event_script || ''
+        ),
       };
     }
   }

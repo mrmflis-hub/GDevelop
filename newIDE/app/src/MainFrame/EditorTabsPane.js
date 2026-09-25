@@ -27,6 +27,8 @@ import { type PreviewState } from './PreviewState';
 import {
   type SceneEventsOutsideEditorChanges,
   type InstancesOutsideEditorChanges,
+  type ExternalLayoutOutsideEditorChanges,
+  type ExternalEventsOutsideEditorChanges,
   type ObjectsOutsideEditorChanges,
   type ObjectGroupsOutsideEditorChanges,
   type ProjectItemRenamedOutsideEditorChanges,
@@ -299,6 +301,12 @@ export type EditorTabsPaneCommonProps = {|
   onInstancesModifiedOutsideEditor: (
     changes: InstancesOutsideEditorChanges
   ) => void,
+  onExternalLayoutModifiedOutsideEditor: (
+    changes: ExternalLayoutOutsideEditorChanges
+  ) => void,
+  onExternalEventsModifiedOutsideEditor: (
+    changes: ExternalEventsOutsideEditorChanges
+  ) => void,
   onObjectsModifiedOutsideEditor: (
     changes: ObjectsOutsideEditorChanges
   ) => void,
@@ -434,6 +442,8 @@ const EditorTabsPane: React.ComponentType<{
     onSceneObjectsDeleted,
     onSceneEventsModifiedOutsideEditor,
     onInstancesModifiedOutsideEditor,
+    onExternalLayoutModifiedOutsideEditor,
+    onExternalEventsModifiedOutsideEditor,
     onObjectsModifiedOutsideEditor,
     onObjectGroupsModifiedOutsideEditor,
     onProjectItemRenamedOutsideEditor,
@@ -913,6 +923,8 @@ const EditorTabsPane: React.ComponentType<{
                     onSceneObjectsDeleted: onSceneObjectsDeleted,
                     onSceneEventsModifiedOutsideEditor: onSceneEventsModifiedOutsideEditor,
                     onInstancesModifiedOutsideEditor: onInstancesModifiedOutsideEditor,
+                    onExternalLayoutModifiedOutsideEditor: onExternalLayoutModifiedOutsideEditor,
+                    onExternalEventsModifiedOutsideEditor: onExternalEventsModifiedOutsideEditor,
                     onObjectsModifiedOutsideEditor: onObjectsModifiedOutsideEditor,
                     onObjectGroupsModifiedOutsideEditor: onObjectGroupsModifiedOutsideEditor,
                     onProjectItemRenamedOutsideEditor: onProjectItemRenamedOutsideEditor,

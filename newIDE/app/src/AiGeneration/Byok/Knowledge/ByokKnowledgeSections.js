@@ -16,9 +16,14 @@ import { getByokToolSchemas } from '../ByokToolSchema';
 
 /**
  * The total budget of the composed system prompt, in estimated tokens
- * (~4 characters per token — conservative for English prose).
+ * (~4 characters per token — conservative for English prose). Since the
+ * Phase 13.5/13.6 rework the always-on knowledge lives in the pinned
+ * EventScript block and the retrieval map; the deeper packs (full grammar,
+ * game design, math, JS API) degrade to one-liners under this budget and
+ * stay reachable via load_skill — the combined guard (prompt + advertised
+ * schemas ≤ 15k, target 8–10k) lives in ByokPromptBudget.spec.js.
  */
-export const BYOK_SYSTEM_PROMPT_BUDGET_TOKENS = 6000;
+export const BYOK_SYSTEM_PROMPT_BUDGET_TOKENS = 5500;
 
 /** The characters-per-token estimate used for the budget accounting. */
 export const BYOK_CHARS_PER_TOKEN = 4;
@@ -102,27 +107,26 @@ Never invent tool names: only call the tools listed below.
 Prefer the smallest edit that satisfies the request — do not re-create or rewrite objects, scenes or events that already match what is asked for.`;
 
 /**
- * The first sentence of a tool description is enough to remind the model of
- * each tool's purpose here: the full descriptions are already sent with the
- * tools themselves in every request (`toOpenAiToolsFormat`), duplicating them
- * in full would double the prompt tokens for no benefit.
+ * The tools section shows the NAMES of this turn's advertised tools — the
+ * full descriptions and parameter schemas are attached to the request
+ * itself (`toOpenAiToolsFormat`), so repeating their prose here would
+ * double the prompt tokens for no benefit (the Phase 13.5 "drop duplicated
+ * prose" pass). search_tools gets a highlighting line.
  */
-const firstSentenceOf = (description: string): string => {
-  const firstSentenceEnd = description.indexOf('. ');
-  if (firstSentenceEnd === -1) return description;
-  return description.slice(0, firstSentenceEnd + 1);
-};
-
 const buildToolSectionText = (toolNames: Array<string>): string => {
   const knownToolNames = new Set(toolNames);
-  const toolLines = getByokToolSchemas()
+  const names = getByokToolSchemas()
     .filter(schema => knownToolNames.has(schema.name))
-    .map(schema => `- ${schema.name}: ${firstSentenceOf(schema.description)}`);
-  return [`Available tools:`, ...toolLines].join('\n');
+    .map(schema => schema.name);
+  return [
+    `Tools of this turn (their full schemas are attached to the request — call them as documented there):`,
+    names.join(', '),
+    `More tools exist (effects, sprites, external layouts, stores, extensions, runtime debugging…): find them with search_tools(query) and call them immediately.`,
+  ].join('\n');
 };
 
 const PROJECT_OPEN_SECTION_TEXT = `- The user message carries a simplified JSON snapshot of the project (its current state at the time it was sent).
-- After any edit, that snapshot is stale: inspect before editing. Use describe_instances and read_scene_events to check the current state of a scene, read_game_project_json for the whole project, and read_events_source before editing events, instead of assuming what exists.`;
+- After any edit, that snapshot is stale: inspect before editing. Use describe_instances and read_events_source to check the current state of a scene, read_game_project_json for the whole project, instead of assuming what exists.`;
 
 const NO_PROJECT_SECTION_TEXT = `- No project is opened in the editor. When the request needs a game: browse the starter templates with get_game_starter_summary (pick a real slug — never invent one), then call initialize_project (empty, or the chosen template slug), and edit the new project with the other tools.`;
 
@@ -155,9 +159,9 @@ const SCRIPT_SECTION_TEXT = `- For 5 or more related operations, or any arithmet
 - Every tool call inside a script must be awaited, one at a time. A refused approval means nothing in the script ran.`;
 
 const LOOK_VERIFY_SECTION_TEXT = `- After any visual change (instances, scene settings, resources, effects), capture a screenshot (capture_scene_screenshot) before declaring the step done.
-- After logic changes (events, behaviors, variables), run a preview (start_preview, then read_preview_logs / get_runtime_errors / inspect_runtime_state) or a gameplay test (run_gameplay_test), and report what you saw.
+- After logic changes (events, behaviors, variables), run a preview (start_preview, then read_preview_logs / inspect_runtime_state) or a gameplay test (run_gameplay_test — find its schema with search_tools "gameplay"), and report what you saw.
 - Gameplay tests: pass screenshots: "on-failure" (the default advice) so a failing run returns the frame; the executed source is returned on failure — repair it and run again. A "paused" status means the test window was not visible, not a game bug: ask the user to keep the preview visible.
-- One preview at a time per chat: stop_preview before starting another.`;
+- One preview at a time per chat: stop_preview (search_tools "preview") before starting another.`;
 
 const HYBRID_GROUNDING_SECTION_TEXT = `- Every screenshot comes with a textual state sibling: pair captures with describe_instances / inspect_scene_properties_layers_effects / inspect_runtime_state, and read the outputs.
 - When coordinates matter, read them from describe_instances or inspect_runtime_state — never guess from pixels.`;
@@ -165,13 +169,216 @@ const HYBRID_GROUNDING_SECTION_TEXT = `- Every screenshot comes with a textual s
 // Phase 11 authoring reach: the surfaces beyond scenes the agent can now
 // read/write, and how they combine. Phase 12 added the discovery stores
 // and the runtime steering.
-const AUTHORING_REACH_SECTION_TEXT = `- External events (read/add_external_events_source/add_external_events) are reusable event sheets: author them once, then include them from scenes (the "Include external events" event, written as EventScript).
+const AUTHORING_REACH_SECTION_TEXT = `- External events (read_external_events_source/add_external_events) are reusable event sheets: author them once, then include them from scenes (the "Include external events" event, written as EventScript).
 - External layouts (describe/put_external_layout_instances) hold reusable sets of instances — the spawn-point mechanic. Fill one, then spawn it at runtime with "Create objects from external layout".
 - Effects: list_effects gives the exact effect_type strings and defaults — never guess an effect type; pick it there and pass its defaults through changed_properties.
 - Sprites: describe_sprite_frames first, then change_sprite_frames with typed operations (frames, points, collision masks).
 - Real files: import_project_resources brings images/audio/fonts into the project (URL or local path), then reference them by name (set_frame_image, create_or_replace_object…).
 - Discovery (Phase 12): search_object_asset_store finds ready-made objects (public/free), search_resource_store finds audio and fonts with direct urls — and create_or_replace_object with search_terms INSTALLS the best asset match by itself.
-- Runtime (Phase 12): read_runtime_details, control_runtime and profile_runtime see and steer the preview this chat launched (pause it, dump its state, profile a slow scene). They never touch the project itself.`;
+- Runtime (Phase 12): read_runtime_details, control_runtime and profile_runtime see and steer the preview this chat launched (pause it, dump its state, profile a slow scene). They never touch the project itself.
+- The tools this section names that are not in the core list above are all discoverable with search_tools — their full schemas come back in one call.`;
+
+// --- The Phase 13.5 retrieval map + task catalog ----------------------------
+
+/**
+ * The task catalog (D13-6): common tasks advertised BY NAME, each with the
+ * search that solves it. The machine-checkable pointers (`skillName`,
+ * `toolQuery`, `referenceQuery`) are asserted in ByokPromptBudget.spec.js —
+ * every named skill must exist, every query must return results.
+ */
+export const BYOK_TASK_CATALOG: Array<{|
+  task: string,
+  guidance: string,
+  skillName?: string,
+  toolQuery?: string,
+  referenceQuery?: string,
+|}> = [
+  {
+    task: 'Build a whole game from a request',
+    guidance:
+      'load_skill("build-workflow") and follow its pipeline; browse templates with get_game_starter_summary before initialize_project.',
+    skillName: 'build-workflow',
+  },
+  {
+    task: 'Platformer movement, level design',
+    guidance: 'load_skill("platformer-game"); search_reference "jump".',
+    skillName: 'platformer-game',
+    referenceQuery: 'jump',
+  },
+  {
+    task: 'Top-down shooter mechanics',
+    guidance: 'load_skill("top-down-shooter").',
+    skillName: 'top-down-shooter',
+  },
+  {
+    task: 'Puzzle / grid game logic',
+    guidance: 'load_skill("puzzle-grid").',
+    skillName: 'puzzle-grid',
+  },
+  {
+    task: 'Save system, checkpoints, persistence',
+    guidance: 'load_skill("save-system").',
+    skillName: 'save-system',
+  },
+  {
+    task: 'HUD, score display, menus',
+    guidance:
+      'load_skill("hud-and-menus"); search_reference "text" for the text-drawing expressions.',
+    skillName: 'hud-and-menus',
+    referenceQuery: 'text',
+  },
+  {
+    task: 'Juice, screen shake, game feel',
+    guidance: 'load_skill("juice-and-game-feel").',
+    skillName: 'juice-and-game-feel',
+  },
+  {
+    task: 'Physics (gravity, joints, forces)',
+    guidance:
+      'load_skill("physics-2d-recipes"); search_reference "physics" for the Physics 2.0 actions.',
+    skillName: 'physics-2d-recipes',
+    referenceQuery: 'physics',
+  },
+  {
+    task: '3D scenes and objects',
+    guidance: 'load_skill("3d-scene-basics").',
+    skillName: '3d-scene-basics',
+  },
+  {
+    task: 'Custom JavaScript rendering',
+    guidance: 'load_skill("js-custom-rendering").',
+    skillName: 'js-custom-rendering',
+  },
+  {
+    task: 'Custom objects, behaviors or functions',
+    guidance: 'load_skill("extend-with-js") + the create_extension family.',
+    skillName: 'extend-with-js',
+    toolQuery: 'extension',
+  },
+  {
+    task: 'EventScript syntax beyond the pinned examples',
+    guidance:
+      'search_reference "timer" (runnable examples); load_skill("eventscript-authoring").',
+    skillName: 'eventscript-authoring',
+    referenceQuery: 'timer',
+  },
+  {
+    task:
+      'The exact name or parameters of an engine action/condition/expression',
+    guidance:
+      'search_reference "collision" (or animation, camera, sound) — never guess engine names.',
+    referenceQuery: 'collision',
+  },
+  {
+    task: 'A ready-made object or asset ("add an enemy", "a coin")',
+    guidance:
+      'search_tools "asset store" → the store searches; create_or_replace_object with search_terms installs.',
+    toolQuery: 'asset store',
+  },
+  {
+    task: 'An effect (glow, blur, …) on a layer or object',
+    guidance: 'search_tools "effect" → list_effects (exact types + defaults).',
+    toolQuery: 'effect',
+  },
+  {
+    task: 'Sprite animations, points, collision masks',
+    guidance:
+      'search_tools "sprite" → describe_sprite_frames / change_sprite_frames.',
+    toolQuery: 'sprite',
+  },
+  {
+    task: 'Reusable event sheets or instance sets (external events/layouts)',
+    guidance: 'search_tools "external" → the external layout and events tools.',
+    toolQuery: 'external',
+  },
+  {
+    task: 'Import real files (images, audio, fonts)',
+    guidance:
+      'search_tools "resource" → import_project_resources; search_reference "sound".',
+    toolQuery: 'resource',
+    referenceQuery: 'sound',
+  },
+  {
+    task: 'Debug or steer the running preview',
+    guidance:
+      'search_tools "runtime" → read_runtime_details / control_runtime / profile_runtime over this chat\'s preview.',
+    toolQuery: 'runtime',
+  },
+  {
+    task: 'Rewind the project to an earlier state of this chat',
+    guidance:
+      'search_tools "restore" → restore_project_point with a message id.',
+    toolQuery: 'restore',
+  },
+];
+
+const buildTaskCatalogLines = (): Array<string> =>
+  BYOK_TASK_CATALOG.map(entry => `- ${entry.task} → ${entry.guidance}`);
+
+const RETRIEVAL_MAP_SECTION_TEXT = [
+  'You can search — use these before guessing or improvising:',
+  '- tools: search_tools(query) returns the full schemas of tools not listed above (every tool of the IDE is callable once discovered).',
+  '- engine reference & EventScript examples: search_reference(query) — the exact names, parameters and runnable examples of every action, condition, expression, object and behavior.',
+  '- bundled docs: search_docs(query) + read_doc(page).',
+  '- the WHOLE corpus at once (grep the docs): search_knowledge(query) — the engine reference, the docs, the skills and the runnable EventScript examples in one search (you can grep the full engine documentation on-device).',
+  '- skills: load_skill(name) — the playbooks listed in the Available skills section.',
+  '',
+  'Common tasks and the search that solves them:',
+  ...buildTaskCatalogLines(),
+].join('\n');
+
+// --- The Phase 13.6 pinned EventScript block --------------------------------
+
+/**
+ * The always-include EventScript block (13.6): the syntax essentials plus
+ * three canonical, complete examples — collision → variable increment,
+ * timer spawn, scene switch. Non-degradable (it is never collapsed under
+ * context pressure) and counted in the 13.5 budget. Every example must
+ * parse through the real writer (round-trip test in ByokLocalEventWriter).
+ */
+export const BYOK_EVENTSCRIPT_PINNED_EXAMPLES: Array<{|
+  id: string,
+  name: string,
+  source: string,
+|}> = [
+  {
+    id: 'collision-counter',
+    name: 'Collision → variable increment',
+    source: `if Collision(Player, Coin):
+  Delete(Coin)
+  SetNumberVariable(Score, =, Score + 1)`,
+  },
+  {
+    id: 'timer-spawn',
+    name: 'Timer spawn',
+    source: `if Timer(2, "SpawnTimer") and once:
+  Create(Rock, Random(800), -50, "Base layer")
+  ResetTimer("SpawnTimer")`,
+  },
+  {
+    id: 'scene-switch',
+    name: 'Scene switch',
+    source: `if KeyPressed("Escape") and once:
+  Scene("MainMenu")`,
+  },
+];
+
+const EVENT_SCRIPT_PINNED_SECTION_TEXT = [
+  'EventScript syntax (always in view — write events exactly like this):',
+  '- One event per block: a condition line ending with a colon, its actions indented below, one call per line.',
+  '- Headers: `always:`, `if Cond() and Cond():`, `not` inverts, `Or(Cond(1), Cond(2))`, `once` after a condition (trigger one time), `else:`, `while Cond():`, `repeat 5 times:`, `for each Object:`, `group "Name":`, `comment "text"`.',
+  '- Actions: `Delete(Player)`, `Create(Object, X, Y, "Layer")`, `await Wait(1)`, `SetNumberVariable(Score, =, Score + 1)` (operators =, +, -, *, /), `Scene("SceneName")` to switch scenes.',
+  '- Strings are double-quoted; expressions are allowed anywhere a number is: `SetX(Player, GetX(Player) + 250 * TimeDelta())`.',
+  '',
+  'Canonical complete examples:',
+  ...BYOK_EVENTSCRIPT_PINNED_EXAMPLES.flatMap(example => [
+    `### ${example.name}`,
+    '```',
+    example.source,
+    '```',
+  ]),
+  'More examples: search_reference "timer spawn example" (runnable, tagged); the full grammar: load_skill("eventscript-authoring").',
+].join('\n');
 
 // --- Core sections ---------------------------------------------------------
 
@@ -182,13 +389,25 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     id: 'tools',
     title: 'Available tools',
     priority: 20,
-    // The full advertised list (63 tools with their summaries — Phases 8,
-    // 11 and 12's surfaces) must fit: a truncated tool list would hide
-    // tools from the model.
+    // The CORE advertised list (Phase 13.5): the system prompt shows the
+    // core tools' one-line summaries; the rest of the catalog is
+    // discoverable through search_tools (see the retrieval map below). A
+    // truncated core list would hide tools from the model — the budget
+    // spec guards the combined prompt + schemas size.
     budgetTokens: 2800,
     degradable: false,
     build: context => buildToolSectionText(context.toolNames),
   };
+
+  // The retrieval map (13.5, D13-6): what can be searched and the task
+  // catalog — non-degradable, it is how the model navigates the tiered
+  // advertisement.
+  const retrievalMapSection = makeSimpleSection(
+    'retrieval-map',
+    'What you can search',
+    25,
+    RETRIEVAL_MAP_SECTION_TEXT
+  );
 
   const projectSection: ByokKnowledgeSection = {
     id: 'project-context',
@@ -248,6 +467,13 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     60,
     AGENTS_SECTION_TEXT
   );
+  // The pinned EventScript block (13.6): never degraded, always in view.
+  const eventScriptPinnedSection = makeSimpleSection(
+    'eventscript-pinned',
+    'EventScript syntax and canonical examples',
+    65,
+    EVENT_SCRIPT_PINNED_SECTION_TEXT
+  );
   const eventScriptCoreSection = makeSimpleSection(
     'eventscript-core',
     'Writing events (add_scene_events)',
@@ -272,12 +498,23 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     100,
     HYBRID_GROUNDING_SECTION_TEXT
   );
-  const authoringReachSection = makeSimpleSection(
-    'authoring-reach',
-    'Authoring reach: external events, layouts, effects, sprites, files',
-    105,
-    AUTHORING_REACH_SECTION_TEXT
-  );
+  const authoringReachSection: ByokKnowledgeSection = {
+    id: 'authoring-reach',
+    title: 'Authoring reach: external events, layouts, effects, sprites, files',
+    priority: 105,
+    budgetTokens: estimateByokTokens(
+      makeSectionText('Authoring reach', AUTHORING_REACH_SECTION_TEXT)
+    ),
+    // Degradable since 13.5: the retrieval map's task catalog names the
+    // same surfaces with their search_tools queries — under pressure this
+    // section collapses to its first line without losing reachability.
+    degradable: true,
+    build: () =>
+      makeSectionText(
+        'Authoring reach: external events, layouts, effects, sprites, files',
+        AUTHORING_REACH_SECTION_TEXT
+      ),
+  };
 
   const skillsSection: ByokKnowledgeSection = {
     id: 'skills-appendix',
@@ -319,11 +556,13 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
   return [
     roleSection,
     toolSection,
+    retrievalMapSection,
     projectSection,
     projectNotesSection,
     outputRulesSection,
     planningSection,
     agentsSection,
+    eventScriptPinnedSection,
     eventScriptCoreSection,
     scriptSection,
     lookVerifySection,

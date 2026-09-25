@@ -101,7 +101,13 @@ const buildOldRegionDigest = (
  * single owner of the drop order).
  */
 const collectImageIds = (message: AiRequestMessage): Array<string> => {
-  if (message.type !== 'function_call_output') return [];
+  // Both referencing kinds count (tool outputs, and the user messages'
+  // attached images since Phase 13.3): an old attachment is exactly the kind
+  // of expensive payload the drop order exists for.
+  if (message.type !== 'function_call_output') {
+    const isUserMessage = message.type === 'message' && message.role === 'user';
+    if (!isUserMessage) return [];
+  }
   const images = (message: any).images;
   if (!Array.isArray(images)) return [];
   return images.filter((imageId: any) => typeof imageId === 'string');

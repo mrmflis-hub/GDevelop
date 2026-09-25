@@ -312,12 +312,23 @@ const applyPolygonMaskToFrame = (
   sprite: any,
   polygons: Array<Object>
 ): boolean => {
+  // Build and validate every polygon BEFORE touching the frame: a bad
+  // definition must leave the previous mask in place (no partial apply).
+  const built: Array<any> = [];
+  for (const definition of polygons) {
+    const polygon = buildPolygonFromDefinition(definition);
+    if (!polygon) {
+      // Orphans were never pushed into the mask, so deleting them is safe
+      // (the same lifecycle as the invalid-vertex path above).
+      for (const orphan of built) orphan.delete();
+      return false;
+    }
+    built.push(polygon);
+  }
   sprite.setFullImageCollisionMask(false);
   const mask = sprite.getCustomCollisionMask();
   mask.clear();
-  for (const definition of polygons) {
-    const polygon = buildPolygonFromDefinition(definition);
-    if (!polygon) return false;
+  for (const polygon of built) {
     // The editor's own lifecycle (PolygonsList.addCollisionMask): a polygon
     // pushed into the mask vector is NOT delete()d afterwards — unlike
     // Sprite/Point/Vector2f wrappers. Deleting it corrupts the wasm heap.

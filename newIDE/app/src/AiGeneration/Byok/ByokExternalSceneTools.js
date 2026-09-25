@@ -12,7 +12,12 @@ import {
   INSTANCE_POSITION_SEMANTICS_MESSAGE,
   putInstancesInContainer,
 } from '../../EditorFunctions/InstanceTools';
-import type { ByokExtraTool, ByokExtraToolResult } from './ByokExtraTools';
+import { BYOK_TOOLS_VERSION } from './ByokTypes';
+import type {
+  ByokExtraTool,
+  ByokExtraToolCollaborators,
+  ByokExtraToolResult,
+} from './ByokExtraTools';
 
 const gd: libGDevelop = global.gd;
 
@@ -55,6 +60,31 @@ const listObjectNames = (objectsContainer: any): Array<string> =>
   mapFor(0, objectsContainer.getObjectsCount(), index =>
     objectsContainer.getObjectAt(index).getName()
   );
+
+/**
+ * Refresh an already-open editor of the item (Main Frame fans the payload
+ * out to every tab; the matching container redraws). No-op in hosts without
+ * the fan-out channel — the changes are applied either way.
+ */
+const notifyExternalLayoutModified = (
+  collaborators: ByokExtraToolCollaborators,
+  externalLayoutName: string
+): void => {
+  if (!collaborators.onExternalLayoutModifiedOutsideEditor) return;
+  collaborators.onExternalLayoutModifiedOutsideEditor({ externalLayoutName });
+};
+
+const notifyExternalEventsModified = (
+  collaborators: ByokExtraToolCollaborators,
+  externalEventsName: string,
+  newOrChangedAiGeneratedEventIds: Set<string>
+): void => {
+  if (!collaborators.onExternalEventsModifiedOutsideEditor) return;
+  collaborators.onExternalEventsModifiedOutsideEditor({
+    externalEventsName,
+    newOrChangedAiGeneratedEventIds,
+  });
+};
 
 /**
  * External-layout tools borrow the layers and objects of the associated
@@ -248,13 +278,23 @@ const makeAddExternalEventsTool = (): ByokExtraTool => ({
     const eventBatches = readEventBatches(args);
     const eventScript =
       typeof args.event_script === 'string' ? args.event_script : '';
+    const newOrChangedAiGeneratedEventIds: Set<string> = new Set();
     if (eventBatches.length > 0) {
       const output = byokApplyEventBatchesToEventsList({
         project,
         eventsList: externalEvents.getEvents(),
         eventBatches,
-        onApplied: () => {},
+        onApplied: aiGeneratedEventId => {
+          newOrChangedAiGeneratedEventIds.add(aiGeneratedEventId);
+        },
       });
+      if (output.success === true) {
+        notifyExternalEventsModified(
+          collaborators,
+          name,
+          newOrChangedAiGeneratedEventIds
+        );
+      }
       return {
         output: {
           ...output,
@@ -273,6 +313,7 @@ const makeAddExternalEventsTool = (): ByokExtraTool => ({
         mode
       );
       if (failure) return failure;
+      notifyExternalEventsModified(collaborators, name, new Set());
       return {
         output: {
           success: true,
@@ -412,7 +453,11 @@ const makePutExternalLayoutInstancesTool = (): ByokExtraTool => ({
     const output = await putInstancesInContainer({
       args,
       project,
-      toolsVersion: null,
+      // The BYOK agent is a script-style agent (it writes run_script
+      // batches): an idempotent no-op is a success for it, like for the
+      // hosted v15 tools — never pass null here (that would report an
+      // already-satisfied put as a failure and kill the script).
+      toolsVersion: BYOK_TOOLS_VERSION,
       initialInstances: externalLayout.getInitialInstances(),
       layersContainer: layout,
       objectsContainer: layout.getObjects(),
@@ -421,14 +466,17 @@ const makePutExternalLayoutInstancesTool = (): ByokExtraTool => ({
       onInstancesModified: () => {},
       PixiResourcesLoader: getPixiResourcesLoader(collaborators),
     });
+    const didChange = output.success === true && !output.nothingChanged;
+    if (didChange) {
+      notifyExternalLayoutModified(collaborators, name);
+    }
     return {
       output: {
         ...output,
         externalLayoutNamed: name,
-        note:
-          'If an external layout editor is open, close and reopen it to see the changes.',
       },
-      didModifyProject: output.success === true,
+      // A no-op success (nothingChanged) did not touch the project.
+      didModifyProject: didChange,
     };
   },
 });

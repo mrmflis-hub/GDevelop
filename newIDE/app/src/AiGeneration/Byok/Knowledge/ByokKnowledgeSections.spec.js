@@ -37,7 +37,7 @@ describe('ByokKnowledgeSections: budget estimation', () => {
     expect(estimateByokTokens('a'.repeat(80))).toBe(
       Math.ceil(80 / BYOK_CHARS_PER_TOKEN)
     );
-    expect(BYOK_SYSTEM_PROMPT_BUDGET_TOKENS * BYOK_CHARS_PER_TOKEN).toBe(24000);
+    expect(BYOK_SYSTEM_PROMPT_BUDGET_TOKENS * BYOK_CHARS_PER_TOKEN).toBe(22000);
   });
 });
 
@@ -270,6 +270,26 @@ describe('ByokKnowledgeSections: core content', () => {
     expect(text).toContain('to-do');
   });
 
+  it('carries the Phase 11 authoring-reach guidance with the real tool names', () => {
+    const authoringSection = getByokKnowledgeSections().find(
+      section => section.id === 'authoring-reach'
+    );
+    if (!authoringSection) {
+      throw new Error('The authoring-reach section is not registered');
+    }
+
+    const text = authoringSection.build(makeContext());
+    // The external-scenes guidance paragraph (Phase 11), naming the tools
+    // exactly as they are advertised (regression: a garbled
+    // "read/add_external_events_source" name once slipped in).
+    expect(text).toContain('read_external_events_source/add_external_events');
+    expect(text).toContain('describe/put_external_layout_instances');
+    expect(text).toContain('list_effects');
+    expect(text).toContain('describe_sprite_frames');
+    expect(text).toContain('import_project_resources');
+    expect(text).toContain('Create objects from external layout');
+  });
+
   it('renders the project notes section only when notes exist', () => {
     const notesSection = getByokKnowledgeSections().find(
       section => section.id === 'project-notes'
@@ -332,8 +352,12 @@ describe('ByokKnowledgeSections: core content', () => {
     const text = toolsSection.build(
       makeContext({ toolNames: BYOK_TOOL_NAMES })
     );
-    expect(text).toContain('- create_scene:');
-    expect(text).not.toContain('- initialize_project:');
+    // Since 13.5 the section lists the NAMES (the schemas ride with the
+    // request) and points at search_tools for the rest of the catalog.
+    expect(text).toContain('create_scene');
+    expect(text).toContain('search_tools');
+    expect(text).not.toContain('initialize_project');
+    expect(text).not.toContain('- create_scene:');
   });
 
   it('swaps the project context with the no-project instructions', () => {

@@ -112,14 +112,15 @@ export const byokToolResultToFunctionCallOutput = (
 
 /**
  * The image ids referenced by a transcript, in order — the basis of the
- * latest-N eviction rule.
+ * latest-N eviction rule. Both referencing message kinds count: tool outputs
+ * (screenshots) and user messages (the "+" attach button, Phase 13.3).
  */
 export const getByokTranscriptImageIds = (
   messages: Array<AiRequestMessage>
 ): Array<string> => {
   const imageIds: Array<string> = [];
   for (const message of messages) {
-    if (message.type !== 'function_call_output') continue;
+    if (isByokNoticeMessage(message)) continue;
     const images = (message: any).images;
     if (!Array.isArray(images)) continue;
     for (const imageId of images) {
@@ -269,6 +270,30 @@ export const byokMessagesForTranscriptItem = (
       content: [{ type: 'text', text: noteLines.join('\n') }, ...parts],
     });
     return messages;
+  }
+
+  // A user message with attached images (the "+" button, Phase 13.3) is
+  // replayed as a multi-part content: the typed text plus the surviving
+  // image parts — the same OpenAI vision format the tool outputs use.
+  if (aiRequestMessage.type === 'message' && aiRequestMessage.role === 'user') {
+    const images = (aiRequestMessage: any).images;
+    if (Array.isArray(images) && images.length > 0 && imagesEnabled) {
+      const text = aiRequestMessage.content
+        .filter(item => item.type === 'user_request')
+        .map(item => item.text)
+        .join(' ');
+      const parts = getByokImagePartsForOutput(images, {
+        imagesEnabled,
+        survivingImageIds,
+        getImage,
+      });
+      return [
+        {
+          role: 'user',
+          content: [{ type: 'text', text }, ...parts],
+        },
+      ];
+    }
   }
 
   return [assistantMessageToByokMessage(aiRequestMessage)];

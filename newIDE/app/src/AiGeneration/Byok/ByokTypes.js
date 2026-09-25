@@ -23,6 +23,19 @@ export const isByokImageSupport = (value: mixed): boolean =>
   BYOK_IMAGE_SUPPORTS.some(support => support === value);
 
 /**
+ * The per-model advanced settings of one provider (Phase 13.4): unset
+ * values are omitted from the request body (the provider default applies).
+ * Lives on the provider (not the routing profile): the same model reached
+ * through any profile gets the same advanced treatment.
+ */
+export type ByokProviderModelSettings = {|
+  modelName: string,
+  temperature: ?number,
+  maxTokens: ?number,
+  contextWindowTokens: ?number,
+|};
+
+/**
  * One registered provider (Phase 9.4, decision #6): a name, the base URL of
  * its OpenAI-compatible endpoint, and a reference to the slot its API key
  * lives in (`ByokKeyStorage`). The key itself is never part of the settings.
@@ -34,6 +47,9 @@ export type ByokProvider = {|
   name: string,
   endpointUrl: string,
   keyRef: string,
+  // The per-model advanced blocks (13.4): temperature / max tokens /
+  // context window per model of THIS provider.
+  modelSettings: Array<ByokProviderModelSettings>,
 |};
 
 /**
@@ -167,6 +183,15 @@ export const BYOK_CUSTOM_INSTRUCTIONS_MAX_CHARS = 2000;
 
 export const MIN_CONTEXT_WINDOW_TOKENS = 512;
 export const MAX_CONTEXT_WINDOW_TOKENS = 1000000;
+
+/**
+ * The editor-functions protocol version BYOK executes with — the same
+ * value as AI_ORCHESTRATOR_TOOLS_VERSION (AiGeneration/Utils.js). Declared
+ * here instead of imported because Utils.js pulls renderer-only modules
+ * that cannot load in the tests. v12+ means script-based-agent semantics:
+ * an idempotent no-op tool call is a success (IsNoOpConsideredSuccess).
+ */
+export const BYOK_TOOLS_VERSION: string = 'v15';
 
 // ---- Phase 9: providers, routing profiles, watchdog, suggestions ----
 
@@ -405,6 +430,27 @@ const getContextWindowByModelOrDefault = (
   return contextWindowByModel;
 };
 
+const getOptionalNumber = (value: mixed): ?number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/**
+ * Read one per-model settings block (untrusted preferences data): the model
+ * name is required, the numbers are optional (null = "use the defaults").
+ */
+const getProviderModelSettingsOrDefault = (
+  value: mixed
+): ?ByokProviderModelSettings => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record: Object = value;
+  if (typeof record.modelName !== 'string' || !record.modelName) return null;
+  return {
+    modelName: record.modelName,
+    temperature: getOptionalNumber(record.temperature),
+    maxTokens: getOptionalNumber(record.maxTokens),
+    contextWindowTokens: getOptionalNumber(record.contextWindowTokens),
+  };
+};
+
 /**
  * Read one provider entry (untrusted preferences data): keep only the
  * well-shaped ones, with every field narrowed to its type.
@@ -414,11 +460,19 @@ const getProviderOrDefault = (value: mixed): ?ByokProvider => {
   const record: Object = value;
   if (typeof record.id !== 'string' || !record.id) return null;
   if (typeof record.endpointUrl !== 'string') return null;
+  const modelSettings: Array<ByokProviderModelSettings> = [];
+  if (Array.isArray(record.modelSettings)) {
+    for (const entry of record.modelSettings) {
+      const settings = getProviderModelSettingsOrDefault(entry);
+      if (settings) modelSettings.push(settings);
+    }
+  }
   return {
     id: record.id,
     name: typeof record.name === 'string' ? record.name : record.id,
     endpointUrl: record.endpointUrl,
     keyRef: typeof record.keyRef === 'string' ? record.keyRef : record.id,
+    modelSettings,
   };
 };
 
@@ -608,6 +662,50 @@ export const getByokSettings = (values: {
     mcpServer: getMcpServerOrDefault(byok.mcpServer),
   };
 };
+
+/**
+ * The advanced settings registered for one model of a provider (Phase
+ * 13.4), or null when this model has no block yet.
+ */
+export const getByokProviderModelSettings = (
+  provider: ByokProvider,
+  modelName: string
+): ?ByokProviderModelSettings =>
+  Array.isArray(provider.modelSettings)
+    ? provider.modelSettings.find(
+        settings => settings.modelName === modelName
+      ) || null
+    : null;
+
+/**
+ * Insert or replace one model's settings block on a provider copy (the
+ * settings UI works on copies; the preferences blob is replaced whole).
+ */
+export const upsertByokProviderModelSettings = (
+  provider: ByokProvider,
+  modelSettings: ByokProviderModelSettings
+): ByokProvider => ({
+  ...provider,
+  modelSettings: [
+    ...(Array.isArray(provider.modelSettings) ? provider.modelSettings : []),
+  ]
+    .filter(existing => existing.modelName !== modelSettings.modelName)
+    .concat([modelSettings]),
+});
+
+/**
+ * Remove one model's settings block from a provider copy.
+ */
+export const removeByokProviderModelSettings = (
+  provider: ByokProvider,
+  modelName: string
+): ByokProvider => ({
+  ...provider,
+  modelSettings: (Array.isArray(provider.modelSettings)
+    ? provider.modelSettings
+    : []
+  ).filter(existing => existing.modelName !== modelName),
+});
 
 /**
  * True when BYOK can actually be used: enabled, with an endpoint URL that

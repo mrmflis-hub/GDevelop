@@ -50,7 +50,20 @@ type Props = {|
   onStartNewChat: () => void,
   canStartNewChat: boolean,
   selectedAiRequestId: string | null,
+  // The BYOK chats of the merged history (Phase 13.1): the durable
+  // persisted chats plus the in-session ones, listed in their own section
+  // above the hosted list. Only passed while BYOK routing is on.
   byokChatSummaries?: ?Array<AiRequestSummary>,
+  // Archive (or restore) a BYOK chat of the rail — covers both the
+  // in-session and the persisted-only records.
+  onSetByokChatArchived?: ?(
+    aiRequestId: string,
+    archived: boolean
+  ) => void | Promise<void>,
+  // Delete a BYOK chat of the rail (transcript + image sidecar).
+  onDeleteByokChat?: ?(aiRequestId: string) => Promise<void>,
+  // Legacy archive-only handler (kept for older callers): used when
+  // onSetByokChatArchived is not provided.
   onArchiveByokChat?: ?(aiRequestId: string) => void,
 |};
 
@@ -245,10 +258,16 @@ type AskAiHistoryContentProps = {|
   onStartNewChat: () => void,
   canStartNewChat: boolean,
   selectedAiRequestId: string | null,
-  // The BYOK chats of the session (local records, no server action exists
-  // for them): listed in their own section so a chat left running in the
-  // background stays reachable and stoppable.
+  // The BYOK chats of the merged history (local records + persisted files):
+  // listed in their own section so a chat left running in the background
+  // stays reachable and stoppable, and so the durable history is reachable
+  // without opening a BYOK chat first (Phase 13.1).
   byokChatSummaries?: ?Array<AiRequestSummary>,
+  onSetByokChatArchived?: ?(
+    aiRequestId: string,
+    archived: boolean
+  ) => void | Promise<void>,
+  onDeleteByokChat?: ?(aiRequestId: string) => Promise<void>,
   onArchiveByokChat?: ?(aiRequestId: string) => void,
   className?: string,
 |};
@@ -259,6 +278,8 @@ export const AskAiHistoryContent = ({
   canStartNewChat,
   selectedAiRequestId,
   byokChatSummaries,
+  onSetByokChatArchived,
+  onDeleteByokChat,
   onArchiveByokChat,
   className,
 }: AskAiHistoryContentProps): React.Node => {
@@ -304,6 +325,22 @@ export const AskAiHistoryContent = ({
     },
     [showConfirmation, selectedAiRequestId, onStartNewChat, deleteAiRequest]
   );
+  // The BYOK rows' delete (Phase 13.1): the transcript and its image
+  // sidecar go permanently — same confirmation as a hosted chat.
+  const onDeleteByokAiRequest = React.useCallback(
+    async (aiRequestId: string) => {
+      const shouldDelete = await showConfirmation({
+        title: t`Delete this chat?`,
+        message: t`The chat and its screenshots will be permanently deleted. This cannot be undone.`,
+        confirmButtonLabel: t`Delete`,
+        dismissButtonLabel: t`Cancel`,
+      });
+      if (!shouldDelete) return;
+      if (selectedAiRequestId === aiRequestId) onStartNewChat();
+      if (onDeleteByokChat) await onDeleteByokChat(aiRequestId);
+    },
+    [showConfirmation, selectedAiRequestId, onStartNewChat, onDeleteByokChat]
+  );
   const buildMenuTemplate = React.useCallback(
     (
       i18n: I18nType,
@@ -312,15 +349,28 @@ export const AskAiHistoryContent = ({
         isArchived,
       }: {| aiRequestId: string, isArchived: boolean |}
     ): Array<MenuItemTemplate> => {
-      // BYOK chats are local records: archiving suspends and removes them
-      // locally, and there is nothing to rename, unarchive or delete
-      // server-side.
+      // BYOK chats are local records: the rail's own handlers archive
+      // (suspend-and-archive in session, or the file marker), restore and
+      // delete them — nothing goes to the server.
       if (isByokAiRequestId(aiRequestId)) {
+        const archiveClick = () => {
+          if (onSetByokChatArchived) {
+            onSetByokChatArchived(aiRequestId, !isArchived);
+            return;
+          }
+          if (!isArchived && onArchiveByokChat) {
+            onArchiveByokChat(aiRequestId);
+          }
+        };
         return [
           {
-            label: i18n._(t`Archive`),
+            label: isArchived ? i18n._(t`Unarchive`) : i18n._(t`Archive`),
+            click: archiveClick,
+          },
+          {
+            label: i18n._(t`Delete`),
             click: () => {
-              if (onArchiveByokChat) onArchiveByokChat(aiRequestId);
+              void onDeleteByokAiRequest(aiRequestId);
             },
           },
         ];
@@ -349,7 +399,13 @@ export const AskAiHistoryContent = ({
           : []),
       ];
     },
-    [setAiRequestArchived, onDeleteAiRequest, onArchiveByokChat]
+    [
+      setAiRequestArchived,
+      onDeleteAiRequest,
+      onDeleteByokAiRequest,
+      onArchiveByokChat,
+      onSetByokChatArchived,
+    ]
   );
   const buildFilterMenuTemplate = React.useCallback(
     (i18n: I18nType): Array<MenuItemTemplate> =>
@@ -388,7 +444,13 @@ export const AskAiHistoryContent = ({
   const hasGameSection =
     gameAiRequestSummaries.length > 0 || canLoadMoreGameAiRequestSummaries;
   const hasChats = sortedAiRequestSummaries.length > 0;
-  const hasByokChats = !!byokChatSummaries && byokChatSummaries.length > 0;
+  // The BYOK rows follow the same active/archived/all filter as the hosted
+  // ones (the merged entries carry their archivedAt marker).
+  const filteredByokChatSummaries = (byokChatSummaries || []).filter(
+    aiRequestSummary =>
+      matchesFilter(aiRequestSummary, aiRequestSummariesFilter)
+  );
+  const hasByokChats = filteredByokChatSummaries.length > 0;
 
   const renderChatItems = (summaries: Array<AiRequestSummary>) =>
     summaries.map(aiRequestSummary => {
@@ -486,6 +548,19 @@ export const AskAiHistoryContent = ({
         </div>
       ) : (
         <ScrollView>
+          {/* The BYOK chats come first (Phase 13.1, D13-4): the durable
+              history of the user's own-key chats, then the hosted list as
+              today — hosted history stays visible. */}
+          {hasByokChats && (
+            <>
+              <div className={classes.sectionTitle}>
+                <Trans>BYOK (your own key)</Trans>
+              </div>
+              <div className={classes.list}>
+                {renderChatItems(filteredByokChatSummaries)}
+              </div>
+            </>
+          )}
           {hasChats && (
             <>
               {hasGameSection && (
@@ -504,16 +579,6 @@ export const AskAiHistoryContent = ({
                 {renderChatItems(recentAiRequestSummaries)}
               </div>
               {canLoadMore && renderLoadMore(onLoadMoreAiRequestSummaries)}
-            </>
-          )}
-          {hasByokChats && (
-            <>
-              <div className={classes.sectionTitle}>
-                <Trans>BYOK (your own key)</Trans>
-              </div>
-              <div className={classes.list}>
-                {renderChatItems(byokChatSummaries || [])}
-              </div>
             </>
           )}
           <ContextMenu
@@ -535,6 +600,8 @@ export const AskAiHistory = ({
   canStartNewChat,
   selectedAiRequestId,
   byokChatSummaries,
+  onSetByokChatArchived,
+  onDeleteByokChat,
   onArchiveByokChat,
 }: Props): React.Node => {
   const isDrawer = layout !== 'side-panel';
@@ -555,6 +622,8 @@ export const AskAiHistory = ({
       canStartNewChat={canStartNewChat}
       selectedAiRequestId={selectedAiRequestId}
       byokChatSummaries={byokChatSummaries}
+      onSetByokChatArchived={onSetByokChatArchived}
+      onDeleteByokChat={onDeleteByokChat}
       onArchiveByokChat={onArchiveByokChat}
       className={isDrawer ? undefined : classes.sidePanel}
     />

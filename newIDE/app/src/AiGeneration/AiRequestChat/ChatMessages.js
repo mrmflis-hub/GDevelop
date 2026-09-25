@@ -383,6 +383,23 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
               messageIndex,
               message,
             });
+            // The images attached to the message with the "+" button
+            // (Phase 13.3) render right after their message, like the tool
+            // result screenshots do — same lookup, same ids.
+            const userImageIds = (message: any).images;
+            if (
+              Array.isArray(userImageIds) &&
+              userImageIds.length > 0 &&
+              !!getToolResultImage
+            ) {
+              items.push({
+                type: 'user_message_images',
+                messageIndex,
+                imageIds: userImageIds.filter(
+                  (imageId: any) => typeof imageId === 'string'
+                ),
+              });
+            }
           } else if ((message: any).type === 'byok_notice') {
             // A BYOK-local notice row (stall watchdog, "Context summarized",
             // rate-limit backoff): an info line, never a chat bubble, and
@@ -935,6 +952,44 @@ export const ChatMessages: React.ComponentType<Props> = React.memo<Props>(
 
             if (absorbedMessageContentIndices.has(itemIndex)) {
               return ([]: Array<React.Node>);
+            }
+
+            if (item.type === 'user_message_images') {
+              const renderedImages: Array<{|
+                imageId: string,
+                dataUrl: string,
+              |}> = [];
+              for (const imageId of item.imageIds) {
+                const image = getToolResultImage
+                  ? getToolResultImage(imageId)
+                  : null;
+                if (image) {
+                  renderedImages.push({ imageId, dataUrl: image.dataUrl });
+                }
+              }
+              if (renderedImages.length === 0) return ([]: Array<React.Node>);
+              return [
+                <Line
+                  key={`user-message-images-${item.messageIndex}`}
+                  justifyContent="flex-start"
+                >
+                  <ChatBubble role="user">
+                    <ColumnStackLayout noMargin>
+                      {renderedImages.map(renderedImage => (
+                        <img
+                          key={renderedImage.imageId}
+                          src={renderedImage.dataUrl}
+                          alt="Attachment sent with the message"
+                          style={{
+                            maxWidth: '100%',
+                            borderRadius: 8,
+                          }}
+                        />
+                      ))}
+                    </ColumnStackLayout>
+                  </ChatBubble>
+                </Line>,
+              ];
             }
 
             if (item.type === 'tool_result_images') {

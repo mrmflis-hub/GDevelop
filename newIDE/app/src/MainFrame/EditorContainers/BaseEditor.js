@@ -28,6 +28,8 @@ import type { NavigateToEventFromGlobalSearchParams } from '../../Utils/Search';
 import type {
   SceneEventsOutsideEditorChanges,
   InstancesOutsideEditorChanges,
+  ExternalLayoutOutsideEditorChanges,
+  ExternalEventsOutsideEditorChanges,
   ObjectsOutsideEditorChanges,
   ObjectGroupsOutsideEditorChanges,
   ProjectItemRenamedOutsideEditorChanges,
@@ -249,6 +251,12 @@ export type RenderEditorContainerProps = {|
 
   onInstancesModifiedOutsideEditor: (
     changes: InstancesOutsideEditorChanges
+  ) => void,
+  onExternalLayoutModifiedOutsideEditor: (
+    changes: ExternalLayoutOutsideEditorChanges
+  ) => void,
+  onExternalEventsModifiedOutsideEditor: (
+    changes: ExternalEventsOutsideEditorChanges
   ) => void,
   onObjectsModifiedOutsideEditor: (
     changes: ObjectsOutsideEditorChanges

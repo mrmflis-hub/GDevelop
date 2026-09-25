@@ -15,7 +15,7 @@
  */
 
 import {
-  getByokAdvertisedToolNames,
+  getByokMcpToolNames,
   getByokToolSchemasForNames,
 } from '../ByokToolSchema';
 import { getByokImage } from '../ByokImageContent';
@@ -72,7 +72,9 @@ export const BYOK_MCP_READ_ONLY_REJECTION_MESSAGE: string =
 export const makeByokMcpToolDescriptors = (options: {|
   +hasOpenedProject: boolean,
 |}): Array<ByokMcpToolDescriptor> => {
-  const names = getByokAdvertisedToolNames({
+  // tools/list stays FULL (13.5): external clients are not budget-bound —
+  // only the chat's advertised list is the core set.
+  const names = getByokMcpToolNames({
     hasOpenedProject: options.hasOpenedProject,
   });
   const descriptors: Array<ByokMcpToolDescriptor> = getByokToolSchemasForNames(

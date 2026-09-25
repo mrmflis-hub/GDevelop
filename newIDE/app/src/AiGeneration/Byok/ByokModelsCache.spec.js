@@ -322,3 +322,28 @@ describe('models cache and refreshByokModels', () => {
     );
   });
 });
+
+describe('resolveContextWindowTokens: the provider per-model slot (13.4)', () => {
+  it('prefers the provider block over the legacy global map', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      contextWindowTokens: 8192,
+      contextWindowByModel: { 'my-model': 4096 },
+    };
+    expect(resolveContextWindowTokens(settings, null, 'my-model', 65536)).toBe(
+      65536
+    );
+  });
+
+  it('still falls back to the legacy map and the global default', () => {
+    const settings: ByokSettings = {
+      ...DEFAULT_BYOK_SETTINGS,
+      contextWindowTokens: 8192,
+      contextWindowByModel: { 'my-model': 4096 },
+    };
+    expect(resolveContextWindowTokens(settings, null, 'my-model', null)).toBe(
+      4096
+    );
+    expect(resolveContextWindowTokens(settings, null, 'other')).toBe(8192);
+  });
+});

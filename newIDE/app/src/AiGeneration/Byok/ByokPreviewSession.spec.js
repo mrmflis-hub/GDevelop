@@ -2,6 +2,7 @@
 import {
   BYOK_PREVIEW_LOG_BUFFER_SIZE,
   createByokPreviewSession,
+  makeByokPreviewLaunchOptions,
   reduceByokRuntimeDump,
   type ByokPreviewLauncher,
 } from './ByokPreviewSession';
@@ -125,6 +126,91 @@ describe('createByokPreviewSession', () => {
     expect(debuggerServer.registeredCallbacks.length).toBe(0);
     expect(launcher.closePreview).toHaveBeenCalledTimes(1);
     expect(session.isRunning()).toBe(false);
+  });
+
+  it('registers every callback the debugger server fan-out invokes (QA 2026-09-24 regression)', async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const launcher = makeFakeLauncher(debuggerServer);
+    const session = createByokPreviewSession({
+      getPreviewLauncher: () => launcher,
+      getProject: () => ({ getFirstLayout: () => 'Scene 1' }),
+    });
+
+    await session.start({});
+
+    // LocalPreviewDebuggerServer calls each of these on every registered
+    // subscriber — a missing callback throws "not a function" and, being
+    // uncaught, blanks the whole editor.
+    const callbacks = debuggerServer.registeredCallbacks[0];
+    expect(typeof callbacks.onServerStateChanged).toBe('function');
+    expect(typeof callbacks.onErrorReceived).toBe('function');
+    expect(typeof callbacks.onConnectionErrored).toBe('function');
+    expect(() => callbacks.onServerStateChanged()).not.toThrow();
+    expect(() =>
+      callbacks.onErrorReceived(new Error('server error'))
+    ).not.toThrow();
+    expect(() =>
+      callbacks.onConnectionErrored({ id: 'x', errorMessage: 'boom' })
+    ).not.toThrow();
+
+    session.stop();
+  });
+
+  it('launches with the full PreviewOptions the launcher expects (QA 2026-09-24 regression)', async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const launcher = makeFakeLauncher(debuggerServer);
+    const project = { getFirstLayout: () => 'Scene 1' };
+    const session = createByokPreviewSession({
+      getPreviewLauncher: () => launcher,
+      getProject: () => project,
+    });
+
+    await session.start({ sceneName: 'Forest' });
+
+    expect(launcher.launchPreview).toHaveBeenCalledTimes(1);
+    const options = (launcher.launchPreview: any).mock.calls[0][0];
+    // LocalPreviewLauncher CALLS these two — with the pre-QA hand-rolled
+    // options they were missing, and every start_preview failed with
+    // "options.getIsMenuBarHiddenInPreview is not a function".
+    expect(typeof options.getIsMenuBarHiddenInPreview).toBe('function');
+    expect(typeof options.getIsAlwaysOnTopInPreview).toBe('function');
+    expect(options.getIsMenuBarHiddenInPreview()).toBe(true);
+    expect(options.getIsAlwaysOnTopInPreview()).toBe(false);
+    expect(options.project).toBe(project);
+    expect(options.sceneName).toBe('Forest');
+    expect(options.numberOfWindows).toBe(1);
+    expect(options.isForInGameEdition).toBe(false);
+    expect(options.isForGameplayTest).toBe(false);
+    expect(options.shouldGenerateScenesEventsCode).toBe(true);
+    expect(options.captureOptions).toBe(null);
+  });
+
+  it('falls back to the first scene when no scene name is given', async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const launcher = makeFakeLauncher(debuggerServer);
+    const session = createByokPreviewSession({
+      getPreviewLauncher: () => launcher,
+      getProject: () => ({ getFirstLayout: () => 'Scene 1' }),
+    });
+
+    await session.start({});
+    const options = (launcher.launchPreview: any).mock.calls[0][0];
+    expect(options.sceneName).toBe('Scene 1');
+  });
+
+  it('builds launch options directly, honoring the preference overrides', () => {
+    const options = makeByokPreviewLaunchOptions({
+      project: { getFirstLayout: () => 'Scene 1' },
+      sceneName: 'Forest',
+      isMenuBarHiddenInPreview: false,
+      isAlwaysOnTopInPreview: true,
+    });
+    expect(options.getIsMenuBarHiddenInPreview()).toBe(false);
+    expect(options.getIsAlwaysOnTopInPreview()).toBe(true);
+    expect(options.networkPreview).toBe(false);
+    expect(options.hotReload).toBe(false);
+    expect(options.fullLoadingScreen).toBe(false);
+    expect(options.previewWindows).toBe(null);
   });
 
   it('refuses a second preview while one runs, and stopping twice fails', async () => {

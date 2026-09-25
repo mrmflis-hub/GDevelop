@@ -66,9 +66,13 @@ Status as of 2026-09-24 (update at the end of every session):
   persistence (`ByokBenchmarkStore.js`), the notes-identifier live ref, the
   `Utils/Serializer.js` project-self-unserialization guard, and the
   duplicate `onOpenAskAi` Props key. QA Task 12 open (MCP desktop QA).
-- **Phases 11 + 12 implemented 2026-09-24, uncommitted** (the owner ordered
-  Phase 12 in chat; Phase 11 was its unbuilt prerequisite and was built in
-  the same session; D11-1…5 and D12-1…8 answered as recommended).
+- **Phases 11 + 12 implemented 2026-09-24** (the owner ordered Phase 12 in
+  chat; Phase 11 was its unbuilt prerequisite and was built in the same
+  session; D11-1…5 and D12-1…8 answered as recommended). The owner
+  **committed** both phases on 2026-09-24 in `c62a67e277` (its commit
+  message is unrelated noise — the BYOK work is identifiable via
+  `git show --stat c62a67e277`), together with the phase planning docs in
+  `ed5a5a5432`.
   **Phase 11 (authoring reach, prompt `byok-v7`, 56 advertised tools):**
   the behavior-preserving instance-core extraction
   (`EditorFunctions/InstanceTools.js` — index.js delegates; the scene
@@ -83,6 +87,24 @@ Status as of 2026-09-24 (update at the end of every session):
   in-project sources, replace-in-place, desktop-only), and the extension
   internals (parameters add/remove/move, custom-object children with a
   usage guard, extension dependencies, in `ByokExtensionTools.js`).
+  **Phase 11 verification + completion pass 2026-09-24 (second session):**
+  five read-only subagents verified every AC against the committed tree;
+  gaps closed the same day: the seven extended-tool schema fields
+  (`parameters_to_add/remove/move`, `children_to_add/remove`,
+  `dependencies_to_add/remove`) added to `ByokToolSchema.js` (the handlers
+  existed but the model could not discover them), `children_to_add`
+  optional initial property values
+  (`getConfiguration().updateProperty`), parameter type changes through
+  the upstream refactor hook (`WholeProjectRefactorer.changeParameterType`
+  with real ProjectScopedContainers), the knowledge-section tool-name
+  typo, the sprite polygon partial-apply fix (validate before clear) +
+  the required bad-polygon and wrapper-lifecycle tests, a segment-aware
+  in-project-folder check in `ByokResourceTools.js`, the
+  arg-before-scene error precedence restored in the put2d wrapper, the
+  AIflow.md §4.2/§6/§7 stale sections refreshed, and the BYOK executor
+  moved from `toolsVersion: null` to `BYOK_TOOLS_VERSION` (`v15`,
+  `ByokTypes.js`) — no-ops are successes for the script-based BYOK agent,
+  as for the hosted v15 tools. 208 suites / 2284 tests, all gates green.
   **Phase 12 (discovery/runtime, prompt `byok-v8`, 62 default + 2
   no-project tools):** `get_game_starter_summary` over the public examples
   catalog (no-project advertisement), `search_object_asset_store` /
@@ -101,9 +123,94 @@ Status as of 2026-09-24 (update at the end of every session):
   with pushed-profiler-output waits; `ByokPreviewSession.js` gained the
   DebuggerId capture, targeted request/response and the stop()
   closeAllPreviews fix). Evals 30 → 41 tasks. QA Tasks 13/14 open.
-- **All 12 phases are now implemented.** Remaining work: the human QA list
-  in `usertasks.md` (Tasks 1, 2, 6, 7, 9–14) and the owner's commit review
-  (Phases 9–12 are uncommitted).
+- **All 12 phases are now implemented and committed.** On top of them, the
+  owner approved and the 2026-09-24 second session implemented the
+  **external-item live-redraw channel** (usertasks Task 15):
+  `onExternalLayoutModifiedOutsideEditor` / `onExternalEventsModifiedOutsideEditor`
+  fan-outs through MainFrame → the external editor containers, wired to
+  the BYOK tools (and the MCP host) so AI writes to external
+  layouts/events redraw open editors — plus the previous session's
+  verification fixes (uncommitted, awaiting the owner's review). **QA
+  round 1 (2026-09-24, fourth session, uncommitted):** three owner
+  findings triaged — the devtools key difference is the safeStorage
+  ciphertext (by design) and "chat routes through GDevelop" was disproven
+  with the durable transcript (the observed `ai-request-summary` GET is
+  the hosted history list); fixed for real: the benchmark sent no `tools`
+  and no token cap (failed 4/4, ~1M tokens burned), BYOK `start_preview`
+  could never launch (bad `PreviewOptions` shape), and the upstream
+  preview-close crash (`ElectronMainMenu` reading destroyed-window
+  properties) got destroyed-window guards. **QA round 2 (2026-09-24,
+  sixth session, uncommitted):** the owner had the outstanding QA driven
+  with Computer Use against real CometAPI keys (two providers; models
+  gpt-6-luna, mimo-v2.6-flash, glm-5.3-flash; shared $1.50 pool). All
+  four round-1 re-tests PASSED (benchmark fix verified: real tool calls,
+  19–25k tokens; `start_preview` opens and round-trips capture/inspect;
+  routing sanity clean), Task 8.2 PASSED, large parts of Tasks 6/12/14
+  PASSED (full coverage summary in `usertasks.md`). Two new bugs were
+  **fixed with specs**: `ByokPreviewSession` registered only 3 of the 6
+  debugger fan-out callbacks (uncaught TypeError blanked the editor) and
+  the MCP stdio adapter's discovery path used "GDevelop" instead of the
+  userData folder "GDevelop 5" (broke all zero-config MCP clients).
+  One new bug **filed in `outofscoped.md`**: the benchmark's event-batch
+  application crashes the libGD WASM heap for any model and poisons the
+  module until reload. Endpoint-compat findings recorded in
+  `deferred.md`: gpt-6-luna rejects `tools`+`reasoning_effort` on
+  CometAPI chat/completions (needs `none`, which BYOK never sends), and
+  glm-5.3-flash returns 200-with-garbage after very large tool outputs.
+  Remaining work: the human QA list in `usertasks.md` — **Tasks 1, 2
+  PASSED (owner), 8.2 PASSED, 11's 9.3/9.4/9.5 PASSED**; still open:
+  Tasks 6 (events headline, stuck loop, refused batch), 7, 9, 10, 13,
+  parts of 11 (stall notice, 40+-round compaction) and 12
+  (second-instance refusal, stale-takeover, activity-log visual),
+  14 (palette, offline) — plus the owner's review of the uncommitted
+  sessions' diffs. **Phase 13 IMPLEMENTED 2026-09-25 (uncommitted; the
+  owner ordered it in chat), all 8 steps + every phase-gate AC built —
+  see the 2026-09-25 Phase-13 worklog entry for the full inventory:**
+  13.1 chat panel consolidation (header = green/red BYOK toggle + token
+  row hidden when off; effort pill + provider/model dropdown with a
+  "Model from settings" default moved to the bottom bar, both persisting
+  on the chat record; the Recents rail (AskAiHistory) now lists the
+  durable BYOK chats (open/archive/restore/delete inline, persisted
+  metas + session chats merged in `useByokChatSeam`) above the hosted
+  list; ByokChatHistory.js deleted), 13.2 homepage-form carryover
+  (`pickByokChatToSelectOnMount` re-selects the single working chat on
+  editor remount), 13.3 the "+" attach button (`ByokAttachments.js`:
+  text files extension+NUL-sniffed and 100 KB-capped as fenced blocks,
+  images through the BYOK image store, user-message `images` ids replay
+  as image_url parts, sidecar + compaction aware; chips + menu gating),
+  13.4 the settings tab rebuilt to the owner's layout (three checkboxes,
+  PROVIDERS cards with Advanced unrollers holding PER MODEL SETTINGS —
+  temperature/max tokens/context window/Run benchmark per provider+model,
+  DEFAULT STRONG/FAST as provider+model pairs with
+  `migrateByokRoutingProfiles`, WHILE THE AI IS WORKING, CHAT HISTORY
+  STORAGE, MCP card unchanged; `ByokProvider.modelSettings` + the router
+  overlay + provider-aware context windows), 13.5 the budget pass
+  (`BYOK_CORE_TOOL_NAMES` = 27 advertised tools incl. the new
+  `search_tools` meta-tool, prompt version **byok-v9**, retrieval map +
+  20-entry machine-checked task catalog, prompt budget 5500 with the
+  authoring-reach/cheat-sheet/packs degradable;
+  `ByokPromptBudget.spec.js` guards ≤15k hard — measured 11.5k worst-case
+  with a full 2 KB custom-instructions payload, ~10.5k typical; the
+  8–10k band is reported in the spec output), 13.6 EventScript harness
+  (non-degradable pinned syntax block + 3 canonical examples;
+  `docs/eventscript-examples.json` = 11 tagged examples round-tripping
+  through the real writer, merged into search_reference; rejected
+  batches carry a targeted `retryHint`), 13.7 on-device RAG
+  (`Byok/Rag/`: corpus ~2.4k chunks, lazy Transformers.js embedder
+  (`@huggingface/transformers` ^4.3.0, the phase's single approved new
+  dep), deterministic in-process index with base64 vectors, `byok-rag-*`
+  IPC + IndexedDB backends, `search_knowledge` hybrid search with the
+  RAG-off lexical fallback + neighbor reads, eval set 24 queries ≥70%
+  top-3 hit-rate with the hashing test embedder), 13.8 the RAG
+  preferences tab (status card, embedder picker with size+consent,
+  rebuild progress, opt-in docs folder, backend switch, Qdrant card) +
+  the permanent Qdrant setup (`ByokQdrantSetupCore.js` pure CJS state
+  machine: use-existing/install/spawn/health/fallback;
+  `electron-app/app/ByokQdrant.js` downloads the official release,
+  loopback-only config, child killed on quit; `ByokRagFiles.js` IPC).
+  221 suites / 2428 tests, all four gates green. `REVIEW/FTmodel.md` =
+  the local fine-tuned generation track (LoRA/Unsloth, ternary
+  Bonsai-class bases) — explicitly long-term, NOT scheduled.
 
 - **Audits:** every 2026-09-21 audit B-finding is fixed. The remaining open
   findings are consolidated in `REVIEW/audit2209.md` (full detail) and triaged
@@ -184,6 +291,12 @@ A run **fails** if any of these is violated:
 - **Documentation only in `/REVIEW`** — except `AGENTS.md` and `styleguide.md`,
   which live at the repo root by owner decision. Never create `.md` files
   anywhere else.
+- **Documentation conventions (owner-approved 2026-09-25):** in docs you write
+  or rewrite, use one sentence per line (no manual hard-wrapping) so edits and
+  diffs stay line-local, and give checklist/triage items stable IDs — e.g.
+  `[T12-activity-log]`, `[D13-4]` — with a status token on the line (`[open]` /
+  `[done]`). Terse IDs are fine, but the item body must explain in plain words
+  what the ID stands for; everything else stays plain human-readable markdown.
 - **No new npm dependencies** without explicit user approval.
 - **Never** edit anything under `newIDE\app\src\locales` by hand (Lingui
   pipeline owns it), and never modify files under `Binaries`, `Core`, `GDJS`,
@@ -305,7 +418,7 @@ and 2026-09-21 (Phases 5–9). If a line number, function name, or structure has
 shifted upstream:
 
 - Re-locate the equivalent spot yourself (search, don't guess).
-*Last updated: 2026-09-24.*
+*Last updated: 2026-09-25.*
   `file:line`.
 - Keep the *intent* of the step (the ACs), not the literal line numbers.
 
@@ -314,4 +427,4 @@ manual in the same session and say so in the worklog.
 
 ---
 
-*Last updated: 2026-09-24.*
+*Last updated: 2026-09-25.*

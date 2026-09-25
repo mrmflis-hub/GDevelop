@@ -1,5 +1,9 @@
 // @flow
 import {
+  type ExternalLayoutOutsideEditorChanges,
+  type ExternalEventsOutsideEditorChanges,
+} from '../../EditorFunctions/OutsideEditorChanges';
+import {
   byokApplySceneEventBatches,
   type ByokEventBatch,
 } from './ByokLocalEventWriter';
@@ -9,7 +13,12 @@ import { getByokDebuggerTools } from './ByokDebuggerTools';
 // Importing the engine reference module also registers its always-on
 // cheat-sheet knowledge section.
 import { searchByokEngineReference } from './ByokEngineReference';
+import { searchByokToolSchemas } from './ByokToolSchema';
 import { findByNameokSkill, listByokSkillMetadata } from './ByokSkills';
+import {
+  getByokRagSearchDepsAsync,
+  searchByokRagKnowledge,
+} from './Rag/ByokRagSearch';
 import {
   searchByokDocs,
   readByokDocPage,
@@ -53,6 +62,17 @@ export type ByokExtraToolCollaborators = {|
   // payload the registry tools send, so open editors redraw. Optional —
   // hosts without it still apply the changes.
   onObjectsModifiedOutsideEditor?: (changes: any) => void,
+  // Fired by the external-items tools (put_external_layout_instances,
+  // add_external_events) so an already-open editor of that item redraws —
+  // the fan-out channel these items never had (scenes key on their
+  // gdLayout, which external items don't have). Optional: hosts without
+  // the MainFrame fan-out (the standalone form) still apply the changes.
+  onExternalLayoutModifiedOutsideEditor?: (
+    changes: ExternalLayoutOutsideEditorChanges
+  ) => void,
+  onExternalEventsModifiedOutsideEditor?: (
+    changes: ExternalEventsOutsideEditorChanges
+  ) => void,
   // The perception tools' dependencies (screenshots, previews, the image
   // pipeline, single registry calls) — absent in environments without
   // them, where the tools answer with actionable failures.
@@ -427,6 +447,98 @@ const makeReadProjectNotesTool = (): ByokExtraTool => ({
 });
 
 /**
+ * search_tools (Phase 13.5): the meta-tool of the tiered advertisement.
+ * The system prompt lists the core tools only; this one searches the WHOLE
+ * catalog and returns each match with its full parameter schema — so a
+ * discovered tool can be called on the very next turn (the executor knows
+ * every tool; only the schema injection needed the search). `tools/list`
+ * over MCP stays full: external clients are not budget-bound.
+ */
+const makeSearchToolsTool = (): ByokExtraTool => ({
+  name: 'search_tools',
+  modifiesProject: false,
+  run: async args => {
+    const query = typeof args.query === 'string' ? args.query : '';
+    if (!query.trim()) {
+      return {
+        output: {
+          success: false,
+          message:
+            'The "query" is required — keywords about what you want to do, e.g. "external layout", "sprite points", "asset store".',
+        },
+        didModifyProject: false,
+      };
+    }
+    const matches = searchByokToolSchemas(query);
+    if (matches.length === 0) {
+      return {
+        output: {
+          success: false,
+          message: `No tool matched "${query}". Try other keywords — the catalog covers scenes, objects, sprites, events, external layouts, extensions, assets, resources, effects, previews and runtime debugging.`,
+        },
+        didModifyProject: false,
+      };
+    }
+    return {
+      output: {
+        success: true,
+        message: `${
+          matches.length
+        } tool(s) matched "${query}". Their full schemas follow — call them directly.`,
+        tools: matches.map(schema => ({
+          name: schema.name,
+          description: schema.description,
+          parameters: schema.parameters,
+        })),
+      },
+      didModifyProject: false,
+    };
+  },
+});
+
+/**
+ * search_knowledge (Phase 13.7): grep-the-docs retrieval over the full
+ * on-device corpus (engine reference, bundled docs, skills, EventScript
+ * examples) — exact/tag search always, semantic ranking once the RAG index
+ * is built. Everything stays on the machine (D13-9).
+ */
+const makeSearchKnowledgeTool = (): ByokExtraTool => ({
+  name: 'search_knowledge',
+  modifiesProject: false,
+  run: async args => {
+    const tags = Array.isArray(args.tags)
+      ? args.tags.filter((tag: any) => typeof tag === 'string' && !!tag)
+      : null;
+    const result = await searchByokRagKnowledge({
+      query: typeof args.query === 'string' ? args.query : '',
+      tags: tags && tags.length > 0 ? tags : null,
+      kind: readOptionalString(args.kind),
+      nearChunkId: readOptionalString(args.chunk_id),
+      deps: await getByokRagSearchDepsAsync(),
+    });
+    return {
+      output: {
+        success: result.success,
+        message: result.message,
+        mode: result.mode,
+        chunks: result.hits.map(hit => ({
+          id: hit.chunk.id,
+          source: hit.chunk.source,
+          title: hit.chunk.title,
+          tags: hit.chunk.tags.slice(0, 6),
+          match: hit.match,
+          text:
+            hit.chunk.text.length > 1500
+              ? `${hit.chunk.text.slice(0, 1500)}…`
+              : hit.chunk.text,
+        })),
+      },
+      didModifyProject: false,
+    };
+  },
+});
+
+/**
  * The sub-agent delegation tools (Phase 8.1): `run_explorer_agent` (the
  * scout — same name as the hosted tool, so models porting the habit work)
  * and `run_review_agent`. Both resolve here BEFORE the editor registry,
@@ -534,6 +646,8 @@ const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   makeLoadSkillTool(),
   makeSearchDocsTool(),
   makeReadDocTool(),
+  makeSearchToolsTool(),
+  makeSearchKnowledgeTool(),
   makeUpdateProjectNotesTool(),
   makeReadProjectNotesTool(),
   makeSubAgentTool('run_explorer_agent', 'scout'),

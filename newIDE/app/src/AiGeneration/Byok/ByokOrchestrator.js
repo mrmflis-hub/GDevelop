@@ -6,6 +6,10 @@ import {
 } from '../../Utils/GDevelopServices/Generation';
 import { type EditorFunctionCallResult } from '../../EditorFunctions';
 import {
+  type ExternalLayoutOutsideEditorChanges,
+  type ExternalEventsOutsideEditorChanges,
+} from '../../EditorFunctions/OutsideEditorChanges';
+import {
   getFunctionCallsToProcess,
   getFunctionCallOutputsFromEditorFunctionCallResults,
   getLastMessagesFromAiRequestOutput,
@@ -79,6 +83,7 @@ import {
   getCachedByokModels,
   resolveContextWindowTokens,
 } from './ByokModelsCache';
+import { getByokProviderModelSettings } from './ByokTypes';
 import {
   contextStatsFromUsage,
   usageFromResponse,
@@ -239,6 +244,14 @@ export type ByokOrchestratorOptions = {|
   // Passed through to the intercepted tools that edit objects directly
   // (sprite frames) so open editors redraw.
   onObjectsModifiedOutsideEditor?: (changes: any) => void,
+  // Passed through to the external-items tools (put_external_layout_instances,
+  // add_external_events) so an already-open editor of that item redraws.
+  onExternalLayoutModifiedOutsideEditor?: (
+    changes: ExternalLayoutOutsideEditorChanges
+  ) => void,
+  onExternalEventsModifiedOutsideEditor?: (
+    changes: ExternalEventsOutsideEditorChanges
+  ) => void,
   // The perception tools' environment hooks (screenshots, preview capture
   // IPC, preview launcher). Absent: the perception tools answer with
   // actionable failures instead of crashing. `storeImage` overrides the
@@ -307,8 +320,11 @@ export type ByokOrchestratorOptions = {|
 |};
 
 export type ByokOrchestrator = {|
-  startNewChat: (userRequest: string) => Promise<void>,
-  sendUserMessage: (text: string) => Promise<void>,
+  startNewChat: (
+    userRequest: string,
+    imageIds?: Array<string>
+  ) => Promise<void>,
+  sendUserMessage: (text: string, imageIds?: Array<string>) => Promise<void>,
   suspend: () => void,
   // Re-run the loop after an error without adding anything to the
   // conversation (the transcript replay is exactly a retry).
@@ -445,13 +461,22 @@ export const createByokOrchestrator = (
     persistUpdate();
   };
 
-  const appendUserMessage = (text: string): AiRequestMessage => {
+  const appendUserMessage = (
+    text: string,
+    images?: Array<string>
+  ): AiRequestMessage => {
     const userMessage: AiRequestMessage = {
       type: 'message',
       status: 'completed',
       role: 'user',
       content: [{ type: 'user_request', status: 'completed', text }],
     };
+    // Attached images (the "+" button, Phase 13.3) ride on the message as
+    // ids — the same indirection the tool outputs' screenshots use, so the
+    // replay and the durable sidecar both handle them for free.
+    if (images && images.length > 0) {
+      (userMessage: any).images = images;
+    }
     pushTranscriptMessage(userMessage);
     aiRequest.status = 'working';
     aiRequest.error = null;
@@ -526,18 +551,40 @@ export const createByokOrchestrator = (
 
   /**
    * The context window of this chat's model, following the fallback chain
-   * of resolveContextWindowTokens: what the server reported → what the user
-   * set for this model → the global setting → the default. Re-read every
-   * turn so a models fetch made mid-chat is picked up.
+   * of resolveContextWindowTokens: what the server reported → the
+   * provider's per-model setting (13.4) → what the user set for this model
+   * → the global setting → the default. Re-read every turn so a models
+   * fetch made mid-chat is picked up.
    */
   const resolveChatContextWindowTokens = (): number => {
     const currentSettings = getCurrentSettings();
-    const cachedModels = getCachedByokModels(connection.baseUrl);
-    const modelName = settings.modelName;
+    const chatSelection = getByokChatModelSelection(aiRequest);
+    const target = resolveByokModelTarget({
+      settings: currentSettings,
+      chatSelection,
+      callKind: options.callKind || 'main',
+    });
+    let cachedModels = getCachedByokModels(target.endpointUrl);
+    if (!cachedModels) {
+      // The legacy single-endpoint connection (tests, provider-less setups).
+      cachedModels = getCachedByokModels(connection.baseUrl);
+    }
+    const modelName = target.modelName || settings.modelName;
     const modelInfo = cachedModels
       ? cachedModels.find(model => model.id === modelName) || null
       : null;
-    return resolveContextWindowTokens(currentSettings, modelInfo, modelName);
+    const provider = currentSettings.providers.find(
+      entry => entry.id === target.providerId
+    );
+    const providerModelSettings = provider
+      ? getByokProviderModelSettings(provider, modelName)
+      : null;
+    return resolveContextWindowTokens(
+      currentSettings,
+      modelInfo,
+      modelName,
+      providerModelSettings ? providerModelSettings.contextWindowTokens : null
+    );
   };
 
   /**
@@ -967,6 +1014,16 @@ export const createByokOrchestrator = (
       onObjectsModifiedOutsideEditor: changes => {
         if (options.onObjectsModifiedOutsideEditor) {
           options.onObjectsModifiedOutsideEditor(changes);
+        }
+      },
+      onExternalLayoutModifiedOutsideEditor: changes => {
+        if (options.onExternalLayoutModifiedOutsideEditor) {
+          options.onExternalLayoutModifiedOutsideEditor(changes);
+        }
+      },
+      onExternalEventsModifiedOutsideEditor: changes => {
+        if (options.onExternalEventsModifiedOutsideEditor) {
+          options.onExternalEventsModifiedOutsideEditor(changes);
         }
       },
       runtimeDeps: getExtraToolRuntimeDeps() || undefined,
@@ -1721,7 +1778,10 @@ export const createByokOrchestrator = (
     watchdog.arm();
   };
 
-  const runWithUserMessage = async (text: string): Promise<void> => {
+  const runWithUserMessage = async (
+    text: string,
+    images?: Array<string>
+  ): Promise<void> => {
     if (isRunning) {
       console.info('BYOK orchestrator: a message is already being processed.');
       return;
@@ -1744,7 +1804,7 @@ export const createByokOrchestrator = (
       if (liveProject && typeof liveProject.getProjectUuid === 'function') {
         aiRequest.gameId = liveProject.getProjectUuid();
       }
-      const userMessage = appendUserMessage(text);
+      const userMessage = appendUserMessage(text, images);
       latestProjectContent = await getProjectUserContent();
       await runLoop();
       if (preTurnProjectSnapshot && turnMadeEdits) {
@@ -1796,10 +1856,13 @@ export const createByokOrchestrator = (
   };
 
   return {
-    startNewChat: (userRequest: string) => runWithUserMessage(userRequest),
+    startNewChat: (userRequest: string, imageIds?: Array<string>) =>
+      runWithUserMessage(userRequest, imageIds),
     // Same as startNewChat in v1: the transcript (and the fresh project
-    // snapshot) carries the conversation across messages.
-    sendUserMessage: (text: string) => runWithUserMessage(text),
+    // snapshot) carries the conversation across messages. The optional
+    // image ids are the message's attached images (Phase 13.3).
+    sendUserMessage: (text: string, imageIds?: Array<string>) =>
+      runWithUserMessage(text, imageIds),
     suspend: () => {
       isSuspended = true;
       // Sub-agents of this chat are stopped too: suspending the parent

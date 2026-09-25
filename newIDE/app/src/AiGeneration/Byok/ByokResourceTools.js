@@ -79,11 +79,22 @@ export const inferByokResourceKind = (
   return null;
 };
 
+/**
+ * Whether absolutePath lies inside projectFolder — segment-aware (a sibling
+ * folder whose name merely extends the project folder's name does not
+ * count: "/projects/game2/x.png" is NOT inside "/projects/game").
+ */
 const isPathInsideFolder = (
   deps: ByokResourceImportDeps,
   absolutePath: string,
   projectFolder: string
-): boolean => absolutePath.includes(projectFolder);
+): boolean => {
+  const relative = deps.pathLib.relative(projectFolder, absolutePath);
+  return (
+    relative === '' ||
+    (!relative.startsWith('..') && !deps.pathLib.isAbsolute(relative))
+  );
+};
 
 /** A collision-free target path in the project folder (name, name-1, …). */
 const makeUnusedTargetPath = (

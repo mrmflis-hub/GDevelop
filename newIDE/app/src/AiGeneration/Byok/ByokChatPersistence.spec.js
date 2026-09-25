@@ -350,6 +350,49 @@ describe('ByokChatPersistence: the file store', () => {
     expect(Object.keys(entries)).toEqual([image.id]);
   });
 
+  it('collects the images attached to user messages too (Phase 13.3)', () => {
+    const toolImage = registerByokImage({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
+      width: 64,
+      height: 64,
+    });
+    const attachedImage = registerByokImage({
+      dataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+      width: 32,
+      height: 32,
+    });
+    const chat = makeChat({
+      output: [
+        {
+          type: 'message',
+          status: 'completed',
+          role: 'user',
+          content: [
+            { type: 'user_request', status: 'completed', text: 'See this' },
+          ],
+          images: [attachedImage.id],
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call-1',
+          output: '{}',
+          images: [toolImage.id],
+        },
+      ],
+    });
+    const registry: any = {
+      [toolImage.id]: toolImage,
+      [attachedImage.id]: attachedImage,
+    };
+    const entries = collectByokChatImageEntries(
+      chat,
+      (id: string) => registry[id] || null
+    );
+    expect(Object.keys(entries).sort()).toEqual(
+      [toolImage.id, attachedImage.id].sort()
+    );
+  });
+
   it('enforces the quota: image sidecars of the oldest chats evicted first', async () => {
     const backend = makeMemoryBackend();
     const store = createByokChatFileStore(backend, () => null);

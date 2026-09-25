@@ -9,6 +9,19 @@ export type InstancesOutsideEditorChanges = {|
   scene: gdLayout,
 |};
 
+// External items are identified by name (their tab "project item name"),
+// not by object identity: the editors resolve their own wrapper from the
+// project, and wrappers are cheap to re-obtain while identity comparison
+// across a fan-out would depend on the binding's wrapper cache.
+export type ExternalLayoutOutsideEditorChanges = {|
+  externalLayoutName: string,
+|};
+
+export type ExternalEventsOutsideEditorChanges = {|
+  externalEventsName: string,
+  newOrChangedAiGeneratedEventIds: Set<string>,
+|};
+
 export type ObjectsOutsideEditorChanges = {|
   scene: gdLayout,
   isNewObjectTypeUsed: boolean,

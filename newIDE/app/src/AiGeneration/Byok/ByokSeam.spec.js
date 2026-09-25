@@ -8,7 +8,7 @@ import {
   shouldUseByokForNewRequest,
 } from './ByokSeam';
 import { setByokCatalogFetchersForTests } from './ByokCatalogTools';
-import { DEFAULT_BYOK_SETTINGS } from './ByokTypes';
+import { BYOK_TOOLS_VERSION, DEFAULT_BYOK_SETTINGS } from './ByokTypes';
 
 describe('APPROVED_CALL_IDS_CAPACITY', () => {
   it('pins the blanket-approval memory cap', () => {
@@ -158,7 +158,10 @@ describe('createByokEditorFunctionCallExecutor', () => {
     // The project is resolved at call time through getProject.
     expect(runnerOptions.project).toEqual({ name: 'fake-project' });
     expect(runnerOptions.toolOptions).toBe(null);
-    expect(runnerOptions.toolsVersion).toBe(null);
+    // The BYOK agent is script-based: it executes with v12+ semantics
+    // (an idempotent no-op is a success), like the hosted v15 tools.
+    expect(runnerOptions.toolsVersion).toBe(BYOK_TOOLS_VERSION);
+    expect(runnerOptions.toolsVersion).toBe('v15');
     expect(runnerOptions.functionCalls).toEqual([
       { name: 'create_scene', arguments: '{}', call_id: 'call-1' },
     ]);

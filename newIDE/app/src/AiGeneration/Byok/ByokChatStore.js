@@ -175,6 +175,13 @@ export const listByokChats = (): Array<AiRequest> =>
   Array.from(byokChats.values()).filter(chat => !chat.archivedAt);
 
 /**
+ * Every in-session BYOK chat, archived included (the Recents rail's archived
+ * filter of Phase 13.1 lists them alongside the persisted metas).
+ */
+export const listAllByokChats = (): Array<AiRequest> =>
+  Array.from(byokChats.values());
+
+/**
  * Archive a BYOK chat: it disappears from the default list, but stays
  * restorable (the real archive of Phase 9.3 — the durable file keeps the
  * `archivedAt` marker; delete is explicit and separate).
@@ -298,4 +305,25 @@ export const consumePendingByokChatSelection = (): string | null => {
   const chatId = pendingByokChatSelectionId;
   pendingByokChatSelectionId = null;
   return chatId;
+};
+
+/**
+ * The chat id the Ask AI editor should select on mount (Phase 13.2): the
+ * pending selection another surface asked for (the homepage form's chat) —
+ * or, when the editor remounts around a project opening (the tab re-opens
+ * in its new pane), the single still-working chat, so a form-started chat's
+ * live transcript stays selected and in view. The loop itself never
+ * restarts: it lives in the orchestrator registry above.
+ */
+export const pickByokChatToSelectOnMount = (
+  pendingChatId: string | null
+): string | null => {
+  if (pendingChatId && getByokChat(pendingChatId)) return pendingChatId;
+  const workingChats = listByokChats().filter(
+    chat => chat.status === 'working'
+  );
+  if (workingChats.length === 1 && getByokOrchestrator(workingChats[0].id)) {
+    return workingChats[0].id;
+  }
+  return null;
 };

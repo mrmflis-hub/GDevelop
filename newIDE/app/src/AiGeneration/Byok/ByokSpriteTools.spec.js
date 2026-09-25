@@ -356,6 +356,129 @@ describe('ByokSpriteTools', () => {
 
       expect(deleteCount.value).toBe(1);
     });
+
+    it('refuses an invalid polygon and leaves the previous mask in place', () => {
+      const animations = getAnimations(project, 'Player');
+      seedFrames(animations, ['a.png']);
+      // A valid rectangle mask first.
+      runByokSpriteFrameOps(animations, [
+        {
+          op: 'set_polygon_mask',
+          animation_index: 0,
+          direction_index: 0,
+          frame_index: 0,
+          polygons: [{ rectangle: { width: 8, height: 8 } }],
+        },
+      ]);
+
+      // A later op with a bad second polygon must fail without touching
+      // the frame (no partial apply: the rectangle survives).
+      const { failures } = runByokSpriteFrameOps(animations, [
+        {
+          op: 'set_polygon_mask',
+          animation_index: 0,
+          direction_index: 0,
+          frame_index: 0,
+          polygons: [
+            { vertices: [{ x: 0, y: 0 }, { x: 1, y: 1 }] },
+            { vertices: [{ x: 'way', y: 0 }] },
+          ],
+        },
+      ]);
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('invalid');
+      const frame = animations
+        .getAnimation(0)
+        .getDirection(0)
+        .getSprite(0);
+      expect(frame.isFullImageCollisionMask()).toBe(false);
+      expect(frame.getCustomCollisionMask().size()).toBe(1);
+      expect(
+        frame
+          .getCustomCollisionMask()
+          .at(0)
+          .getVertices()
+          .size()
+      ).toBe(4);
+    });
+
+    it('deletes the Animation, Point and Vector2f wrappers, but not a pushed polygon', () => {
+      const animations = getAnimations(project, 'Player');
+      seedFrames(animations, ['a.png']);
+      const counts = {
+        animation: 0,
+        point: 0,
+        vector: 0,
+        polygon: 0,
+      };
+      const countConstructorDeletes = (
+        className: string,
+        key: $Keys<typeof counts>
+      ) => {
+        const Original: any = (gd: any)[className];
+        const Counted = function(): any {
+          const instance = new Original();
+          const originalDelete = instance.delete.bind(instance);
+          instance.delete = () => {
+            counts[key] += 1;
+            originalDelete();
+          };
+          return instance;
+        };
+        // The Polygon2d.createRectangle static factory must survive the
+        // replacement (the vertex path uses `new`, the rectangle path
+        // uses it). Only writable function properties can be copied.
+        if (typeof Original.createRectangle === 'function') {
+          (Counted: any).createRectangle = Original.createRectangle;
+        }
+        (gd: any)[className] = Counted;
+        return () => {
+          (gd: any)[className] = Original;
+        };
+      };
+      const restores = [
+        countConstructorDeletes('Animation', 'animation'),
+        countConstructorDeletes('Point', 'point'),
+        countConstructorDeletes('Vector2f', 'vector'),
+        countConstructorDeletes('Polygon2d', 'polygon'),
+      ];
+      try {
+        runByokSpriteFrameOps(animations, [
+          { op: 'add_animation' },
+          {
+            op: 'add_point',
+            animation_index: 0,
+            direction_index: 0,
+            frame_index: 0,
+            name: 'Tail',
+            x: 1,
+            y: 2,
+          },
+          {
+            op: 'set_polygon_mask',
+            animation_index: 0,
+            direction_index: 0,
+            frame_index: 0,
+            polygons: [
+              {
+                vertices: [{ x: 0, y: 0 }, { x: 6, y: 0 }, { x: 6, y: 6 }],
+              },
+            ],
+          },
+        ]);
+      } finally {
+        for (const restore of restores) restore();
+      }
+
+      expect(counts.animation).toBe(1);
+      expect(counts.point).toBe(1);
+      expect(counts.vector).toBe(3);
+      // The polygon was pushed into the live mask: it must NOT be deleted
+      // (deleting a pushed polygon corrupts the wasm heap — the editor's
+      // own lifecycle asymmetry, encoded in applyPolygonMaskToFrame).
+      expect(counts.polygon).toBe(0);
+    });
   });
 
   describe('the tools', () => {

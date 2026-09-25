@@ -148,14 +148,16 @@ export const refreshByokModels = async (
 /**
  * The context window to use for a model, following the fallback chain:
  * 1. what the server reported for the model (when it reports one),
- * 2. the value the user set for this model,
- * 3. the global value the user set (kept from Phase 1),
- * 4. the default (8192).
+ * 2. the per-model value set in the provider's advanced settings (13.4),
+ * 3. the value the user set for this model (the legacy global map),
+ * 4. the global value the user set (kept from Phase 1),
+ * 5. the default (8192).
  */
 export const resolveContextWindowTokens = (
   settings: ByokSettings,
   modelInfo: ?ByokModelInfo,
-  modelId: string
+  modelId: string,
+  providerModelTokens?: ?number
 ): number => {
   if (
     modelInfo &&
@@ -163,6 +165,10 @@ export const resolveContextWindowTokens = (
     modelInfo.contextWindowTokens > 0
   ) {
     return modelInfo.contextWindowTokens;
+  }
+
+  if (typeof providerModelTokens === 'number' && providerModelTokens > 0) {
+    return providerModelTokens;
   }
 
   const perModelTokens = settings.contextWindowByModel[modelId];

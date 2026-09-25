@@ -3,6 +3,7 @@ import {
   registerByokKnowledgeSection,
   estimateByokTokens,
 } from './Knowledge/ByokKnowledgeSections';
+import { searchByokEventScriptExamples } from './ByokEventScriptExamples';
 
 /**
  * The engine reference (Phase 7.2): every object, behavior, action,
@@ -83,6 +84,13 @@ const loadCatalog = (): ?Array<ByokEngineReferenceEntry> => {
 export const isByokEngineReferenceAvailable = (): boolean =>
   loadCatalog() !== null;
 
+/**
+ * The raw catalog entries (the RAG corpus reads them, Phase 13.7); empty
+ * when the catalog could not be loaded.
+ */
+export const getByokEngineReferenceEntries = (): Array<ByokEngineReferenceEntry> =>
+  loadCatalog() || [];
+
 export type ByokEngineReferenceSearch = {|
   // False when the catalog could not be loaded at all.
   available: boolean,
@@ -122,11 +130,28 @@ export const searchByokEngineReference = (options: {|
   const wantedKind = options.kind ? options.kind.toLowerCase() : null;
   const wantedOwner = options.owner ? options.owner.toLowerCase() : null;
 
+  // The curated EventScript example bank (13.6) rides along as pseudo
+  // entries: a query about a construct ("timer", "collision", "spawn")
+  // returns the runnable example among the reference results, ready to
+  // copy into add_scene_events.
+  const exampleEntries: Array<ByokEngineReferenceEntry> = searchByokEventScriptExamples(
+    query
+  ).map(example => ({
+    kind: 'example',
+    owner: 'eventscript',
+    name: example.id,
+    description: `EventScript example — ${
+      example.name
+    } [tags: ${example.tags.join(', ')}]. Source:\n${example.source}`,
+    parameters: [],
+  }));
+
   const scored: Array<{|
     entry: ByokEngineReferenceEntry,
     score: number,
   |}> = [];
-  for (const entry of catalog) {
+  const exampleIds = new Set(exampleEntries.map(entry => entry.name));
+  for (const entry of [...exampleEntries, ...catalog]) {
     if (wantedKind && entry.kind.toLowerCase() !== wantedKind) continue;
     const owner = entry.owner.toLowerCase();
     if (wantedOwner && !owner.includes(wantedOwner)) continue;
@@ -140,8 +165,15 @@ export const searchByokEngineReference = (options: {|
       else if (description.includes(query)) score = 20;
       else if (owner.includes(query)) score = 10;
       else continue;
+    } else if (exampleIds.has(entry.name)) {
+      // An empty query lists a kind/owner — examples only appear when
+      // explicitly asked for (kind: "example").
+      if (wantedKind !== 'example') continue;
     }
-    scored.push({ entry, score });
+    // The runnable examples outrank plain catalog entries at equal score:
+    // they are what a struggling model needs first.
+    const rankBoost = exampleIds.has(entry.name) ? 5 : 0;
+    scored.push({ entry, score: score + rankBoost });
   }
 
   scored.sort((a, b) => {
@@ -179,10 +211,12 @@ const ENGINE_CHEAT_SHEET_BODY = `- Event anatomy: an event is conditions + actio
   TimeDelta(), SceneWindowWidth(), SceneWindowHeight(), MouseX(), MouseY(), ToDeg(rad), ToRad(deg).`;
 
 /**
- * Register the always-on engine cheat-sheet: the tiny, high-signal core
- * (event anatomy, picking, TimeDelta, the top expressions) that must not
- * depend on the budget, while the full catalog stays behind
- * `search_reference` (progressive disclosure).
+ * Register the engine cheat-sheet: the tiny, high-signal core (event
+ * anatomy, picking, TimeDelta, the top expressions). Degradable since the
+ * Phase 13.5 retrieval map — under budget pressure it collapses to its
+ * first line, and the map's "search_reference" pointer carries the role;
+ * the full catalog was always behind `search_reference` (progressive
+ * disclosure).
  */
 registerByokKnowledgeSection({
   id: 'engine-cheat-sheet',
@@ -191,7 +225,7 @@ registerByokKnowledgeSection({
   budgetTokens: estimateByokTokens(
     `Engine cheat-sheet:\n${ENGINE_CHEAT_SHEET_BODY}`
   ),
-  degradable: false,
+  degradable: true,
   build: context => {
     const referenceLine = context.engineReferenceAvailable
       ? 'For anything else (every object, behavior, action, condition, expression and effect of the engine, with their exact parameter names), call the search_reference tool.'

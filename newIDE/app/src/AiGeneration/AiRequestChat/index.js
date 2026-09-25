@@ -56,6 +56,17 @@ import { useStickyVisibility } from './UseStickyVisibility';
 import { useResponsiveWindowSize } from '../../UI/Responsive/ResponsiveWindowMeasurer';
 import Coin from '../../Credits/Icons/Coin';
 import FlatButton from '../../UI/FlatButton';
+import IconButton from '../../UI/IconButton';
+import Add from '../../UI/CustomSvgIcons/Add';
+import Cross from '../../UI/CustomSvgIcons/Cross';
+import ElementWithMenu from '../../UI/Menu/ElementWithMenu';
+import { type MenuItemTemplate } from '../../UI/Menu/Menu.flow';
+import {
+  buildByokAttachMenuTemplate,
+  buildByokUserMessageWithAttachments,
+  getByokAttachmentImageIds,
+  type ByokAttachment,
+} from '../Byok/ByokAttachments';
 import GoldCompact from '../../Profile/Subscription/Icons/GoldCompact';
 import { SubscriptionContext } from '../../Profile/Subscription/SubscriptionContext';
 import { CreditsPackageStoreContext } from '../../AssetStore/CreditsPackages/CreditsPackageStoreContext';
@@ -147,6 +158,8 @@ type Props = {|
   |}) => void,
   onSendUserMessage: ({|
     userMessage: string,
+    // The "+" attach button's image ids (Phase 13.3, BYOK chats only).
+    byokImageIds?: Array<string>,
   |}) => Promise<void>,
   // Called whenever the local "Auto edit" toggle changes (and on mount), so the
   // container can gate project-modifying tool calls behind a confirmation when
@@ -210,10 +223,17 @@ type Props = {|
   // (e.g. the standalone form).
   pendingEditApproval?: EditApprovalRequest | null,
   onResolveEditApproval?: (accepted: boolean) => void,
-  // The BYOK chat header (Phase 9.4, decisions #5/#6): the BYOK badge with
-  // the active provider/model, the exact token row, and the per-chat
-  // model/effort dropdowns. Absent on server chats.
-  byokHeader?: ?{|
+  // The header's BYOK toggle (Phase 13.1, D13-4): green when routing is on,
+  // red when off — it flips the same global setting the Preferences checkbox
+  // drives (new chats only; an in-flight chat continues as started).
+  byokToggle?: ?{|
+    isEnabled: boolean,
+    onToggle: (enabled: boolean) => void,
+  |},
+  // The bottom-bar controls of a BYOK chat (Phase 13.1/13.3): the effort
+  // pill and model picker data, the token totals row, and the "+"
+  // attachment handlers. Absent on server chats.
+  byokChatControls?: ?{|
     chatId: string,
     providerModelLabel: string,
     usageTotals: ?{|
@@ -240,6 +260,14 @@ type Props = {|
       |}
     ) => void,
     onSelectEffort: (effort: 'low' | 'medium' | 'high' | 'default') => void,
+    canAttachFiles: boolean,
+    canAttachImages: boolean,
+    pickTextFile: () => Promise<
+      {| ok: true, attachment: any |} | {| ok: false, error: string |}
+    >,
+    pickImageFile: () => Promise<
+      {| ok: true, attachment: any |} | {| ok: false, error: string |}
+    >,
   |},
 |};
 
@@ -288,7 +316,8 @@ export const AiRequestChat: React.ComponentType<{
       pendingEditApproval,
       onResolveEditApproval,
       onRetryAfterError,
-      byokHeader,
+      byokToggle,
+      byokChatControls,
     }: Props,
     ref
   ) => {
@@ -363,6 +392,62 @@ export const AiRequestChat: React.ComponentType<{
       aiConfigurationPresetId,
       setAiConfigurationPresetId,
     ] = React.useState<string | null>(null);
+
+    // ---- The "+" attach button (Phase 13.3, BYOK chats only) ----
+    // The picked-but-unsent attachments (shown as chips above the input;
+    // they join the next sent message) and the transient pick error.
+    const [byokPendingAttachments, setByokPendingAttachments] = React.useState<
+      Array<ByokAttachment>
+    >([]);
+    const [byokAttachError, setByokAttachError] = React.useState<string | null>(
+      null
+    );
+
+    const onAttachByokFile = React.useCallback(
+      async (pick: 'text' | 'image') => {
+        if (!byokChatControls) return;
+        setByokAttachError(null);
+        const result =
+          pick === 'text'
+            ? await byokChatControls.pickTextFile()
+            : await byokChatControls.pickImageFile();
+        if (result.ok) {
+          setByokPendingAttachments(previous => [
+            ...previous,
+            result.attachment,
+          ]);
+          return;
+        }
+        // An empty error is a cancelled picker: nothing to show.
+        if (result.error) setByokAttachError(result.error);
+      },
+      [byokChatControls]
+    );
+
+    const removeByokPendingAttachment = React.useCallback((index: number) => {
+      setByokPendingAttachments(previous =>
+        previous.filter((_, currentIndex) => currentIndex !== index)
+      );
+    }, []);
+
+    const buildAttachMenuTemplate = React.useCallback(
+      (i18n: I18nType): Array<MenuItemTemplate> =>
+        ((buildByokAttachMenuTemplate(
+          (message: string) => i18n._({ id: message }),
+          {
+            canAttachImages: !!(
+              byokChatControls && byokChatControls.canAttachImages
+            ),
+            onAttachTextFile: () => {
+              void onAttachByokFile('text');
+            },
+            onAttachImageFile: () => {
+              void onAttachByokFile('image');
+            },
+          }
+        ): any): Array<MenuItemTemplate>),
+      [onAttachByokFile, byokChatControls]
+    );
 
     React.useEffect(
       () => {
@@ -700,8 +785,19 @@ export const AiRequestChat: React.ComponentType<{
         setHasTriedToSendWhileBlocked(cannotContinue);
         if (cannotContinue) return;
 
+        // The text attachments are inlined into the message, the image ones
+        // ride as ids (Phase 13.3) — both join this one message.
+        const attachments = byokPendingAttachments;
+        const userMessage = buildByokUserMessageWithAttachments(
+          userRequestTextPerAiRequestId[aiRequestId] || '',
+          attachments
+        );
+        const byokImageIds = getByokAttachmentImageIds(attachments);
+        if (attachments.length > 0) setByokPendingAttachments([]);
+
         return onSendUserMessage({
-          userMessage: userRequestTextPerAiRequestId[aiRequestId] || '',
+          userMessage,
+          byokImageIds: byokImageIds.length > 0 ? byokImageIds : undefined,
         });
       },
       [
@@ -710,6 +806,7 @@ export const AiRequestChat: React.ComponentType<{
         userRequestTextPerAiRequestId,
         scrollToBottom,
         cannotContinue,
+        byokPendingAttachments,
       ]
     );
 
@@ -1041,61 +1138,39 @@ export const AiRequestChat: React.ComponentType<{
           [classes.aiRequestChatContainer]: true,
         })}
       >
-        {byokHeader && (
+        {/* The header's BYOK toggle (Phase 13.1, D13-4): green when routing
+            is on, red when off — the same setting the Preferences checkbox
+            drives. The token/turns row (D5) sits right below it and is
+            hidden when BYOK is off; the old header dropdowns and the
+            separate Chat history button are gone (the controls moved to
+            the bottom bar, the history to the Recents rail). */}
+        {byokToggle && (
           <LineStackLayout noMargin alignItems="center">
-            {/* D5 (decision #5): the badge names the active provider/model,
-                with the exact token counts of the chat beside it. */}
-            <Text size="body-small" color="secondary" noMargin>
-              <Trans>BYOK</Trans> · {byokHeader.providerModelLabel}
-              {byokHeader.usageTotals
-                ? ` · ${byokHeader.usageTotals.totalTokens} tokens (${
-                    byokHeader.usageTotals.turns
-                  })`
-                : ''}
-            </Text>
-            <CompactSelectField
-              value={byokHeader.selectedModelChoiceKey || ''}
-              onChange={(value: string) => {
-                if (value === '') {
-                  byokHeader.onSelectModel(null);
-                  return;
-                }
-                const choice = byokHeader.modelChoices.find(
-                  candidate =>
-                    `${candidate.providerId}\u0000${candidate.modelName}` ===
-                    value
-                );
-                if (choice) byokHeader.onSelectModel(choice);
-              }}
-            >
-              <SelectOption value="" label={t`Model from settings`} />
-              {byokHeader.modelChoices.map(choice => (
-                <SelectOption
-                  key={choice.label}
-                  value={`${choice.providerId}\u0000${choice.modelName}`}
-                  label={choice.label}
-                />
-              ))}
-            </CompactSelectField>
-            <CompactSelectField
-              value={byokHeader.selectedEffort || 'default'}
-              onChange={(value: string) => {
-                if (
-                  value === 'low' ||
-                  value === 'medium' ||
-                  value === 'high' ||
-                  value === 'default'
-                ) {
-                  byokHeader.onSelectEffort(value);
-                }
-              }}
-            >
-              <SelectOption value="default" label={t`Default effort`} />
-              {byokHeader.effortOptions.map(effort => (
-                <SelectOption key={effort} value={effort} label={effort} />
-              ))}
-            </CompactSelectField>
+            <FlatButton
+              label={<Trans>BYOK</Trans>}
+              onClick={() => byokToggle.onToggle(!byokToggle.isEnabled)}
+              disabled={isWorking}
+              style={
+                ({
+                  backgroundColor: byokToggle.isEnabled ? '#2e7d32' : '#c62828',
+                  color: '#ffffff',
+                  minHeight: 24,
+                  paddingLeft: 12,
+                  paddingRight: 12,
+                }: any)
+              }
+            />
           </LineStackLayout>
+        )}
+        {byokToggle && byokToggle.isEnabled && byokChatControls && (
+          <Text size="body-small" color="secondary" noMargin>
+            {byokChatControls.providerModelLabel}
+            {byokChatControls.usageTotals
+              ? ` · ${byokChatControls.usageTotals.totalTokens} tokens (${
+                  byokChatControls.usageTotals.turns
+                })`
+              : ''}
+          </Text>
         )}
         <ScrollView
           ref={scrollViewRef}
@@ -1167,6 +1242,53 @@ export const AiRequestChat: React.ComponentType<{
             alignItems="stretch"
             noMargin
           >
+            {/* The pending attachments (chips with a remove cross) and the
+                transient pick error of the "+" button (Phase 13.3). */}
+            {byokChatControls && byokPendingAttachments.length > 0 && (
+              <LineStackLayout noMargin alignItems="center">
+                {byokPendingAttachments.map((attachment, attachmentIndex) => (
+                  <Paper
+                    key={`${attachment.name}-${attachmentIndex}`}
+                    background="light"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '0 4px 0 8px',
+                      borderRadius: 12,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: '0.8em',
+                        maxWidth: 160,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {attachment.kind === 'image' ? '🖼 ' : '📄 '}
+                      {attachment.name}
+                      {attachment.kind === 'text' && attachment.truncated
+                        ? ' (truncated)'
+                        : ''}
+                    </span>
+                    <IconButton
+                      size="small"
+                      onClick={() =>
+                        removeByokPendingAttachment(attachmentIndex)
+                      }
+                    >
+                      <Cross />
+                    </IconButton>
+                  </Paper>
+                ))}
+              </LineStackLayout>
+            )}
+            {byokChatControls && byokAttachError && (
+              <Text size="body-small" color="error" noMargin>
+                {byokAttachError}
+              </Text>
+            )}
             {/* $FlowFixMe[constant-condition] */}
             {!standAloneForm && (
               <CompactTextAreaFieldWithControls
@@ -1200,6 +1322,20 @@ export const AiRequestChat: React.ComponentType<{
                       alignItems="center"
                       justifyContent="flex-end"
                     >
+                      {/* The "+" attach button (Phase 13.3, D13-5),
+                          immediately left of Send — BYOK chats with a local
+                          file system only; the image entry is gated by the
+                          menu itself on vision support. */}
+                      {byokChatControls && byokChatControls.canAttachFiles && (
+                        <ElementWithMenu
+                          element={
+                            <IconButton tooltip={t`Attach a file`}>
+                              <Add fontSize="small" />
+                            </IconButton>
+                          }
+                          buildMenuTemplate={buildAttachMenuTemplate}
+                        />
+                      )}
                       <RaisedButton
                         primary={!canRequestBeStopped}
                         disabled={
@@ -1234,17 +1370,77 @@ export const AiRequestChat: React.ComponentType<{
                     onToggle={toggleAutoEdit}
                   />
                 )}
-                <ReasoningLevelSelector
-                  chosenOrDefaultAiConfigurationPresetId={
-                    chosenOrDefaultAiConfigurationPresetId
-                  }
-                  setAiConfigurationPresetId={setAiConfigurationPresetId}
-                  aiConfigurationPresetsWithAvailability={
-                    aiConfigurationPresetsWithAvailability
-                  }
-                  disabled={isWorking}
-                  showSelectedLabel={!hasOpenedProject}
-                />
+                {byokChatControls ? (
+                  /* The BYOK bottom bar (Phase 13.1, D13-2): the effort pill
+                     and the model picker drive the per-chat selection stored
+                     on the chat record. The hosted preset selector is only
+                     rendered for hosted chats. */
+                  <LineStackLayout noMargin alignItems="center">
+                    <CompactSelectField
+                      value={byokChatControls.selectedEffort || 'default'}
+                      onChange={(value: string) => {
+                        if (
+                          value === 'low' ||
+                          value === 'medium' ||
+                          value === 'high' ||
+                          value === 'default'
+                        ) {
+                          byokChatControls.onSelectEffort(value);
+                        }
+                      }}
+                      disabled={isWorking}
+                    >
+                      <SelectOption value="default" label={t`Default effort`} />
+                      {byokChatControls.effortOptions.map(effort => (
+                        <SelectOption
+                          key={effort}
+                          value={effort}
+                          label={effort}
+                        />
+                      ))}
+                    </CompactSelectField>
+                    <CompactSelectField
+                      value={byokChatControls.selectedModelChoiceKey || ''}
+                      onChange={(value: string) => {
+                        if (value === '') {
+                          byokChatControls.onSelectModel(null);
+                          return;
+                        }
+                        const choice = byokChatControls.modelChoices.find(
+                          candidate =>
+                            `${candidate.providerId}\u0000${
+                              candidate.modelName
+                            }` === value
+                        );
+                        if (choice) byokChatControls.onSelectModel(choice);
+                      }}
+                      disabled={isWorking}
+                    >
+                      <SelectOption value="" label={t`Model from settings`} />
+                      {byokChatControls.modelChoices.map(choice => (
+                        <SelectOption
+                          key={choice.label}
+                          value={`${choice.providerId}\u0000${
+                            choice.modelName
+                          }`}
+                          label={choice.label}
+                        />
+                      ))}
+                    </CompactSelectField>
+                  </LineStackLayout>
+                ) : (
+                  <ReasoningLevelSelector
+                    chosenOrDefaultAiConfigurationPresetId={
+                      chosenOrDefaultAiConfigurationPresetId
+                    }
+                    setAiConfigurationPresetId={setAiConfigurationPresetId}
+                    aiConfigurationPresetsWithAvailability={
+                      aiConfigurationPresetsWithAvailability
+                    }
+                    disabled={isWorking}
+                    showSelectedLabel={!hasOpenedProject}
+                  />
+                )}
               </LineStackLayout>
               <Column noMargin noOverflowParent>
                 {isForAnotherProjectText || errorText || priceAndRequestsText}

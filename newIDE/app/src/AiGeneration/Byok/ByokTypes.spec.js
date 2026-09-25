@@ -4,13 +4,17 @@ import {
   BYOK_MCP_ACCESS_MODES,
   DEFAULT_BYOK_SETTINGS,
   DEFAULT_BYOK_MCP_ACCESS_MODE,
+  getByokProviderModelSettings,
   getByokSettings,
   isByokFullyConfigured,
   isByokImageSupport,
   isByokMcpAccessMode,
   isByokReasoningEffort,
   makeDefaultByokMcpServerSettings,
+  removeByokProviderModelSettings,
+  upsertByokProviderModelSettings,
   type ByokSettings,
+  type ByokProvider,
 } from './ByokTypes';
 
 const makeByokSettings = (overrides?: Partial<ByokSettings>): ByokSettings => ({
@@ -308,5 +312,96 @@ describe('isByokFullyConfigured', () => {
       modelName: 'my-model',
     });
     expect(isByokFullyConfigured(settings)).toBe(false);
+  });
+});
+
+describe('ByokProvider model settings (Phase 13.4)', () => {
+  const makeProvider = (): ByokProvider => ({
+    id: 'p1',
+    name: 'Provider 1',
+    endpointUrl: 'https://p1.example.com/v1',
+    keyRef: 'p1',
+    modelSettings: [
+      {
+        modelName: 'tuned',
+        temperature: 0.4,
+        maxTokens: 1024,
+        contextWindowTokens: 65536,
+      },
+    ],
+  });
+
+  it('reads the block of a model, and null for one without', () => {
+    const provider = makeProvider();
+    expect(getByokProviderModelSettings(provider, 'tuned')).toEqual({
+      modelName: 'tuned',
+      temperature: 0.4,
+      maxTokens: 1024,
+      contextWindowTokens: 65536,
+    });
+    expect(getByokProviderModelSettings(provider, 'other')).toBe(null);
+  });
+
+  it('upserts a block (replacing an existing one for the same model)', () => {
+    const provider = makeProvider();
+    const updated = upsertByokProviderModelSettings(provider, {
+      modelName: 'tuned',
+      temperature: 0.9,
+      maxTokens: null,
+      contextWindowTokens: null,
+    });
+    expect(updated.modelSettings).toHaveLength(1);
+    expect(updated.modelSettings[0].temperature).toBe(0.9);
+    // The input provider is not mutated.
+    expect(provider.modelSettings[0].temperature).toBe(0.4);
+  });
+
+  it('removes a block without touching the others', () => {
+    const provider = makeProvider();
+    const withTwo = upsertByokProviderModelSettings(provider, {
+      modelName: 'second',
+      temperature: null,
+      maxTokens: null,
+      contextWindowTokens: null,
+    });
+    const removed = removeByokProviderModelSettings(withTwo, 'tuned');
+    expect(removed.modelSettings.map(block => block.modelName)).toEqual([
+      'second',
+    ]);
+  });
+
+  it('parses modelSettings defensively from untrusted preferences', () => {
+    const settings = getByokSettings({
+      byok: ({
+        ...DEFAULT_BYOK_SETTINGS,
+        providers: [
+          {
+            id: 'p1',
+            name: 'P1',
+            endpointUrl: 'https://p1.example.com/v1',
+            keyRef: 'p1',
+            modelSettings: [
+              'not-an-object',
+              { modelName: '' },
+              {
+                modelName: 'good',
+                temperature: 'not-a-number',
+                maxTokens: 2048,
+                contextWindowTokens: null,
+              },
+            ],
+          },
+        ],
+      }: any),
+    });
+    expect(settings.providers).toHaveLength(1);
+    expect(settings.providers[0].modelSettings).toEqual([
+      {
+        modelName: 'good',
+        temperature: null,
+        maxTokens: 2048,
+        contextWindowTokens: null,
+      },
+    ]);
   });
 });

@@ -3,6 +3,7 @@ import {
   byokSearchAndInstallAsset,
   byokSearchAndInstallResources,
   doesEffectMatchFilter,
+  flattenByokEffectProperties,
   getByokCatalogTools,
   listByokEffects,
   setByokCatalogFetchersForTests,
@@ -78,6 +79,61 @@ describe('ByokCatalogTools', () => {
     });
   });
 
+  describe('flattenByokEffectProperties', () => {
+    const makeField = (name: string, overrides: Object = {}) => ({
+      name,
+      valueType: 'number',
+      defaultValue: '0',
+      visibility: 'basic',
+      ...overrides,
+    });
+
+    it('compacts a plain field', () => {
+      expect(
+        flattenByokEffectProperties([
+          makeField('brightness', { defaultValue: '0.5' }),
+        ])
+      ).toEqual([
+        {
+          name: 'brightness',
+          type: 'number',
+          defaultValue: '0.5',
+          description: undefined,
+          choices: undefined,
+          isAdvanced: false,
+          isDeprecated: false,
+        },
+      ]);
+    });
+
+    it('merges grouped fields (section children) into plain properties', () => {
+      const properties = flattenByokEffectProperties([
+        makeField('aSection', {
+          children: [
+            makeField('inner1'),
+            makeField('inner2', { visibility: 'advanced' }),
+          ],
+        }),
+        makeField('plain'),
+      ]);
+      expect(properties.map(property => property.name)).toEqual([
+        'inner1',
+        'inner2',
+        'plain',
+      ]);
+      expect(properties[1].isAdvanced).toBe(true);
+    });
+
+    it('flattens nested groups recursively', () => {
+      const properties = flattenByokEffectProperties([
+        makeField('outer', {
+          children: [makeField('mid', { children: [makeField('deep')] })],
+        }),
+      ]);
+      expect(properties.map(property => property.name)).toEqual(['deep']);
+    });
+  });
+
   describe('list_effects', () => {
     it('lists every bundled effect type with its property schemas', async () => {
       const tool = getTool('list_effects');
@@ -129,6 +185,36 @@ describe('ByokCatalogTools', () => {
       expect(first.map(effect => effect.type)).toEqual(
         second.map(effect => effect.type)
       );
+    });
+
+    it('narrows with the 2d and 3d filters through the tool', async () => {
+      const tool = getTool('list_effects');
+      const all = await tool.run({}, ({ getProject: () => project }: any));
+      const only2d = await tool.run(
+        { filter: '2d' },
+        ({ getProject: () => project }: any)
+      );
+      const only3d = await tool.run(
+        { filter: '3d' },
+        ({ getProject: () => project }: any)
+      );
+
+      const allTypes = all.output.effects.map((effect: Object) => effect.type);
+      const types2d = only2d.output.effects.map(
+        (effect: Object) => effect.type
+      );
+      const types3d = only3d.output.effects.map(
+        (effect: Object) => effect.type
+      );
+      // The filters only ever remove entries, never add or duplicate.
+      for (const type of types2d) {
+        expect(allTypes).toContain(type);
+      }
+      for (const type of types3d) {
+        expect(allTypes).toContain(type);
+      }
+      expect(types2d.length).toBeLessThanOrEqual(allTypes.length);
+      expect(types3d.length).toBeLessThanOrEqual(allTypes.length);
     });
 
     it('requires a project', async () => {

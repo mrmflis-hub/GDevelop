@@ -2115,3 +2115,1261 @@ useByokChatSeam.js:723: listSkillPrompts (host bag registration)
 editors live-redraw), see `outofscoped.md`. Deferred — `no deferred`
 (the Phase 12 §5 deferrals were already recorded in the phase doc).
 UT — Tasks 13 + 14 filed (`usertasks.md`).
+
+---
+
+## 2026-09-24 (second session) — Phase 11 verification + completion pass
+
+**Date:** 2026-09-24 · **Session type:** verification + completion (the
+owner had already committed the whole Phase 11+12 implementation in
+`c62a67e277`; its commit message is unrelated garbage — the BYOK work is
+identifiable via `git show --stat c62a67e277`, planning docs in
+`ed5a5a5432`).
+
+### Description of actions
+
+1. Verified the committed Phase 11 against every AC of `REVIEW/Phase11.md`
+   with five read-only subagents (11.1 extraction, 11.2/11.3 external
+   scenes, 11.4/11.5 effects+sprites, 11.6/11.7 resources+extensions,
+   11.8 schema/prompt/evals/docs), then re-verified their claims against
+   the source myself. Steps 11.1–11.5 and most of 11.6/11.7/11.8 were in
+   place and green; a set of real gaps remained and was closed in this
+   session:
+   - **Extended-tool schema fields (the big one, AC-breaking):** the
+     seven Phase 11.7 fields existed only in the handlers; the schemas in
+     `ByokToolSchema.js` (the ONLY thing the model sees) did not declare
+     them. Added `parameters_to_add`/`parameters_to_remove`/
+     `parameters_to_move` to `change_custom_function`,
+     `children_to_add`/`children_to_remove` to `change_custom_object`,
+     `dependencies_to_add`/`dependencies_to_remove` to
+     `change_extension_properties`, matching the handler shapes exactly;
+     pinned by a new `ByokToolSchema.spec.js` contract test.
+   - **children_to_add initial properties (11.7.2):** entries now accept
+     `initial_properties: [{name, value}]`, applied to the created child
+     via `getConfiguration().updateProperty` (the registry's own pattern,
+     `index.js:1869`); unknown property names are reported, not fatal.
+   - **Parameter type changes (11.7.1's refactor-hook clause):** a
+     `parameters_to_add` entry naming an EXISTING parameter with a
+     different `type` now sets the type and runs the same hook the
+     extension editor triggers — `WholeProjectRefactorer
+     .changeParameterType` with real `ProjectScopedContainers` built per
+     scope (free/behavior/object functions, mirroring `EventsScope.js`;
+     all five temporary containers deleted after). Duplicate-without-type
+     still skips (shipped behavior unchanged).
+   - **Knowledge-section typo:** the authoring-reach section named a
+     nonexistent `read/add_external_events_source` tool — fixed to
+     `read_external_events_source/add_external_events` and pinned in
+     `ByokKnowledgeSections.spec.js`.
+   - **Sprite polygon partial-apply:** `applyPolygonMaskToFrame` cleared
+     the live mask before validating every polygon definition; an invalid
+     polygon left the frame's mask emptied while the op reported failure.
+     Now all polygons are built and validated BEFORE the mask is touched
+     (orphans deleted — safe, they were never pushed).
+   - **Resource path guard:** `isPathInsideFolder` used a substring
+     check, so a path under a sibling folder whose name extends the
+     project folder's name (`game2` vs `game`) passed as "inside" —
+     replaced with a segment-aware `path.relative` check.
+   - **No-op semantics:** the BYOK executor passed `toolsVersion: null`
+     everywhere, so idempotent re-puts were reported as failures —
+     script-killers for the run_script flow BYOK itself teaches. New
+     `BYOK_TOOLS_VERSION = 'v15'` in `ByokTypes.js` (mirrors
+     `AI_ORCHESTRATOR_TOOLS_VERSION`; declared, not imported, because
+     `Utils.js` pulls renderer-only modules that cannot load in jest) is
+     now passed by the seam executor and the external-layout put; the put
+     wrapper maps `nothingChanged` to `didModifyProject: false`.
+   - **Extraction precedence:** the 11.1 extraction changed the
+     error precedence of `put_2d_instances` (unknown scene + missing
+     required arg now reported the scene first). The wrapper extracts
+     `layer_name`/`brush_kind` before the scene check again, restoring
+     the pre-extraction behavior.
+   - **AIflow.md refresh (11.8.4):** §4.2 rewritten to the real
+     knowledge-section composer (the old body still claimed "no
+     sub-agents" and "`initialize_project` is not whitelisted"); §6
+     rewritten around the existing BYOK skills system (the old text
+     denied any skills concept); §7 rewritten around
+     `ByokGameDesignPack.js` (registered section, "Design first").
+     §2.2/§5.4 were already current.
+   - **Test coverage added** (step ACs the committed work under-covered):
+     bad-polygon failure for `change_sprite_frames` (required by 11.5),
+     wrapper-lifecycle counts for `gd.Animation`/`gd.Point`/`gd.Vector2f`
+     plus the pushed-polygon-NOT-deleted assertion, grouped
+     (children-section) effect property flattening + tool-level `2d`/`3d`
+     filter tests for `list_effects`, end-to-end font/video/json
+     registration + the sibling-folder refusal for
+     `import_project_resources`, "scene events untouched" for
+     `add_external_events`, the script-style no-op success for
+     `put_external_layout_instances`, direct tests for
+     `getOccupiedSpaceDescription`/`injectObjectSizeInfo`/
+     `INSTANCE_POSITION_SEMANTICS_MESSAGE`, and the close/reopen note on
+     `add_external_events` (symmetry with the layout tool).
+2. Verified the previous run's logged fixes still hold: the preview
+   `closeAllPreviews` stop() fix (ByokPreviewSession.js:369-373) and the
+   tools-section budget 2800 (ByokKnowledgeSections.js:188) are in place;
+   the BYOK side of the Polygon2d asymmetry (`applyPolygonMaskToFrame`)
+   is covered by the new lifecycle test.
+3. Live-redraw of external-item editors investigated to root cause (see
+   triage): NOT implementable BYOK-side alone — needs a new MainFrame
+   fan-out channel → filed as budget decision (usertasks Task 15) and the
+   OOS entry corrected instead of silently remaining stale.
+4. Gates re-run green; audit greps re-run (outputs below); AGENTS.md §2
+   updated.
+
+### Bugs found
+
+1. **Extended-tool schema fields missing from the advertised surface**
+   (Phase 11 AC item 7 unmet in the committed tree).
+   `ByokToolSchema.js` `change_extension_properties` (pre-fix :1254-1279),
+   `change_custom_object` (:1305-1335), `change_custom_function`
+   (:1434-1468) declared none of the seven fields, while
+   `ByokExtensionTools.js` reads them (:367-407 parameters, :477-502
+   children, :546-579 dependencies, pre-fix lines). Repro:
+   `grep parameters_to_add src/AiGeneration/Byok/ByokToolSchema.js` →
+   nothing, while the handler consumes it — the model had NO way to
+   discover the functionality. Root cause: step 11.8.1 was executed for
+   the 8 new tools only; the "extended-tool schema fields" half of the
+   sentence was skipped. Fixed this session (+ spec pins).
+2. **Garbled tool name in the system prompt** —
+   `ByokKnowledgeSections.js:168` advertised
+   `read/add_external_events_source` (no such tools; the real pair is
+   `read_external_events_source` + `add_external_events`). Repro: compose
+   the prompt, the authoring-reach line teaches a hallucinated name.
+   Root cause: typo in the Phase 11 knowledge text, unpinned by tests.
+   Fixed + pinned.
+3. **BYOK no-ops reported as failures (script-killer)** —
+   `ByokSeam.js:202` (`toolsVersion: null`) and
+   `ByokExternalSceneTools.js:415` made every tool run with pre-v12
+   semantics, so an idempotent re-put failed and, inside `run_script`,
+   killed the rest of the batch. Repro: run the same successful
+   `put_2d_instances` twice through the seam → second call
+   `success: false` ("nothing changed"). Root cause: the seam never
+   passed a tools version although the BYOK agent is script-based (v15
+   upstream). Fixed via `BYOK_TOOLS_VERSION` ('v15'); regression-tested.
+4. **Partial-apply on invalid collision-mask polygons** —
+   `ByokSpriteTools.js` `applyPolygonMaskToFrame` (pre-fix :311-327)
+   called `setFullImageCollisionMask(false)` then `mask.clear()` before
+   validating each definition; a bad later polygon left the frame's mask
+   CLEARED and the op reported failure — silent data loss. Repro:
+   `set_polygon_mask` with a valid rectangle followed by an entry with a
+   non-numeric vertex → the previous mask is gone. Root cause:
+   validate-as-you-go instead of validate-then-apply. Fixed; regression
+   test asserts the old mask survives a failed op.
+5. **Sibling-folder path confusion in the resource guard** —
+   `ByokResourceTools.js` pre-fix :82-86 used
+   `absolutePath.includes(projectFolder)`, so `/projects/game2/x.png`
+   passed the in-project check for project folder `/projects/game` and
+   was registered with a `../game2/x.png`-style relative file — a
+   resource outside the project folder (which 11.6.3 forbids). Repro:
+   `importByokProjectResources` with source `../game2/x.png`. Root
+   cause: the check replicated the substring quirk of upstream
+   `isPathInProjectFolder` (`ResourceUtils.js:55-60`). Fixed with a
+   segment-aware `path.relative` check + regression test (upstream quirk
+   noted, not touched).
+6. **Test-runtime discovery (not a product bug, recorded for QA):** the
+   WASM test build (`libGD.js-for-tests-only`) implements NEITHER
+   `updateProperty` NOR `getProperties` on the Text object's
+   configuration (probe: `updateProperty('text', …)` → false;
+   `getProperties()` → empty map), while the production registry path
+   (`index.js:1869`) uses exactly that call. The initial-properties test
+   therefore exercises a custom-object child (whose configuration
+   implements the property helpers). If desktop QA (Task 13) ever sees
+   property edits fail on plain objects in the TEST runtime only, this
+   is why.
+
+### Issues found
+
+- Commit `c62a67e277` (the whole Phase 11+12 implementation) carries an
+  unrelated garbage commit message (a runaway translation session's
+  log). The work is only identifiable via `git show --stat`. Recorded
+  here and in AGENTS.md §2; rewriting history is the owner's call.
+- The prompt budget is tight: my first pass at the extended-field
+  descriptions lengthened three tool first-sentences and the composer
+  dropped a degradable knowledge pack (JS API) from the 6k-token prompt
+  entirely — caught by `ByokPrompts.spec.js`. Fix: keep the original
+  first sentences (the prompt's tool list) and document the fields in
+  the properties descriptions, which travel in the `tools` array every
+  request. Lesson: in this repo, prompt-visible description text is
+  budgeted; property-level text is not.
+- Building `ProjectScopedContainers` BYOK-side requires the five
+  temporary containers (parameters/properties × variables/resources +
+  the parameter objects container) in the exact pattern `EventsScope.js`
+  uses; the free-function factory fills the objects container C++-side.
+  Implemented in `refactorParameterTypeChange` with `delete()`s in a
+  `finally`.
+- The `changes.scene`-keyed outside-editor payload types cannot express
+  external-item changes (they carry a `gdLayout`); a real fix needs new
+  channel(s) — see Task 15 / the updated OOS entry.
+- Flow specifics hit while testing: exact-type invariance on
+  `ObjectSizeInfo` test literals (annotate with the type + provide every
+  property incl. `centerZ`), `EditorFunctionGenericOutput` optional
+  fields need refinement (or an `any` binding in specs), function
+  statics like `length` are read-only (copy only `createRectangle` when
+  shadowing `gd.Polygon2d`), and `prototype.delete` patching trips
+  method-unbinding/cannot-write (use the constructor-replacement
+  pattern).
+
+### Files worked on
+
+Modified — implementation (9): `newIDE/app/src/AiGeneration/Byok/
+ByokToolSchema.js` (7 extended fields + description tail sentences),
+`ByokExtensionTools.js` (initial properties + type-change refactor +
+`applyFunctionParameterChanges` signature), `ByokSpriteTools.js`
+(validate-before-apply), `ByokResourceTools.js` (segment-aware guard),
+`ByokExternalSceneTools.js` (toolsVersion + close/reopen notes +
+nothingChanged mapping), `ByokSeam.js` (toolsVersion), `ByokTypes.js`
+(`BYOK_TOOLS_VERSION`), `Byok/Knowledge/ByokKnowledgeSections.js`
+(typo), `newIDE/app/src/EditorFunctions/index.js` (arg-before-scene
+precedence). Modified — specs (9): `ByokExtensionTools.spec.js`,
+`ByokSpriteTools.spec.js`, `ByokResourceTools.spec.js`,
+`ByokExternalSceneTools.spec.js`, `ByokToolSchema.spec.js`,
+`ByokKnowledgeSections.spec.js`, `ByokSeam.spec.js`,
+`ByokCatalogTools.spec.js`, `EditorFunctions/InstanceTools.spec.js`.
+Docs (3): `REVIEW/AIflow.md` (§4.2, §6, §7), `REVIEW/outofscoped.md`
+(live-redraw root cause corrected), `AGENTS.md` (§2 status).
+`REVIEW/usertasks.md`: Task 15 filed. A temporary scratch probe spec was
+written and deleted in-session (never part of the tree state handed
+back).
+
+### Gates (2026-09-24, from `newIDE/app`)
+
+- `npm test -- --watchAll=false`: **208 suites passed / 208**, 2284
+  passed + 1 skipped (baseline before this session: 2264 → +20).
+- `npm run lint`: exit 0, zero warnings.
+- `flow.exe check` (direct binary; the npm wrapper lost the server —
+  known quirk): **Found 0 errors**.
+- `npm run check-format`: exit 0.
+
+### Audit greps (run 2026-09-24, outputs as captured)
+
+```
+== grep 1: the eight Phase 11 tool names registered in ByokExtraTools ==
+25:import { getByokExternalSceneTools } from './ByokExternalSceneTools';
+26:import { getByokCatalogTools } from './ByokCatalogTools';
+27:import { getByokSpriteTools } from './ByokSpriteTools';
+28:import { getByokResourceTools } from './ByokResourceTools';
+548:  ...getByokExternalSceneTools(),
+551:  ...getByokCatalogTools(),
+554:  ...getByokSpriteTools(),
+557:  ...getByokResourceTools(),
+
+== grep 2: counts (extracted from ByokToolSchema.js via node) ==
+BYOK_TOOL_NAMES count: 62
+BYOK_NO_PROJECT_TOOL_NAMES: 'initialize_project', 'get_game_starter_summary'
+BYOK_ONLY_TOOL_NAMES count: 35
+Phase 11 tools all whitelisted: true
+schema field parameters_to_add: present
+schema field parameters_to_remove: present
+schema field parameters_to_move: present
+schema field children_to_add: present
+schema field children_to_remove: present
+schema field dependencies_to_add: present
+schema field dependencies_to_remove: present
+prompt version: byok-v8
+ByokSeam toolsVersion: BYOK_TOOLS_VERSION
+external put toolsVersion: BYOK_TOOLS_VERSION
+external add_events close/reopen note: true
+
+== grep 3: modifiesProject flags of the Phase 11 tools ==
+ByokExternalSceneTools.js:99: false  (read_external_events_source)
+ByokExternalSceneTools.js:204: true  (add_external_events)
+ByokExternalSceneTools.js:299: false (describe_external_layout)
+ByokExternalSceneTools.js:355: true  (put_external_layout_instances)
+ByokSpriteTools.js:649: false  (describe_sprite_frames)
+ByokSpriteTools.js:695: true   (change_sprite_frames)
+ByokCatalogTools.js:672: false (list_effects)
+ByokResourceTools.js:365: true (import_project_resources)
+
+== grep 4: eval tasks ==
+41 task entries in scripts/byok-eval-task-prompts.js (worklog claim confirmed)
+Phase 11 family tasks at :81 external-events-sheet, :83 external-layout-spawn,
+:85 effect-type-selection, :87 sprite-frame-edit, :89 resource-import-url,
+:91 custom-object-children
+
+== grep 5: InstanceTools delegation in index.js ==
+97:} from './InstanceTools';
+3289:    const { instances, objectSizeInfoByName } = describeInstancesInContainer({
+3429:    return putInstancesInContainer({
+
+== grep 6: stub/TODO leftovers in the Phase 11 modules ==
+(none)
+
+== grep 7: knowledge-section tool names (typo fix) ==
+ByokKnowledgeSections.js:168: read_external_events_source/add_external_events
+
+== grep 8: validator green ==
+ByokToolSchema.spec.js:27: expect(validateByokToolSchemas()).toEqual([]);
+ByokToolSchema.spec.js:92: expect(validateByokToolSchemas()).toEqual([]);
+```
+
+### AC check (Phase11.md §4, final state)
+
+- [x] External events round-trip / create-if-missing / not-found
+      listing — spec'd (`ByokExternalSceneTools.spec.js`), plus the new
+      scene-untouched test.
+- [x] External layouts describe/put through the extracted core; scene
+      specs stayed green through 11.1 (byte-identical files +
+      delegation).
+- [x] `list_effects` full catalog + property schemas; filters now
+      tested at tool level too.
+- [x] Sprites round-trips per op family; wrapper lifecycle asserted
+      (Sprite + Animation + Point + Vector2f deleted, pushed Polygon2d
+      NOT); non-sprite targets fail typed; bad polygon fails without
+      partial apply.
+- [x] Resources: three source modes, replace-in-place, outside-project
+      refusal (incl. sibling-folder case), desktop-only failure — all
+      spec'd; font/video/json kinds registered end-to-end.
+- [x] Extensions: parameters add/remove/move + type change with the
+      refactor hook; children add/remove with usage guard + initial
+      property values; dependency add/remove always listed;
+      `create_custom_function` byte-identical (verified via commit
+      diff).
+- [x] Prompt `byok-v8` (v7 + the Phase 12 bump); `BYOK_TOOL_NAMES` = 62
+      default + 2 no-project (the phase's "56" checkpoint long since
+      superseded; the validator cap comment documents the arithmetic);
+      validator green; 6 Phase 11 eval tasks (41 total); AIflow
+      §5/§4.2/§6/§7 current.
+- [x] All four checks green; electron side untouched this session;
+      worklog entry complete; AGENTS.md §2 updated.
+
+### Triage
+
+- **OOS:** nothing new; one existing entry updated (external-editors
+  live-redraw — root cause sharpened: no external-item fan-out channel
+  exists; `ExternalEventsEditorContainer.js:197-209` are explicit
+  no-ops; a fix needs a new MainFrame channel). The Polygon2d upstream
+  entry is unchanged and still blocked on the owner call.
+- **Deferred:** no deferred.
+- **UT:** Task 15 filed (budget approval for the live-redraw MainFrame
+  touchpoint). No other new UT items.
+
+## 2026-09-24 (third session) — Task 15 approved and implemented: external-item live-redraw
+
+**Date:** 2026-09-24 · **Session type:** owner-approved feature (Task 15 of
+`usertasks.md`: "Yes, please implement live-redraw so that the user doesn't
+need to close and reopen editor to see AI actions result").
+
+### Description of actions
+
+Implemented the external-item fan-out channel end to end — an AI write to an
+external layout or an external events sheet now refreshes the already-open
+editor of that item (the last UX gap between the Phase 11 tools and the
+scene tools):
+
+1. **Payload types** (`EditorFunctions/OutsideEditorChanges.js`):
+   `ExternalLayoutOutsideEditorChanges = {externalLayoutName: string}` and
+   `ExternalEventsOutsideEditorChanges = {externalEventsName: string,
+   newOrChangedAiGeneratedEventIds: Set<string>}`. External items are
+   identified by NAME (their tab "project item name"), not object identity:
+   wrappers are re-obtained per lookup and name comparison has no
+   wrapper-cache assumptions (the scene channel compares `gdLayout`
+   identity; a new channel should not inherit that coupling).
+2. **The two editor containers** implement the new ref methods:
+   - `ExternalLayoutEditorContainer.onExternalLayoutModifiedOutsideEditor`
+     — name guard against `props.projectItemName`, then
+     `this.editor.onInstancesModifiedOutsideEditor()` (the same
+     SceneEditor refresh the scene path triggers — renderers remount and
+     redraw from `externalLayout.getInitialInstances()`).
+   - `ExternalEventsEditorContainer.onExternalEventsModifiedOutsideEditor`
+     — name guard, then
+     `this.editor.onEventsModifiedOutsideEditor({newOrChangedAiGeneratedEventIds})`
+     (clears the selection — it may reference deleted/invalidated events —
+     pushes a history entry and lets the sheet re-render; the passed ids
+     highlight the AI-written events, the same mechanism the scene events
+     editor uses).
+3. **MainFrame fan-outs** (`MainFrame/index.js`): two new
+   `React.useCallback` fan-outs iterating `getAllEditorTabs`, with GUARDED
+   calls (`if (editorRef && editorRef.onX)` via an `any`-typed ref) —
+   deliberate deviation from the unguarded style: only the two external
+   containers implement these methods, and guarding avoids touching every
+   editor container with no-op methods. Both callbacks go into the props
+   bag; `EditorTabsPane` (type + destructure + forward),
+   `PoppedOutEditorContainerWindow` (popped-out tabs keep the behavior) and
+   `BaseEditor`'s `RenderEditorContainerProps` carry them.
+4. **BYOK wiring**: `AskAiEditorContainer` (props type + destructure +
+   `useByokChatSeam` call) → `useByokChatSeam` (options type, destructure,
+   `createByokOrchestrator` call, deps array) → `ByokOrchestrator` (options
+   type + the collaborators chain, guarded like the existing ones) →
+   `ByokExtraTools.ByokExtraToolCollaborators` (two optional callbacks).
+   The standalone homepage form passes no-ops (it has no editor tabs), so
+   the seam options stay required like their siblings.
+5. **MCP host parity**: `useByokChatSeam`'s `makeExtraToolCollaborators`
+   (the Phase 10 MCP server's tool executor) now passes the two new
+   callbacks AND `onObjectsModifiedOutsideEditor` — which was MISSING
+   there, so an external MCP agent's `change_sprite_frames` writes never
+   refreshed open scene editors. Fixed in the same stroke (logged under
+   Bugs found).
+6. **The tools fire the channel** (`ByokExternalSceneTools.js`):
+   - `put_external_layout_instances` fires
+     `onExternalLayoutModifiedOutsideEditor({externalLayoutName})` after a
+     put that actually changed something (a v15 no-op success does NOT
+     redraw — nothing changed); the obsolete "close and reopen the editor"
+     note is gone from the output.
+   - `add_external_events` collects the writer's `aiGeneratedEventId` via
+     `onApplied` (one id per applied batch GROUP, by writer design) and
+     fires `onExternalEventsModifiedOutsideEditor({externalEventsName,
+     newOrChangedAiGeneratedEventIds})`; the whole-sheet `event_script`
+     path fires with an empty set (still clearing the selection and
+     pushing history); the obsolete note is gone.
+7. Tests: `ByokExternalSceneTools.spec.js` asserts the layout notification
+   (fired on change, NOT on a no-op put) and the events notification (right
+   name + the writer's id set); new
+   `MainFrame/EditorContainers/ExternalItemsLiveRedraw.spec.js` unit-tests
+   the two container ref methods by direct class instantiation (refresh on
+   a matching name, ignored on a different name, safe without a mounted
+   editor).
+
+### Bugs found
+
+1. **MCP extra-tool collaborators missing `onObjectsModifiedOutsideEditor`**
+   — `useByokChatSeam.js` `makeExtraToolCollaborators` (pre-fix, only
+   `getProject` + `onSceneEventsModifiedOutsideEditor` + runtimeDeps) did
+   not pass the object-changes callback, so an external MCP agent's
+   `change_sprite_frames` calls applied but never refreshed open scene
+   editors. Repro: register the MCP server, call `change_sprite_frames`
+   from an MCP client with a sprite editor open → the editor shows the old
+   frames until tab switch. Root cause: the Phase 10/12 MCP host was wired
+   before that collaborator existed (Phase 11 sprite tools introduced it)
+   and the gap was never noticed. Fixed in this session (one line + the
+   hooks deps array now also carries the three callbacks).
+
+### Issues found
+
+- The containers' module graphs are untestable as-is in jest (SceneEditor →
+  `@material-ui/core` barrel; EventsSheet → pixi/three/spine ESM packages
+  jest cannot parse): the new spec mocks `../../SceneEditor`,
+  `../../EventsSheet`, `../ResourcesWatcher`,
+  `../../EmbeddedGame/EmbeddedGameFrame` and `./ExternalPropertiesDialog`
+  (jest hoists the mocks above the imports) and instantiates the classes
+  directly — the only way to unit-test legacy class-container ref methods
+  without rendering. Worth knowing for the next container-level test.
+- Flow specifics: guarded optional ref-method calls trip `method-unbinding`
+  and then `not-a-function` even under `$FlowFixMe[method-unbinding]` — the
+  clean workaround is an `any`-typed `editorRef` binding for the guarded
+  fan-outs (Main Frame does this in exactly the two new callbacks).
+- The writer's `onApplied` id is ONE PER CALL (a group tag for the whole
+  batch), not one per batch — the events notification therefore carries a
+  1-entry set for a single `add_external_events` call. Recorded in the
+  test comment; the scene channel accumulates across calls in the seam
+  executor, the external channel is per-call by design.
+
+### Files worked on
+
+Modified (12): `newIDE/app/src/EditorFunctions/OutsideEditorChanges.js`
+(two payload types), `MainFrame/EditorContainers/
+ExternalLayoutEditorContainer.js` (+ `onExternalLayoutModifiedOutsideEditor`),
+`MainFrame/EditorContainers/ExternalEventsEditorContainer.js` (+
+`onExternalEventsModifiedOutsideEditor`), `MainFrame/index.js` (two fan-out
+callbacks + props bag), `MainFrame/EditorTabsPane.js` (type + forward),
+`MainFrame/PoppedOutEditorContainerWindow.js` (forward),
+`MainFrame/EditorContainers/BaseEditor.js` (`RenderEditorContainerProps`),
+`AiGeneration/AskAiEditorContainer.js` (props + destructure + seam call),
+`AiGeneration/AskAiStandAloneForm.js` (no-ops), `AiGeneration/Byok/
+useByokChatSeam.js` (options, orchestrator call, deps, MCP collaborators),
+`AiGeneration/Byok/ByokOrchestrator.js` (options + collaborators chain),
+`AiGeneration/Byok/ByokExtraTools.js` (collaborators type),
+`AiGeneration/Byok/ByokExternalSceneTools.js` (fire + drop the obsolete
+notes). New (1): `MainFrame/EditorContainers/ExternalItemsLiveRedraw.spec.js`.
+Modified specs (1): `AiGeneration/Byok/ByokExternalSceneTools.spec.js`.
+Docs: `REVIEW/outofscoped.md` (live-redraw entry REMOVED — fixed and
+verified; status line updated), `REVIEW/usertasks.md` (Task 15 checked off
+with the implementation summary), `AGENTS.md` (§2 status).
+
+### Gates (2026-09-24, from `newIDE/app`)
+
+- `npm test -- --watchAll=false`: **209 suites passed / 209** (one new:
+  `ExternalItemsLiveRedraw.spec.js`), 2289 passed + 1 skipped (before this
+  session: 2284 → +5).
+- `npm run lint`: exit 0, zero warnings.
+- `flow.exe check` (direct binary): **Found 0 errors**.
+- `npm run check-format`: exit 0.
+
+### Audit greps (run 2026-09-24, outputs as captured)
+
+```
+== grep 1: the new channel across the wiring chain ==
+src/EditorFunctions/OutsideEditorChanges.js:11:export type ExternalLayoutOutsideEditorChanges = {|
+src/EditorFunctions/OutsideEditorChanges.js:16:export type ExternalEventsOutsideEditorChanges = {|
+src/MainFrame/index.js:4024-4029 / :4036-4041: the two guarded fan-outs
+src/MainFrame/index.js:5932/5933: passed in the props bag
+src/MainFrame/EditorTabsPane.js (type, destructure, forward — grep the callback name)
+src/MainFrame/PoppedOutEditorContainerWindow.js (forward)
+src/MainFrame/EditorContainers/BaseEditor.js (RenderEditorContainerProps)
+src/MainFrame/EditorContainers/ExternalLayoutEditorContainer.js (ref method)
+src/MainFrame/EditorContainers/ExternalEventsEditorContainer.js (ref method)
+src/AiGeneration/AskAiEditorContainer.js (props type, destructure, seam call)
+src/AiGeneration/AskAiStandAloneForm.js (no-ops)
+src/AiGeneration/Byok/useByokChatSeam.js (options, orchestrator call, MCP collaborators)
+src/AiGeneration/Byok/ByokOrchestrator.js:248/251 (options), :984-991 (collaborators chain)
+src/AiGeneration/Byok/ByokExtraTools.js (collaborators type)
+src/AiGeneration/Byok/ByokExternalSceneTools.js:69-90 (notify helpers), :292/:316 (events tool fires), :471 (put tool fires)
+
+== grep 2: the close/reopen notes are gone ==
+(grep "close and reopen" src/AiGeneration/Byok/ByokExternalSceneTools.js) → no matches
+
+== grep 3: the container methods under test ==
+ExternalItemsLiveRedraw.spec.js: 4 passed (refresh on match, ignore on
+other name, safe without editor — both containers)
+ByokExternalSceneTools.spec.js: 20 passed (incl. the 2 new notification
+tests and the no-op-put-does-not-notify assertion)
+```
+
+### AC / acceptance (Task 15 + Phase 11 AC 1-2 follow-through)
+
+- [x] An AI write to an external layout refreshes the open external-layout
+      editor (instances view redraws) — container method + fan-out + tool,
+      unit-tested.
+- [x] An AI write to an external events sheet refreshes the open
+      external-events editor (selection cleared, history entry, new events
+      highlighted) — unit-tested.
+- [x] No redraw on a no-op put; no crash without a mounted editor; other
+      items' editors are not refreshed — unit-tested.
+- [x] The obsolete "close and reopen" tool notes are removed.
+- [x] Popped-out editor tabs get the same behavior (forwarded props).
+- [x] All four repo checks green; worklog entry complete; AGENTS.md §2
+      updated; `outofscoped.md` entry removed (fixed + verified).
+
+### Triage
+
+- **OOS:** nothing new — one entry REMOVED (the live-redraw limitation,
+  fixed and verified this session). The Polygon2d upstream entry remains,
+  still blocked on the owner call.
+- **Deferred:** no deferred.
+- **UT:** no new UT (Task 15 resolved in place).
+
+## 2026-09-24 (fourth session) — Owner QA round 1: three findings triaged and fixed
+
+### Date
+
+2026-09-24.
+
+### Description of actions
+
+The owner started the human QA list and reported three findings in chat
+(with a DevTools-network follow-up). Investigation + fixes, all
+uncommitted on top of the pending live-redraw diff:
+
+1. **"Key shown in dev tools is different from the one provided" — by
+   design, no fix.** `ByokKeyStorage.js` stores the key OS-encrypted
+   (Electron safeStorage / DPAPI on Windows, via the `byok-encrypt` main
+   IPC), base64 into the `gd-byok-key*` localStorage items. What DevTools
+   shows is the ciphertext. Verified against the owner's live profile
+   (`GDevelop 5/Local Storage`): settings blob intact (`enabled: true`,
+   `endpointUrl: https://api.cometapi.com/v1`, model `mimo-v2.6-flash`,
+   one provider card with `keyRef: ""`).
+2. **"AskAI routes through GDevelop completions in all instances" —
+   disproven with evidence; no routing fix needed.** Code path audit: both
+   chat entry points gate through `shouldUseByokForNewRequest`
+   (`AskAiEditorContainer.js:678`, `AskAiStandAloneForm.js:314`), the
+   fresh-composer send funnels into the same gated effect
+   (`startNewAiRequest` is a `useState` setter, no network), and no BYOK
+   module imports a hosted completions function (all `GDevelopServices`
+   imports in `Byok/` are type-only except the public catalog tools). The
+   durable chat history (`byok-chats/Create-a-scene-called-Forest…md`, 62
+   messages) proves the BYOK client loop ran against the configured
+   endpoint (client-side tool calls executed: `create_scene`,
+   `search_object_asset_store`, debugger traffic). The owner's follow-up
+   captured the actual URL:
+   `GET https://api-dev.gdevelop.io/generation/ai-request-summary` — that
+   is the HOSTED chat-history list refresh (`getAiRequestSummaries` in
+   `AiRequestContext.js`), not a model call. The "GDevelop model
+   complaining about harness tools" lines in the screenshot are the
+   cometAPI model's own text: the transcript shows it failing tool calls
+   (malformed `<parameter name=…>` placeholder copied into an argument
+   value, a missing required `layer_name`, an object-type recreate
+   conflict) — model quality, with one harness-side contributor (see
+   Deferred). Verification recipe for the owner: in DevTools the BYOK
+   turns are `POST api.cometapi.com/v1/chat/completions`; `ai-request*`
+   calls are hosted list/polling traffic (benign).
+3. **Benchmark burned ~1,000,620 tokens and failed 4/4 — real bug,
+   FIXED.** `ByokSettingsTab.onRunBenchmark` sent `model` + `messages`
+   only — **no `tools` array** — so the model could never emit tool calls
+   ("couldn't do anything apart from getting prompts"); every tool task
+   failed mechanically after one round. Also no `max_tokens` cap, so a
+   degenerate reasoning model could burn an unbounded budget per call.
+   Fix: `runByokBenchmarkTask` now builds the task's OpenAI tool schemas
+   (`getByokToolSchemasForNames(task.toolNames)` + `toOpenAiToolsFormat`)
+   and passes them with every round; the runner's `sendCompletion`
+   contract gained a `tools` argument; the settings tab sends the schemas
+   and caps output with the new `BYOK_BENCHMARK_MAX_OUTPUT_TOKENS = 4096`.
+4. **`start_preview` could never start a preview — real bug, FIXED.** The
+   durable transcript shows every BYOK preview attempt failing with
+   "options.getIsMenuBarHiddenInPreview is not a function": the session
+   passed a hand-rolled plain object while `LocalPreviewLauncher` calls
+   the `PreviewOptions` preference GETTERS (and the old code also
+   misspelled `shouldGenerateScenesCode` vs
+   `shouldGenerateScenesEventsCode`). Fix: new pure
+   `makeByokPreviewLaunchOptions()` in `ByokPreviewSession.js` builds the
+   full `PreviewOptions` shape (same values as `GameplayTestRunner`'s
+   launch: menu hidden, not always-on-top, one window, no
+   capture/tutorial/in-game-edition), used by `start`.
+5. **Preview-close "Uncaught runtime errors: Object has been destroyed"
+   — upstream race, FIXED as a QA-justified touchpoint.** Root cause:
+   `ElectronMainMenu.js` subscribes to `browser-window-focus`/`-blur`
+   through `@electron/remote`'s `app` and reads `window.id`/`window.title`
+   on the delivered window proxy; a window destroyed before its queued
+   event is dispatched (closing the focused preview window) throws in the
+   member-get handler (`server.js:503` → Electron's `BrowserWindow.get`
+   property getter) and the dev overlay blocks the IDE. Fix: guard both
+   callbacks with `window.isDestroyed()` (the one member that stays
+   callable). Recorded here as an upstream-file touch justified by the
+   owner's QA report (scope rule §4).
+
+### Bugs found
+
+- Benchmark requests carried no `tools` (benchmark unusable by design
+  as-implemented) — fixed (see 3).
+- No output-token cap on benchmark calls — fixed with
+  `BYOK_BENCHMARK_MAX_OUTPUT_TOKENS`.
+- BYOK `start_preview` options shape invalid (every preview failed) —
+  fixed (see 4).
+- Upstream destroyed-window race in `ElectronMainMenu` focus/blur
+  handlers (preview-close crash) — guarded (see 5).
+- Model-facing (not harness bugs, verified and left as designed):
+  `put_2d_instances.layer_name` is required in the schema and the handler
+  error is correct (the model omitted it and recovered on retry); the
+  object-type recreate conflict error is correct.
+
+### Issues found
+
+- The tool-schema descriptions embed the hosted harness's
+  `<parameter name="x">value</parameter>` placeholder syntax; a weak
+  model copied it into an argument VALUE (transcript message 1). Real
+  failure mode for low-capability models → Deferred entry with proposal.
+- The gameplay-test harness API is under-documented for the model (it
+  guessed a nonexistent `stack.replace`) → Deferred entry with proposal.
+- The hosted `ai-request-summary` list refresh runs while the Ask AI
+  panel is open even when a BYOK chat is selected — the network noise
+  that mislead the QA round → Deferred entry with proposal.
+- Dev API host is `api-dev.gdevelop.io` in the dev build (expected; noted
+  so future network-tab QA reads it correctly).
+- Environment: the full Jest suite fails 2–4 random heavy suites when run
+  with default parallel workers on this machine (differing suites per
+  run, import-time errors at suite load); `--maxWorkers=1` is green —
+  209 suites, 2294 passed + 1 skipped. Treat parallel red as machine
+  flakiness; gate on the serial run.
+
+### Files worked on
+
+- `newIDE/app/src/AiGeneration/Byok/ByokPreviewSession.js` — added
+  `makeByokPreviewLaunchOptions`; `start` uses it (fix 4).
+- `newIDE/app/src/AiGeneration/Byok/ByokPreviewSession.spec.js` — 3 new
+  tests (launch-options contract, first-scene fallback, builder overrides).
+- `newIDE/app/src/AiGeneration/Byok/ByokBenchmark.js` — tools per task in
+  the send contract + `BYOK_BENCHMARK_MAX_OUTPUT_TOKENS` (fix 3).
+- `newIDE/app/src/AiGeneration/Byok/ByokBenchmark.spec.js` — 2 new tests
+  (tools sent for tool tasks, none for the vision task).
+- `newIDE/app/src/AiGeneration/Byok/ByokSettingsTab.js` — benchmark
+  `sendCompletion` sends `tools` + `maxTokens` cap.
+- `newIDE/app/src/MainFrame/ElectronMainMenu.js` — destroyed-window
+  guards in the focus/blur callbacks (fix 5; upstream touchpoint).
+- `REVIEW/worklog.md`, `REVIEW/deferred.md`, `REVIEW/usertasks.md` — this
+  entry + triage + QA-round record.
+- Evidence read (not modified): the owner's live profile
+  (`GDevelop 5/Local Storage` leveldb, `byok-chats/` durable history).
+
+### Gates
+
+- `npm test -- --watchAll=false --maxWorkers=1`: **209 suites passed,
+  2294 passed + 1 skipped** (+6 tests vs. the previous session).
+- `npm run lint`: exit 0, zero warnings.
+- `npm run flow`: **No errors!**
+- `npm run check-format`: exit 0 (two files re-formatted with Prettier).
+
+### Triage
+
+- **OOS:** no OOS.
+- **Deferred:** three new entries (tool-schema placeholder syntax;
+  gameplay-harness API reference; hosted ai-request-summary polling
+  clarity while a BYOK chat is selected).
+- **UT:** QA round-1 findings recorded in `usertasks.md` with re-test
+  steps (benchmark, start_preview, preview close).
+
+## 2026-09-24 (fifth session) — QA results recorded: Tasks 1, 2, 11 (9.3-9.5) passed
+
+### Date
+
+2026-09-24.
+
+### Description of actions
+
+Bookkeeping-only session: the owner reported in chat that QA Tasks 1,
+2, and 9.3/9.4/9.5 (the Task 11 sub-sections) "completed without
+errors". Recorded in `REVIEW/usertasks.md`: every checkbox of Task 1
+(Phase 3 desktop verification: safeStorage/DPAPI) and Task 2 (Phase 4
+end-to-end on a real endpoint — includes "zero requests to
+api.gdevelop.io/generation", independently confirming the routing
+disposition of the fourth session) ticked with dated status lines, and
+Task 11's 9.3 (durable history), 9.4 (multi-provider routing + D5
+badge), 9.5 (capabilities + benchmark) ticked with a status line noting
+9.1 + 9.2 are not yet reported. AGENTS.md section 2 updated with the QA
+progress. No code changed.
+
+### Bugs found
+
+None new.
+
+### Issues found
+
+- Task 11's 9.5 includes the benchmark item fixed in the fourth session;
+  the owner's report post-dates those fixes, so a pass presumably
+  reflects the fixed build — if the benchmark was run before the fix was
+  loaded, re-run it once on the current tree.
+
+### Files worked on
+
+- `REVIEW/usertasks.md` (Task 1/2/11 statuses),
+  `AGENTS.md` (section 2 status), `REVIEW/worklog.md` (this entry),
+  auto-memory (project-state note).
+
+### Gates
+
+Not applicable (no code change; the fourth session's gates remain the
+last full run).
+
+### Triage
+
+- **OOS:** no OOS.
+- **Deferred:** no deferred.
+- **UT:** no UT (the QA doc itself is the update).
+
+## 2026-09-24 (sixth session) — Agent-driven desktop QA with real CometAPI keys: round-1 re-tests passed, 2 bugs fixed, 1 new bug filed
+
+### Date
+
+2026-09-24.
+
+### Description of actions
+
+The owner ordered the outstanding `usertasks.md` QA driven with Computer
+Use against the real CometAPI endpoint (`https://api.cometapi.com/v1`,
+two keys registered as providers "CometAPI" and "CometAPI-Test", shared
+$1.50 pool; models gpt-6-luna, mimo-v2.6-flash, glm-5.3-flash). Sequence:
+
+1. Launched the desktop dev app (`npm start` renderer + `npm run
+   electron-app`); drove the real UI throughout with Computer Use.
+2. Configured BYOK in Preferences: both providers registered, both keys
+   tested ("Connection successful!" ×2 — Task 8.2 real-provider smoke
+   PASSED), providers renamed, models fetched live.
+3. Round-1 re-tests (all recorded in `usertasks.md`): benchmark re-run on
+   mimo (0/4, 25,110 tokens, 7 tool calls in task 1 — the tools+4096-cap
+   fix is verified) and glm (0/4, 19,777 tokens); `start_preview` now
+   opens the real preview window and `capture_preview_screenshot` /
+   `inspect_runtime_state` round-trip; preview-close error overlay
+   re-tested (after fixing the new crash below); routing sanity (BYOK
+   POSTs only to api.cometapi.com).
+4. Agentic build QA with glm-5.3-flash: two BYOK chats drove the full
+   pipeline — `initialize_project` (projects "Forest Game"/"ForestDemo"),
+   `create_scene`, `create_or_replace_object` ×2 (real asset-store
+   installs with required resources), `put_2d_instances`,
+   `add_or_edit_variable` (global Score), `read_events_source`,
+   `start_preview` → `capture_preview_screenshot` → `inspect_runtime_state`
+   → preview stop; plan UI (`create_or_update_plan`) and progress
+   sentences verified in-chat; D5 badge/token row verified
+   (BYOK · provider/model · tokens · turns).
+5. MCP (Task 12/14): transport security re-verified by curl (403
+   wrong/absent token, 405 GET /mcp, 413 >1 MB, 404, /health payload);
+   `-32001` no-host rule verified before opening the Ask AI panel, host
+   registration verified after (tools/list 65 tools with no project, 63
+   with one — `initialize_project` correctly dropped); stdio adapter
+   end-to-end (initialize/tools/prompts/resources), `prompts/get
+   build-workflow`, `resources/read gdevelop://project/notes`,
+   `tools/call get_project_overview` live snapshot; restart reconnection
+   (fresh start wrote a new port+token, adapter re-reads on failure).
+6. Fixed two bugs found by the QA (both with spec regression tests; Flow
+   and Prettier green; full lint/format/jest gates re-run in background).
+7. Attempted Task 11 9.2 stall-watchdog test with a local never-responding
+   HTTP server; inconclusive because provider failover routed the chat to
+   the healthy second provider (itself useful failover evidence).
+8. Restored all settings (endpoint, stall delay 90 s, context window
+   1,000,000) and recorded the model-matrix findings in `usertasks.md` /
+   `deferred.md`.
+
+### Bugs found
+
+1. **`ByokPreviewSession.js` — debugger-callback registration crash
+   (FIXED this session).** `registerCallbacks` passed only 3 of the 6
+   callbacks the preview debugger server fans out
+   (`onServerStateChanged`, `onErrorReceived`, `onConnectionErrored`
+   were missing). The preview lifecycle invoked the missing
+   `onServerStateChanged` → uncaught `TypeError: onServerStateChanged is
+   not a function` from `setDebuggerServerState` → the whole editor
+   React tree crashed (blank window behind the webpack error overlay);
+   the unsaved in-memory project is lost. Fixed by registering all three
+   as no-ops with a comment; `ByokPreviewSession.spec.js` gained a
+   regression test asserting every fan-out callback is present and
+   callable (19/19 suite tests pass).
+2. **`ByokMcpStdioAdapterCore.js` — discovery-file path wrong on every
+   platform (FIXED this session).** `resolveDefaultDiscoveryPath` joined
+   `…/GDevelop/gdevelop-mcp-endpoint.json`, but Electron's userData
+   folder follows the productName **"GDevelop 5"** — so the zero-config
+   discovery wiring (Claude Code `.mcp.json` / MCP Inspector / any
+   client without `--url/--token`) read a non-existent file and every
+   call failed with `-32002`, while explicit flags worked. Fixed to
+   "GDevelop 5" (with a comment); spec expectations updated (14/14
+   pass). After the fix the stdio adapter completes initialize →
+   tools/list → prompts/resources end-to-end against the live app.
+3. **Benchmark WASM crash (FILED, not fixed — `outofscoped.md`).**
+   Applying an event-writing batch to the benchmark scratch project
+   crashes libGD ("memory access out of bounds") for ANY model;
+   tasks 2–4 then fail, and the poisoned module makes every later
+   benchmark run die instantly at `createNewGDJSProject` with the
+   misleading classification "The endpoint returned an unexpected
+   error." (error-classification mislabel included in the entry).
+   Reproduced on mimo-v2.6-flash and glm-5.3-flash.
+
+### Issues found
+
+- **Endpoint compatibility (recorded in `deferred.md`, 2026-09-24
+  section):** gpt-6-luna on CometAPI rejects `tools` + `reasoning_effort`
+  in chat/completions and the gateway forces a non-none default even when
+  the parameter is omitted — BYOK cannot use it agentically until the
+  degradation logic learns to send `reasoning_effort: "none"`;
+  glm-5.3-flash deterministically returns 200 with an unusable body once
+  a very large tool output (the starter catalog) is in context, which
+  also defeats compaction for the poisoned chat. BYOK's own behavior in
+  both cases is correct (error row, retry offer, failed requests not
+  counted, work kept).
+- glm-5.3-flash never produced valid EventScript (3 attempts across two
+  chats, all rejected by the local validator with actionable guidance —
+  the validator/refusal path is verified; a successful anchored
+  `add_scene_events` remains open for a capable model; the owner's
+  passed Task 2 QA already covered working event flows).
+- Electron main logs a `WebContents` "destroyed" listener
+  `MaxListenersExceededWarning` (11) after several page reloads — a
+  small leak worth a look next time `main.js` is touched.
+- Frequent Windows UIA (accessibility) polling destabilises the dev
+  renderer (page reloads every few minutes while a UIA client hammers
+  the tree; silent when untouched). Worked around by hands-off waits
+  during long operations; noted as an automation-environment caveat, not
+  a product bug.
+- Tasks 7, 9, 10, 13 and parts of 6/11/12/14 remain (see the coverage
+  summary in `usertasks.md`); offline checks are not safely testable on
+  this remote VM (disabling networking would cut the session).
+- Settings state left behind intentionally for the owner: two extra
+  providers ("CometAPI" with key 1, "CometAPI-Test" with key 2), global
+  model glm-5.3-flash, and four QA chat transcripts in `byok-chats/`.
+  Everything else restored (stall delay 90 s, context window 1,000,000,
+  main endpoint api.cometapi.com/v1). The desktop dev app (renderer +
+  electron shell) was left running.
+
+### Files worked on
+
+- `newIDE/app/src/AiGeneration/Byok/ByokPreviewSession.js` (fix: register
+  all debugger fan-out callbacks),
+  `newIDE/app/src/AiGeneration/Byok/ByokPreviewSession.spec.js`
+  (regression test),
+  `newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpStdioAdapterCore.js`
+  (fix: discovery path "GDevelop 5"),
+  `newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpStdioAdapterCore.spec.js`
+  (expectations updated),
+  `REVIEW/usertasks.md` (round-1 re-tests ticked, Task 8.2, model-matrix
+  findings, coverage summary),
+  `REVIEW/outofscoped.md` (benchmark WASM crash entry),
+  `REVIEW/deferred.md` (CometAPI gpt-6-luna + glm large-output entries),
+  `AGENTS.md` (section 2 status), `REVIEW/worklog.md` (this entry),
+  auto-memory (session state).
+- Supporting (outside the repo, disposable): a never-responding
+- Supporting (outside the repo, disposable): a never-responding HTTP
+  stub on 127.0.0.1:8377 for the stall test (stopped), MCP stdio JSONL
+  fixtures in the user temp folder.
+
+### Gates
+
+- `npx jest ByokPreviewSession.spec.js ByokMcpStdioAdapterCore.spec.js
+  --maxWorkers=1`: 19/19 and 14/14 pass.
+- `npm run flow`: No errors (full project).
+- `npx prettier --check` on the four touched files: clean after
+  `--write`.
+- Full gates re-run in the background at session end: `npm run lint`
+  exit 0, `npm run check-format` exit 0, `npm test -- --watchAll=false
+  --maxWorkers=1` 209 suites / 2295 passed / 1 skipped — all green.
+
+### Triage
+
+- **OOS:** benchmark WASM crash + misleading error classification filed
+  in `outofscoped.md` (Open entries; now 2 entries).
+- **Deferred:** CometAPI gpt-6-luna `tools`+`reasoning_effort`
+  incompatibility and glm-5.3-flash large-tool-output 200-garbage, both
+  with proposals, filed in `deferred.md` (2026-09-24 section).
+- **UT:** the coverage summary, model-matrix findings and the remaining
+  owner checklist were filed into `usertasks.md` (round-1 re-test
+  section + new "Agent-driven desktop QA" section).
+
+
+## 2026-09-25 (seventh session) — Phase 13 + FTmodel planned (docs only, per owner order)
+
+### Date
+
+2026-09-25.
+
+### Description of actions
+
+The owner reviewed the QA session 5 record and filed five product notes
+(chat history should live in the Recents rail; reuse the existing bottom
+effort pill and move the model picker next to it; homepage-form chats
+must carry into the editor panel; the EventScript failures are a harness
+problem — they want a searchable example/tool DB and on-device RAG;
+settings tab rebuilt to a specific layout). They then answered the open
+decisions and ordered: "write the docs only, do not implement". Actions:
+
+1. Wrote `REVIEW/Phase13.md`: chat panel consolidation (BYOK header
+   toggle + token row, effort pill + provider/model picker in the bottom
+   input bar, chat history merged into Recents with hosted history kept
+   visible, history button removed), homepage-form chat carryover into
+   the editor panel, "+" attach button (text/image, vision/BYOK gating),
+   settings tab rebuilt to the owner's exact layout (three checkboxes,
+   provider cards with unrollable per-model advanced settings incl.
+   per-model benchmark, provider+model routing pairs with migration),
+   the owner's prompt-budget directive (8–10k target / 15k hard cap for
+   advertised tools + system prompt, tiered tool advertisement via a
+   `search_tools` meta-tool, common tasks advertised by name, grep-style
+   knowledge search advertised), EventScript Tier-1 harness fixes
+   (pinned syntax block + canonical examples, tagged example bank,
+   validator-retry targeted hints), and on-device RAG
+   (Transformers.js MiniLM ONNX embedder + in-process cosine index +
+   `search_knowledge` tool, new RAG preferences tab with embedder picker
+   and a "set up permanent indexing with Qdrant" button that downloads,
+   installs under userData and autostarts Qdrant with the app). Nine
+   decisions recorded as OWNER-DECIDED (D13-1…D13-9), including the one
+   new approved npm dependency (`@huggingface/transformers`) and the
+   on-device privacy invariant.
+2. Wrote `REVIEW/FTmodel.md`: the local fine-tuned generation track
+   (7–8B or ternary Bonsai-class base + LoRA via Unsloth-style tooling,
+   synthetic tool-call transcripts from the eval harness as training
+   data, CPU-bound inference via the ternary llama fork or GGUF, shipped
+   as a managed loopback OpenAI-compatible endpoint) — explicitly marked
+   NOT scheduled, gated on a fresh owner order, to be started only after
+   Phase 13 settles the prompt/tool contract.
+3. Updated `AGENTS.md` section 2 with the Phase 13 planned status and
+   the FTmodel.md pointer. No code changed.
+
+### Bugs found
+
+None (docs-only session).
+
+### Issues found
+
+- The desktop dev app from the sixth session was closed at some point
+  after session end (electron background task exited 0) — the "left
+  running" note in the sixth-session entry is no longer true; nothing
+  was lost (all state is on disk).
+- Phase 13 as scoped is large (UI consolidation + settings redesign +
+  knowledge/RAG); when the owner orders implementation, consider
+  splitting the run into 13.1–13.4 (UI) and 13.5–13.8 (knowledge/RAG)
+  sessions.
+
+### Files worked on
+
+- `REVIEW/Phase13.md` (new), `REVIEW/FTmodel.md` (new),
+  `AGENTS.md` (section 2 status), `REVIEW/worklog.md` (this entry),
+  auto-memory (Phase 13 plan + owner's budget directive).
+
+### Gates
+
+Not applicable (no code change).
+
+### Triage
+
+- **OOS:** no OOS (the benchmark WASM crash entry from the sixth session
+  remains the only code-related open item besides the Polygon2d one).
+- **Deferred:** no deferred (local generation is tracked in
+  `FTmodel.md`, not deferred.md — it is planned-but-long-term, per the
+  owner's naming instruction).
+- **UT:** no UT (implementation awaits the owner's go; the phase docs
+  are the record).
+
+
+### Addendum (2026-09-25, later same day) — usertasks.md statuses updated from owner feedback
+
+The owner reviewed the QA records and corrected/completed three statuses;
+`REVIEW/usertasks.md` was updated accordingly (ticks + per-item evidence
+notes):
+- Task 6: stuck-loop watchdog **CONFIRMED WORKING by the owner** (mimo
+  triggered it and was stopped with the stuck message) — ticked; the
+  events headline marked **SUPERSEDED by the Phase 13 harness/prompt
+  rework** (13.5/13.6) with a re-test note; variables and
+  project-from-scratch ticked; objects/instances/scenes/project
+  properties/script-batching annotated as partial with what exactly was
+  verified; regression ticked (covered by Task 2 item 5).
+- Task 7: status note added — screenshot capture + vision ingestion
+  CONFIRMED (both glm and mimo called the capture tools; mimo definitely
+  saw the screenshot); the self-fix loop and remaining items to repeat
+  after Phase 13 13.5/13.6.
+- Task 8: closed as ALL DONE (decision #9 implemented in 7.0; real-
+  provider smoke done in QA session 5; libGD pinning done 2026-09-22).
+- Task 11: 9.1 ticked (progress sentences verified session 5); 9.2 stall
+  notice ticked per the owner's mimo observation (failover caveat noted);
+  40+-round compaction still open.
+- Task 12: curl-rejections, Inspector-via-stdio-adapter, no-host rule and
+  restart-reconnection ticked with evidence; toggle-off/second-instance/
+  kill-takeover/activity-log remain. Task 14: catalog + MCP
+  prompts/resources ticked (partial where noted).
+- Bugs found: none. Issues found: none. Files: `REVIEW/usertasks.md`,
+  `REVIEW/worklog.md` (this addendum). Gates: not applicable (doc-only).
+- Triage: no OOS, no deferred, no UT.
+
+
+### Addendum 2 (2026-09-25) — documentation conventions adopted
+
+The owner asked for a doc format easier for the agent to edit (spawned by
+watching the 312-line anchored-edit script) and approved the agent's
+proposal: keep markdown, but (a) one sentence per line, no manual
+hard-wrapping, (b) stable IDs on checklist/triage items with the ID
+expanded in plain words in the item body and a status token on the line.
+Recorded in `AGENTS.md` §4 (new bullet after the /REVIEW scope rule) and
+auto-memory. Applies to docs written/rewritten going forward; existing
+docs are not retro-wrapped. No code changed. Files: `AGENTS.md`,
+auto-memory, `REVIEW/worklog.md` (this addendum). Gates: not applicable.
+Triage: no OOS, no deferred, no UT.
+
+
+---
+
+## 2026-09-25 — Phase 13 implemented (chat panel consolidation, settings redesign, prompt budget, EventScript harness, on-device RAG)
+
+**Session type:** implementation (the owner ordered "implement phase 13" in
+chat). All 8 steps of `Phase13.md` built; every phase-gate AC addressed.
+
+**Description of actions:**
+
+- **13.1 (chat panel):** `useByokChatSeam` gained `byokToggleState`
+  (green/red header toggle writing the same `byok.enabled` preference the
+  settings checkbox drives) and the renamed/extended `byokChatControls`
+  (the old `byokHeaderState`: effort + model data, token totals, attach
+  handlers). `AiRequestChat/index.js`: the header is now the toggle with
+  the token row below (hidden when BYOK is off, hosted chats render the
+  toggle too); the bottom bar renders the BYOK effort pill + a
+  provider/model dropdown ("Model from settings" default) instead of the
+  hosted preset selector when a BYOK chat is selected. The Recents rail
+  (`AskAiHistory.js`) lists the merged BYOK history (persisted metas via
+  `byokHistoryChats` + session chats) ABOVE the hosted list, with
+  Archive/Unarchive/Delete (confirmed) in the row menu, filtered by the
+  active/archived/all filter; the rail's Open loads persisted chats
+  (`openSavedByokChat`) through `onStartOrOpenChat`. `ByokChatHistory.js`
+  (button + dialog) deleted — its storage-usage line and export already
+  lived in the settings tab.
+- **13.2 (homepage carryover):** `pickByokChatToSelectOnMount` in
+  `ByokChatStore` — the editor's mount effect now re-selects the single
+  still-working BYOK chat when the tab remounts (the moment a form-started
+  chat's project opens and the pane moves), so the live transcript stays
+  in view without restarting the loop.
+- **13.3 ("+" attach):** `ByokAttachments.js` (extension whitelist +
+  NUL-sniff + 100 KB cap with truncation note; images via the BYOK image
+  store; `buildByokAttachMenuTemplate` pure menu builder). The pickers
+  live in the seam (`pickTextFile`/`pickImageFile`, desktop fs only);
+  chips + error row + the "+" menu in `AiRequestChat`; text attachments
+  inline into the sent message, image ids ride as `byokImageIds` →
+  orchestrator → user-message `images` → replay as `image_url` parts
+  (`ByokTranscript`), counted by the eviction rule, the compactor's drop
+  order, the persistence sidecar, and rendered after the message
+  (`ChatMessages` `user_message_images` item).
+- **13.4 (settings redesign):** `ByokSettingsTab.js` rebuilt top-to-bottom
+  to the owner's layout (three checkboxes → legacy single-endpoint block
+  (endpoint/key/model/Test/benchmark/context window/effort/image support)
+  → PROVIDERS cards (name/Remove, endpoint, key, Test + Fetch models on
+  one row, an Advanced Accordion with PER MODEL SETTINGS blocks — pick
+  model, temperature, max tokens, context window, per-model Run benchmark,
+  Customize another model) → Add a provider → routing mode + DEFAULT
+  STRONG/FAST as Provider+Model dropdown pairs → WHILE THE AI IS WORKING →
+  CHAT HISTORY STORAGE → MCP card). Data: `ByokProvider.modelSettings`
+  (defensively parsed), the router overlays per-model temperature/max
+  tokens (`applyProviderModelSettings`), provider-aware context windows
+  (`resolveContextWindowTokens` new chain position), and the routing-pair
+  migration `migrateByokRoutingProfiles` (old provider-less profiles →
+  first provider).
+- **13.5 (budget pass):** `BYOK_CORE_TOOL_NAMES` (27 advertised tools incl.
+  the new `search_tools` meta-tool + `search_knowledge`), everything else
+  discoverable through `searchByokToolSchemas`/`search_tools` (schema
+  injection; the executor always knew every tool); MCP `tools/list` stays
+  full (`getByokMcpToolNames`). Prompt: version **byok-v9**; the tools
+  section lists NAMES only (the schemas ride with the request — the
+  duplicated prose is gone); the new retrieval map names every search
+  surface; a 20-entry task catalog (machine-checkable skill/tool/reference
+  pointers, asserted in the spec); prompt budget 5500 with
+  authoring-reach + the cheat-sheet + knowledge packs degradable;
+  schema slimming of the fattest core schemas. `ByokPromptBudget.spec.js`
+  enforces ≤15k hard, prints the number, warns past 10k.
+- **13.6 (EventScript harness):** the non-degradable pinned block (syntax
+  essentials + 3 canonical examples) in every request;
+  `scripts/generate-byok-eventscript-examples.js` →
+  `docs/eventscript-examples.json` (11 tagged examples, generated file
+  committed); the bank merges into `search_reference` (rank-boosted
+  pseudo-entries, kind `example`); rejected batches carry a `retryHint`
+  (error-class → example map in `ByokEventScriptExamples.js`, attached in
+  `ByokLocalEventWriter` at both failure sites). Round-trip test: every
+  shipped example applies through the real writer.
+- **13.7 (RAG core):** `Byok/Rag/` — `ByokRagTypes` (settings blob
+  `byokRag`, embedder catalog, chunk/manifest types),
+  `ByokRagCorpus` (~2.4k chunks: engine reference, bundled docs, skills,
+  examples, opt-in docs folder via injected reader; ~400-token chunks with
+  overlap), `ByokRagEmbedder` (lazy `import('@huggingface/transformers')`,
+  injectable loader, normalized vectors, the deterministic hashing test
+  embedder), `ByokRagIndex` (deterministic build + corpus hash, cosine
+  brute force, base64-serialized), `ByokRagStorage` (in-process file store
+  + the Qdrant REST store with the same contract, batched upserts, u32
+  point ids), `ByokRagSearch` (hybrid exact-then-vector, RAG-off lexical
+  fallback with AND semantics, neighbor reads by chunk id, the live
+  runtime holder), `ByokRagFileBackends` (desktop `byok-rag-*` IPC /
+  IndexedDB), `ByokRagBuildService` (consented build/rebuild + persisted
+  load). The `search_knowledge` tool wired into `ByokExtraTools` and the
+  core advertisement + retrieval map. `@huggingface/transformers` ^4.3.0
+  installed (the phase's single owner-approved dependency, D13-8; the
+  install also required restoring the libGD test alias — see bugs).
+- **13.8 (RAG tab + Qdrant):** `ByokRagSettingsTab` (status card, embedder
+  picker with explicit MB + consent dialogs before any download — D13-9,
+  rebuild with progress, docs-folder picker, backend switch, Qdrant card
+  with status + the setup button + the clean-fallback message) registered
+  as the `rag` Preferences tab (`byokRag` preferences key added to the
+  context/provider). Qdrant: `ByokQdrantSetupCore.js` (plain-CJS state
+  machine: use-existing → download → extract → configure(loopback YAML) →
+  spawn → health; idempotent; injectable deps) + the thin
+  `electron-app/app/ByokQdrant.js` (real download with redirect handling,
+  system-tar extraction, port picker, endpoint discovery file, child
+  killed on quit, `ensureStarted` autostart on app ready) +
+  `ByokRagFiles.js` (`<userData>/byok-rag/` handlers), both wired in
+  `main.js`.
+- **Gates:** 221 suites / 2428 tests (1 pre-existing skip) — one random
+  UNTOUCHED suite flaked per full run (both observed flakes pass
+  standalone; OOS entry); ESLint 0/0; Flow 0 errors (run via the direct
+  binary per the AGENTS quirk); check-format clean in both `newIDE/app`
+  and `newIDE/electron-app`. AGENTS.md §2 updated; triage appended
+  (OOS ×4, deferred ×3, `usertasks.md` Task 16).
+
+**Bugs found:**
+
+1. `npm install` in `newIDE/app` prunes the hand-made
+   `node_modules/libGD.js-for-tests-only` alias → every suite fails with
+   `Cannot find module 'libGD.js-for-tests-only'` (`scripts/import-libGD.js:6`).
+   Repro: install any dependency, run Jest. Root cause: npm removes
+   extraneous folders it does not track. Fixed for this session by
+   re-copying (`index.js` + `libGD.wasm` from `public/`); OOS entry with a
+   proper-fix proposal.
+2. The RAG settings tab's status refresh was an infinite render loop:
+   `ragSettings` is re-created every render → `refreshStatus` identity
+   changes → the effect re-runs → the status objects return fresh
+   identities → setState → loop (repro: `ByokRagSettingsTab.spec.js` hung
+   the runner). Fixed with a mount-once guard ref (a real runtime bug, not
+   just a test artifact).
+3. `searchByokRagIndex` shadowed its `index` parameter with the loop
+   variable (`for (let index = 0; index < index.chunks…`) → TypeError on
+   the first search. Found by the index spec; fixed (renamed `position`).
+4. Provider-aware `resolveChatContextWindowTokens` looked up cached models
+   only under the resolved target endpoint, breaking the legacy
+   single-endpoint path (settings.endpointUrl empty in provider-less
+   setups) → context ratio 1 and wrong compaction thresholds (caught by
+   two orchestrator specs). Fixed: fall back to the injected connection's
+   cache.
+5. The MCP `tools/list` accidentally followed the narrowed chat
+   advertisement (missing `create_extension` etc.; caught by
+   `ByokMcpTools.spec`). Fixed with the dedicated full `getByokMcpToolNames`.
+6. `ByokRagSearch` coerced `options.nearChunkId` inside template strings
+   after the null-narrowing (Flow catch) — fixed via a `nearChunkId` local.
+7. Heredoc backslash mangling produced invalid JS in
+   `electron-app/app/ByokRagFiles.js` (a `'\'` escape) — caught by a node
+   require smoke check; fixed.
+8. `makeByokQdrantPaths` defaulted to the non-Windows binary name when no
+   platform is passed (spec caught it); now takes the platform and every
+   caller passes it.
+9. **Self-review against the ACs found the Qdrant app-start autostart
+   missing** (handlers + quit-kill existed; nothing spawned on launch).
+   Added `ensureStarted` (spawn + health only, never a download) wired to
+   `app.on('ready')`.
+10. During the Flow cleanup, a subagent rewrote two `jest.fn` mocks in
+    `ByokAttachments.spec.js` as plain async functions, breaking 2 tests
+    (`toHaveBeenCalledWith` on a non-spy) — caught in the final full run
+    and restored.
+11. Full-suite runs each flake exactly one random untouched suite (two
+    observations documented in the OOS entry; both suites pass standalone
+    and unchanged between runs).
+
+**Issues found:**
+
+- The budget lands at ~10.5k typical / 11.5k worst-case tokens (worst case
+  includes the full 2 KB custom-instructions payload), above the owner's
+  8–10k band but well under the 15k hard cap; the spec prints the number
+  every run. Remaining levers are listed in the OOS entry — owner call.
+- Rename is gone from the BYOK rail rows (the phase's action list is
+  open/archive/delete; the old dialog's rename did not carry over) — OOS.
+- The RAG backend switch does not auto-trigger the rebuild (explicit
+  button + consent instead) — deferred with reasoning.
+- The real-MiniLM `search_knowledge` quality run needs the model download
+  → desktop QA (Task 16); the CI eval uses the deterministic hashing
+  embedder (24 queries, ≥70% top-3, currently passing with margin).
+- `ByokChatHistory.js` had no co-located spec — its removal broke no test
+  (the coverage gap is historical, noted here for the record).
+- Raw `npx jest` bypasses the react-app-rewired config (CSS-module
+  resolution) — the AGENTS "never raw npx jest" rule re-confirmed.
+- Triage: `no OOS` does not apply (4 new entries); `no deferred` does not
+  apply (3 new entries); `no UT` does not apply (Task 16 added).
+
+**Files worked on (this session):**
+
+New: `newIDE/app/src/AiGeneration/Byok/ByokAttachments.js` (+spec),
+`Byok/ByokEventScriptExamples.js` (+spec), `Byok/ByokPromptBudget.spec.js`,
+`Byok/ByokQdrantSetupCore.spec.js`, `Byok/ByokRag*.spec.js` (7),
+`Byok/Rag/ByokRagTypes.js`, `Byok/Rag/ByokRagCorpus.js`,
+`Byok/Rag/ByokRagEmbedder.js`, `Byok/Rag/ByokRagIndex.js`,
+`Byok/Rag/ByokRagStorage.js`, `Byok/Rag/ByokRagSearch.js`,
+`Byok/Rag/ByokRagFileBackends.js`, `Byok/Rag/ByokRagBuildService.js`,
+`Byok/Rag/ByokRagSettingsTab.js` (+spec), `Byok/Rag/ByokQdrantSetupCore.js`,
+`Byok/docs/eventscript-examples.json`,
+`newIDE/app/scripts/generate-byok-eventscript-examples.js`,
+`newIDE/app/src/AiGeneration/AiRequestChat/index.spec.js`,
+`newIDE/app/src/AiGeneration/AskAiHistory.spec.js`,
+`newIDE/electron-app/app/ByokQdrant.js`, `newIDE/electron-app/app/ByokRagFiles.js`.
+Deleted: `newIDE/app/src/AiGeneration/Byok/ByokChatHistory.js`.
+Modified: `newIDE/app/src/AiGeneration/AiRequestChat/index.js`,
+`AiRequestChat/ChatMessages.js` (+spec), `AiRequestChat/Utils.js`,
+`AskAiEditorContainer.js`, `AskAiHistory.js`, `AskAiStandAloneForm.js`,
+`Byok/useByokChatSeam.js` (+spec), `Byok/ByokChatStore.js` (+spec),
+`Byok/ByokChatPersistence.js` (+spec), `Byok/ByokCompactor.js`,
+`Byok/ByokTranscript.js` (+spec), `Byok/ByokOrchestrator.js` (+spec),
+`Byok/ByokSeam.js`, `Byok/ByokExtraTools.js`, `Byok/ByokLocalEventWriter.js`
+(+spec), `Byok/ByokEngineReference.js`, `Byok/ByokPrompts.js` (+spec),
+`Byok/ByokToolSchema.js` (+spec), `Byok/ByokTypes.js` (+spec),
+`Byok/ByokModelRouter.js` (+spec), `Byok/ByokModelsCache.js` (+spec),
+`Byok/ByokSettingsTab.js` (+spec), `Byok/Knowledge/ByokKnowledgeSections.js`
+(+spec), `Byok/Mcp/ByokMcpTools.js`, `MainFrame/Preferences/PreferencesContext.js`,
+`MainFrame/Preferences/PreferencesProvider.js`,
+`MainFrame/Preferences/PreferencesDialog.js`, `newIDE/app/package.json` +
+`package-lock.json` (the approved `@huggingface/transformers` dep),
+`newIDE/electron-app/app/main.js`; docs: `AGENTS.md`, `REVIEW/outofscoped.md`,
+`REVIEW/deferred.md`, `REVIEW/usertasks.md`, this file. (The tree also
+carries the earlier sessions' uncommitted changes — e.g.
+`ByokPreviewSession.js`, `OutsideEditorChanges.js`, the ExternalItems
+spec — untouched by this session.)
+
+**Audit greps (run 2026-09-25, pasted from the session):**
+
+```
+=== A1: dead references to removed artifacts ===
+grep -rn "byokHeader\b|ByokChatHistory|byokHeaderState" src/ → (no matches)
+
+=== A2: prompt version ===
+ByokPrompts.js: BYOK_AGENT_PROMPT_VERSION = 'byok-v9' (byok-v8 only in the history comment)
+
+=== A3: new tools registered ===
+ByokToolSchema.js: 13 search_tools/search_knowledge mentions; ByokExtraTools.js: both tools implemented
+
+=== A4/A5: console.log / TODO / placeholder stubs in the new modules ===
+grep -rn "console\.log|TODO|FIXME" Byok/Rag/*.js ByokAttachments.js ByokEventScriptExamples.js → (no matches)
+
+=== A6: the advertised core set ===
+BYOK_CORE_TOOL_NAMES count: 27 (search_tools present, search_knowledge present)
+
+=== A7: retryHint carried by the writer ===
+ByokLocalEventWriter.js: 5 retryHint mentions (type + 2 failure sites + helper)
+
+=== A8: the example bank ===
+docs/eventscript-examples.json: 11 examples
+
+=== A9: rag preferences key wired ===
+byokRag: PreferencesContext.js x2, PreferencesProvider.js x1, PreferencesDialog 'rag' tab x2
+
+=== A10: electron handlers registered ===
+main.js: registerByokRagFileHandlers + registerByokQdrant at :511-512; byok-rag-*/byok-qdrant-* handlers in ByokRagFiles.js/ByokQdrant.js
+```
+
+**Gates:** `npm test -- --watchAll=false --maxWorkers=1`: 221 suites, 2427
+passed + 1 pre-existing skip (one random untouched-suite flake per run,
+documented); `npm run lint`: 0 errors 0 warnings; Flow (direct binary):
+0 errors; `npm run check-format` (app + electron-app): clean.

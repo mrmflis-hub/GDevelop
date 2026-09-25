@@ -9,6 +9,7 @@ import {
 import {
   archiveByokChat,
   createByokChat,
+  deleteByokChat,
   deleteByokOrchestrator,
   deleteByokUsageTracker,
   flushByokChatPersistence,
@@ -16,7 +17,9 @@ import {
   getByokChatPersistence,
   getByokUsageTracker,
   getByokOrchestrator,
+  listAllByokChats,
   listByokChats,
+  restoreByokChat,
   setByokChatPersistence,
   setByokOrchestrator,
   byokReattachChat,
@@ -69,6 +72,7 @@ import {
   byokCallRequiresApproval,
   createByokEditorFunctionCallExecutor,
   isByokAiRequestId,
+  shouldUseByokForNewRequest,
 } from './ByokSeam';
 import {
   findByNameokExtraTool,
@@ -89,6 +93,15 @@ import { useEnsureExtensionInstalled } from '../UseEnsureExtensionInstalled';
 import { makeSimplifiedProjectBuilder } from '../../EditorFunctions/SimplifiedProject/SimplifiedProject';
 import { useStableUpToDateRef } from '../../Utils/UseStableUpToDateCallback';
 import EventsFunctionsExtensionsContext from '../../EventsFunctionsExtensionsLoader/EventsFunctionsExtensionsContext';
+import optionalRequire from '../../Utils/OptionalRequire';
+import { openFilePicker } from '../../Utils/FileSystem';
+import {
+  readByokImageAttachment,
+  readByokTextAttachment,
+  type ByokAttachmentReadResult,
+} from './ByokAttachments';
+
+const fs = optionalRequire('fs');
 
 /**
  * The container's BYOK seam (the D8 refactor, scheduled by `Phase8.md` step
@@ -144,6 +157,8 @@ export type ByokChatSeamOptions = {|
   // layer already receive in the container).
   onSceneEventsModifiedOutsideEditor: (changes: any) => void,
   onInstancesModifiedOutsideEditor: (changes: any) => void,
+  onExternalLayoutModifiedOutsideEditor: (changes: any) => void,
+  onExternalEventsModifiedOutsideEditor: (changes: any) => void,
   onObjectsModifiedOutsideEditor: (changes: any) => void,
   onObjectGroupsModifiedOutsideEditor: (changes: any) => void,
   onProjectItemRenamedOutsideEditor: (changes: any) => void,
@@ -187,7 +202,12 @@ export type ByokChatSeamOptions = {|
   updateByokPreferences: (byokSettings: ByokSettings) => void,
 |};
 
-export type ByokChatHeaderState = {|
+/**
+ * The bottom-bar controls of a BYOK chat (Phase 13.1): the effort pill and
+ * the model picker data (D13-2), the token/turns row shown under the header
+ * toggle, and the "+" attach handlers (D13-5). Null outside BYOK chats.
+ */
+export type ByokChatControlsState = {|
   chatId: string,
   providerModelLabel: string,
   usageTotals: ?{|
@@ -202,6 +222,23 @@ export type ByokChatHeaderState = {|
   selectedEffort: string,
   onSelectModel: (choice: ByokModelChoice | null) => void,
   onSelectEffort: (effort: 'low' | 'medium' | 'high' | 'default') => void,
+  // The "+" attach button (13.3): present only where a local file system
+  // exists (the desktop app); the image entry additionally requires vision.
+  canAttachFiles: boolean,
+  canAttachImages: boolean,
+  pickTextFile: () => Promise<ByokAttachmentReadResult>,
+  pickImageFile: () => Promise<ByokAttachmentReadResult>,
+|};
+
+/**
+ * The header's BYOK toggle (Phase 13.1, D13-4): green when routing is on,
+ * red when off — flipping the same `enabled` setting the Preferences
+ * checkbox drives (it routes new chats; an in-flight chat continues as
+ * started).
+ */
+export type ByokToggleState = {|
+  isEnabled: boolean,
+  onToggle: (enabled: boolean) => void,
 |};
 
 export type ByokChatSeam = {|
@@ -217,24 +254,37 @@ export type ByokChatSeam = {|
   attachByokOrchestrator: (chat: AiRequest) => Promise<?ByokOrchestrator>,
   sendByokUserMessage: (
     aiRequestId: string,
-    userMessage: string
+    userMessage: string,
+    byokImageIds?: Array<string>
   ) => Promise<void>,
   suspendByokChat: (aiRequestId: string) => void,
   suspendAiRequestWithByokSupport: (aiRequestId: string) => Promise<void>,
   clearApprovedByokEditCallIds: () => void,
   onRetryByokChat: () => Promise<void>,
   getByokLiveProject: () => ?any,
-  // ---- Phase 9 ----
-  // The D5 badge + token row + model/effort dropdowns of the selected chat
-  // (null outside BYOK chats).
-  byokHeaderState: ByokChatHeaderState | null,
+  // ---- Phase 13 ----
+  // The header toggle (13.1): flips the global enabled setting, synced both
+  // ways with the Preferences checkbox.
+  byokToggleState: ByokToggleState,
+  // The bottom-bar controls of the selected BYOK chat (13.1): effort pill +
+  // model picker + token row + attach handlers. Null outside BYOK chats.
+  byokChatControls: ByokChatControlsState | null,
+  // The merged BYOK history for the Recents rail (13.1): the durable
+  // persisted chats plus the in-session ones, with the rail's actions.
+  byokHistoryChats: Array<any>,
+  refreshByokHistoryChats: () => Promise<void>,
+  setByokHistoryChatArchived: (
+    aiRequestId: string,
+    archived: boolean
+  ) => Promise<void>,
+  deleteByokHistoryChat: (aiRequestId: string) => Promise<void>,
   // Local thumbs (9.6): stored in localStorage only.
   onSendByokFeedback: (
     aiRequestId: string,
     messageIndex: number,
     feedback: 'like' | 'dislike'
   ) => Promise<void>,
-  // The history button (9.3): open a saved chat into the session.
+  // The history rail's "open" (13.1): load a saved chat into the session.
   openSavedByokChat: (chatId: string) => Promise<boolean>,
 |};
 
@@ -254,6 +304,8 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     editorFunctionsWithoutProject,
     onSceneEventsModifiedOutsideEditor,
     onInstancesModifiedOutsideEditor,
+    onExternalLayoutModifiedOutsideEditor,
+    onExternalEventsModifiedOutsideEditor,
     onObjectsModifiedOutsideEditor,
     onObjectGroupsModifiedOutsideEditor,
     onProjectItemRenamedOutsideEditor,
@@ -391,10 +443,25 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     [providersKey, preferencesValues]
   );
 
-  // The header state of the selected BYOK chat (D5 badge + token row + the
-  // dropdowns), or null outside BYOK chats.
-  const byokHeaderState = React.useMemo(
-    (): ByokChatHeaderState | null => {
+  // The header's BYOK toggle (13.1): the same enabled setting the
+  // Preferences checkbox drives, read live so both stay in sync.
+  const byokToggleState = React.useMemo(
+    (): ByokToggleState => ({
+      isEnabled: shouldUseByokForNewRequest(preferencesValues),
+      onToggle: (enabled: boolean) => {
+        updateByokPreferences({
+          ...getByokSettings(preferencesValuesRef.current || {}),
+          enabled,
+        });
+      },
+    }),
+    [preferencesValues, preferencesValuesRef, updateByokPreferences]
+  );
+
+  // The bottom-bar controls of the selected BYOK chat (effort pill + model
+  // picker + token row + attach handlers), or null outside BYOK chats.
+  const byokChatControls = React.useMemo(
+    (): ByokChatControlsState | null => {
       // byokChatsUpdateCount is the change signal (see the deps): the usage
       // totals move with every turn without being a data input.
       void byokChatsUpdateCount;
@@ -413,6 +480,77 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       );
       const providerName = provider ? provider.name : 'Default';
       const usageTracker = getByokUsageTracker(chat.id);
+      const selectedProvider = settings.providers.find(
+        entry => entry.id === (chatSelection ? chatSelection.providerId : '')
+      );
+      const endpointUrl = selectedProvider
+        ? selectedProvider.endpointUrl
+        : settings.endpointUrl;
+      const modelName = target.modelName || settings.modelName;
+      const capabilityRecord =
+        (settings.capabilitiesByTargetKey || {})[
+          makeByokCapabilityTargetKey(endpointUrl, modelName)
+        ] || null;
+
+      const pickTextFile = async (): Promise<ByokAttachmentReadResult> => {
+        if (!fs) {
+          return {
+            ok: false,
+            error: 'Attachments need the desktop app.',
+          };
+        }
+        const filePath = await openFilePicker({
+          title: 'Attach a text file',
+          properties: ['openFile'],
+          message: 'Pick a text file to attach to the message',
+          filters: [
+            {
+              name: 'Text files',
+              extensions: [
+                'txt',
+                'md',
+                'json',
+                'js',
+                'ts',
+                'csv',
+                'log',
+                'py',
+                'xml',
+                'yaml',
+                'yml',
+              ],
+            },
+          ],
+        });
+        if (!filePath || typeof filePath !== 'string') {
+          return { ok: false, error: '' };
+        }
+        return readByokTextAttachment(fs, filePath);
+      };
+      const pickImageFile = async (): Promise<ByokAttachmentReadResult> => {
+        if (!fs) {
+          return {
+            ok: false,
+            error: 'Attachments need the desktop app.',
+          };
+        }
+        const filePath = await openFilePicker({
+          title: 'Attach an image',
+          properties: ['openFile'],
+          message: 'Pick a png, jpg or webp image to attach to the message',
+          filters: [
+            { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
+          ],
+        });
+        if (!filePath || typeof filePath !== 'string') {
+          return { ok: false, error: '' };
+        }
+        return readByokImageAttachment(
+          fs,
+          filePath,
+          makeDefaultByokImageStore()
+        );
+      };
 
       return {
         chatId: chat.id,
@@ -424,21 +562,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           chatSelection && chatSelection.modelName
             ? `${chatSelection.providerId}\u0000${chatSelection.modelName}`
             : null,
-        effortOptions: (() => {
-          const selectedProvider = settings.providers.find(
-            entry =>
-              entry.id === (chatSelection ? chatSelection.providerId : '')
-          );
-          const endpointUrl = selectedProvider
-            ? selectedProvider.endpointUrl
-            : settings.endpointUrl;
-          const modelName = target.modelName || settings.modelName;
-          return getByokEffortOptions(
-            (settings.capabilitiesByTargetKey || {})[
-              makeByokCapabilityTargetKey(endpointUrl, modelName)
-            ] || null
-          );
-        })(),
+        effortOptions: getByokEffortOptions(capabilityRecord),
         selectedEffort: chatSelection
           ? chatSelection.reasoningEffort
           : settings.reasoningEffort,
@@ -474,6 +598,12 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           });
           updateByokChat(currentChat);
         },
+        canAttachFiles: !!fs,
+        canAttachImages:
+          settings.imageSupport !== 'no' &&
+          !(capabilityRecord && capabilityRecord.images === false),
+        pickTextFile,
+        pickImageFile,
       };
       // The chat store notifications (updateByokChat) re-render through
       // byokChatsUpdateCount; the trackers update with every turn.
@@ -649,6 +779,12 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
         return {
           getProject: getByokLiveProject,
           onSceneEventsModifiedOutsideEditor,
+          // The MCP host runs the same extra tools as a chat: an external
+          // agent's writes refresh the open editors too (and sprite-frame
+          // writes redraw scene editors, which was missing here).
+          onObjectsModifiedOutsideEditor,
+          onExternalLayoutModifiedOutsideEditor,
+          onExternalEventsModifiedOutsideEditor,
           runtimeDeps: {
             getProject: getByokLiveProject,
             captureSceneCanvas: () => {
@@ -761,6 +897,9 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       executeByokFunctionCalls,
       getByokLiveProject,
       onSceneEventsModifiedOutsideEditor,
+      onExternalLayoutModifiedOutsideEditor,
+      onExternalEventsModifiedOutsideEditor,
+      onObjectsModifiedOutsideEditor,
       preferencesValuesRef,
       editorFunctions,
       editorFunctionsWithoutProject,
@@ -796,6 +935,120 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     dropByokChatSnapshots(aiRequestId);
     archiveByokChat(aiRequestId);
   }, []);
+
+  // ---- Phase 13.1: the Recents rail's BYOK section ----
+  // The merged history: every chat of the durable store (persisted metas)
+  // plus any in-session chat (its live summary wins — the status dot and the
+  // "working" state come from the live record). Refreshed on mount, after
+  // the rail's actions, and (debounced) whenever the session store changes.
+  const [byokHistoryChats, setByokHistoryChats] = React.useState<Array<any>>(
+    []
+  );
+  const refreshByokHistoryChats = React.useCallback(async (): Promise<void> => {
+    const store = getByokChatPersistence();
+    let metas: Array<any> = [];
+    if (store) {
+      try {
+        metas = await store.listChatMetas();
+      } catch (error) {
+        // A failing listing keeps the previous entries: the rail stays
+        // usable with the in-session chats.
+      }
+    }
+    const metaById: Map<string, any> = new Map(
+      metas.map(meta => [meta.id, meta])
+    );
+    const entries: Array<any> = [];
+    const seenIds: Set<string> = new Set();
+    for (const chat of listAllByokChats()) {
+      seenIds.add(chat.id);
+      const meta = metaById.get(chat.id);
+      const summary = getAiRequestSummary(chat);
+      entries.push({
+        ...summary,
+        archivedAt: chat.archivedAt !== undefined ? chat.archivedAt : null,
+        title: summary.title || (meta ? meta.name : ''),
+      });
+    }
+    for (const meta of metas) {
+      if (seenIds.has(meta.id)) continue;
+      entries.push({
+        id: meta.id,
+        title: meta.name,
+        archivedAt: meta.archivedAt,
+        gameId: null,
+        createdAt: meta.createdAt,
+        updatedAt: meta.updatedAt,
+        userId: '',
+        status: 'ready',
+        mode: 'orchestrator',
+        error: null,
+        firstUserMessage: '',
+        lastMessage: '',
+        outputMessagesCount: meta.messageCount,
+      });
+    }
+    entries.sort(
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+    setByokHistoryChats(entries);
+  }, []);
+  React.useEffect(
+    () => {
+      void refreshByokHistoryChats();
+    },
+    [refreshByokHistoryChats]
+  );
+  // Debounced refresh on session changes: the durable store saves with a
+  // 1.5 s debounce itself, so re-parsing every file on every notification
+  // would be wasted work — one trailing refresh per quiet period is enough.
+  React.useEffect(
+    () => {
+      if (byokChatsUpdateCount === 0) return undefined;
+      const timer = setTimeout(() => {
+        void refreshByokHistoryChats();
+      }, 2000);
+      return () => clearTimeout(timer);
+    },
+    [byokChatsUpdateCount, refreshByokHistoryChats]
+  );
+
+  const setByokHistoryChatArchived = React.useCallback(
+    async (aiRequestId: string, archived: boolean): Promise<void> => {
+      const chat = getByokChat(aiRequestId);
+      if (chat) {
+        // In session: the full paths (suspend + snapshots on archive).
+        if (archived) {
+          onArchiveByokChat(aiRequestId);
+        } else {
+          restoreByokChat(aiRequestId);
+        }
+        await refreshByokHistoryChats();
+        return;
+      }
+      const store = getByokChatPersistence();
+      if (!store) return;
+      try {
+        await store.setArchived(
+          aiRequestId,
+          archived ? new Date().toISOString() : null
+        );
+      } catch (error) {
+        console.error('BYOK history: unable to (un)archive the chat:', error);
+      }
+      await refreshByokHistoryChats();
+    },
+    [onArchiveByokChat, refreshByokHistoryChats]
+  );
+
+  const deleteByokHistoryChat = React.useCallback(
+    async (aiRequestId: string): Promise<void> => {
+      await deleteByokChat(aiRequestId);
+      await refreshByokHistoryChats();
+    },
+    [refreshByokHistoryChats]
+  );
 
   // The chat-facing guidance for a chat that cannot find its API key. The
   // two storage statuses need different lines: 'none' means the user never
@@ -955,6 +1208,10 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
         // Passed through to the sprite-internals tools so open scene editors
         // redraw after a change_sprite_frames batch.
         onObjectsModifiedOutsideEditor,
+        // Passed through to the external-items tools so an already-open
+        // external layout / external events editor redraws after a write.
+        onExternalLayoutModifiedOutsideEditor,
+        onExternalEventsModifiedOutsideEditor,
         // The extension regeneration hooks (Phase 8.4): the editor
         // context's reload functions, flushed once per batch of extension
         // tool calls so new functions/behaviors/objects become usable.
@@ -1103,6 +1360,8 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       ensureExtensionInstalled,
       processEditorFunctionCalls,
       onInstancesModifiedOutsideEditor,
+      onExternalLayoutModifiedOutsideEditor,
+      onExternalEventsModifiedOutsideEditor,
       onObjectsModifiedOutsideEditor,
       onObjectGroupsModifiedOutsideEditor,
       onProjectItemRenamedOutsideEditor,
@@ -1183,13 +1442,20 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
 
   /**
    * Continue a BYOK chat with a user message — the BYOK branch of the
-   * host's onSendMessage. The orchestrator can be missing (missing-key
-   * error, or the host was remounted): re-attach instead of dropping the
-   * message — attach re-marks the chat with the missing-key error when
-   * there is still no key, so the user is never left without feedback.
+   * host's onSendMessage. The optional image ids are the attachments picked
+   * with the "+" button (13.3): they ride on the user message record, like
+   * the tool outputs' screenshots do. The orchestrator can be missing
+   * (missing-key error, or the host was remounted): re-attach instead of
+   * dropping the message — attach re-marks the chat with the missing-key
+   * error when there is still no key, so the user is never left without
+   * feedback.
    */
   const sendByokUserMessage = React.useCallback(
-    async (aiRequestId: string, userMessage: string) => {
+    async (
+      aiRequestId: string,
+      userMessage: string,
+      byokImageIds?: Array<string>
+    ) => {
       if (!userMessage) return;
 
       const chat = getByokChat(aiRequestId);
@@ -1198,7 +1464,10 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       const orchestrator = await attachByokOrchestrator(chat);
       if (!orchestrator) return;
 
-      const sendPromise = orchestrator.sendUserMessage(userMessage);
+      const sendPromise = orchestrator.sendUserMessage(
+        userMessage,
+        byokImageIds
+      );
       // Clear the sent message right away — the loop it starts can run for
       // a while (the server path resets after its single request; ours must
       // not wait for the whole conversation).
@@ -1245,7 +1514,12 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     clearApprovedByokEditCallIds,
     onRetryByokChat,
     getByokLiveProject,
-    byokHeaderState,
+    byokToggleState,
+    byokChatControls,
+    byokHistoryChats,
+    refreshByokHistoryChats,
+    setByokHistoryChatArchived,
+    deleteByokHistoryChat,
     onSendByokFeedback,
     openSavedByokChat,
   };

@@ -8,6 +8,8 @@ import { type RenderEditorContainerPropsWithRef } from '../MainFrame/EditorConta
 import {
   type SceneEventsOutsideEditorChanges,
   type InstancesOutsideEditorChanges,
+  type ExternalLayoutOutsideEditorChanges,
+  type ExternalEventsOutsideEditorChanges,
   type ObjectsOutsideEditorChanges,
   type ObjectGroupsOutsideEditorChanges,
   type ProjectItemRenamedOutsideEditorChanges,
@@ -83,8 +85,6 @@ import {
   shouldUseByokForNewRequest,
 } from './Byok/ByokSeam';
 import { useByokChatSeam } from './Byok/useByokChatSeam';
-import ByokChatHistory from './Byok/ByokChatHistory';
-import { LineStackLayout } from '../UI/Layout';
 import {
   forkByokChat,
   getByokProjectSnapshot,
@@ -93,6 +93,7 @@ import {
 import {
   consumePendingByokChatSelection,
   getByokChat,
+  pickByokChatToSelectOnMount,
 } from './Byok/ByokChatStore';
 import { getProjectPreviewLauncher } from '../GameplayTests/GameplayTestRunner';
 import { getAiConfigurationPresetsWithAvailability } from './AiConfiguration';
@@ -188,6 +189,12 @@ type Props = {|
   ) => void,
   onInstancesModifiedOutsideEditor: (
     changes: InstancesOutsideEditorChanges
+  ) => void,
+  onExternalLayoutModifiedOutsideEditor: (
+    changes: ExternalLayoutOutsideEditorChanges
+  ) => void,
+  onExternalEventsModifiedOutsideEditor: (
+    changes: ExternalEventsOutsideEditorChanges
   ) => void,
   onObjectsModifiedOutsideEditor: (
     changes: ObjectsOutsideEditorChanges
@@ -297,6 +304,8 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         onOpenLayout,
         onSceneEventsModifiedOutsideEditor,
         onInstancesModifiedOutsideEditor,
+        onExternalLayoutModifiedOutsideEditor,
+        onExternalEventsModifiedOutsideEditor,
         onObjectsModifiedOutsideEditor,
         onObjectGroupsModifiedOutsideEditor,
         onProjectItemRenamedOutsideEditor,
@@ -549,6 +558,8 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         editorFunctionsWithoutProject,
         onSceneEventsModifiedOutsideEditor,
         onInstancesModifiedOutsideEditor,
+        onExternalLayoutModifiedOutsideEditor,
+        onExternalEventsModifiedOutsideEditor,
         onObjectsModifiedOutsideEditor,
         onObjectGroupsModifiedOutsideEditor,
         onProjectItemRenamedOutsideEditor,
@@ -571,7 +582,6 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         selectedByokChatId,
         setSelectedByokChatId,
         selectedByokChat,
-        byokChatSummaries,
         onArchiveByokChat,
         startByokChat,
         sendByokUserMessage,
@@ -585,12 +595,19 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
       // the provider.
       // A BYOK chat started by the homepage form (Phase 8.5) asks this
       // editor to select it when the tab opens: consume the request once.
+      // Phase 13.2: when the editor remounts with no pending selection —
+      // the exact moment a form-started chat's project opens and the tab
+      // re-opens in its new pane — a chat that is still working re-selects
+      // itself, so the live transcript stays in view (the loop never
+      // restarted: it lives in the module-level orchestrator registry).
       React.useEffect(
         () => {
-          const pendingChatId = consumePendingByokChatSelection();
-          if (pendingChatId && getByokChat(pendingChatId)) {
+          const chatIdToSelect = pickByokChatToSelectOnMount(
+            consumePendingByokChatSelection()
+          );
+          if (chatIdToSelect) {
             setSelectedAiRequestId(null);
-            setSelectedByokChatId(pendingChatId);
+            setSelectedByokChatId(chatIdToSelect);
           }
         },
         // Once on mount.
@@ -825,12 +842,14 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         async ({
           aiRequestId,
           userMessage,
+          byokImageIds,
           createdSceneNames,
           createdProject,
           editorFunctionCallResults,
         }: {|
           aiRequestId: string,
           userMessage: string,
+          byokImageIds?: Array<string>,
           createdSceneNames?: Array<string>,
           createdProject?: ?gdProject,
           editorFunctionCallResults: Array<EditorFunctionCallResult>,
@@ -838,7 +857,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           // BYOK chats continue through their local orchestrator — never the
           // backend (and no GDevelop account is needed).
           if (isByokAiRequestId(aiRequestId)) {
-            await sendByokUserMessage(aiRequestId, userMessage);
+            await sendByokUserMessage(aiRequestId, userMessage, byokImageIds);
             return;
           }
 
@@ -1178,10 +1197,20 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           const { aiRequestId } = options;
           const selectAiRequest = () => {
             // A BYOK chat id selects the BYOK chat (its record lives in the
-            // local store, not in AiRequestContext).
+            // local store, not in AiRequestContext). A persisted-but-not-
+            // yet-loaded chat (opened from the Recents rail, Phase 13.1) is
+            // loaded from the durable store first — the selection happens
+            // when the load finishes (openSavedByokChat reattaches and
+            // selects it).
             if (isByokAiRequestId(aiRequestId)) {
               setSelectedAiRequestId(null);
-              setSelectedByokChatId(aiRequestId);
+              if (aiRequestId && getByokChat(aiRequestId)) {
+                setSelectedByokChatId(aiRequestId);
+                return;
+              }
+              if (aiRequestId) {
+                void byokChatSeam.openSavedByokChat(aiRequestId);
+              }
               return;
             }
             setSelectedByokChatId(null);
@@ -1870,23 +1899,21 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
             // A selected BYOK chat highlights its own entry (the server id
             // is null then).
             selectedAiRequestId={selectedByokChatId || selectedAiRequestId}
-            byokChatSummaries={byokChatSummaries}
-            onArchiveByokChat={onArchiveByokChat}
+            // The Recents rail's BYOK section (Phase 13.1): the durable
+            // chats with their inline actions, above the hosted list — only
+            // while BYOK routing is on.
+            {...(byokChatSeam.byokToggleState.isEnabled
+              ? {
+                  byokChatSummaries: byokChatSeam.byokHistoryChats,
+                  onArchiveByokChat: onArchiveByokChat,
+                  onSetByokChatArchived:
+                    byokChatSeam.setByokHistoryChatArchived,
+                  onDeleteByokChat: byokChatSeam.deleteByokHistoryChat,
+                }
+              : {})}
           />
           <Paper square background="dark" style={styles.paper}>
             <div style={styles.chatContainer}>
-              {/* The BYOK saved-chat history (Phase 9.3, decision #1):
-                  listed alongside the server-backed AskAiHistory above. */}
-              {selectedByokChat && (
-                <LineStackLayout noMargin justifyContent="flex-end">
-                  <ByokChatHistory
-                    onOpenChat={async chatId => {
-                      await byokChatSeam.openSavedByokChat(chatId);
-                    }}
-                    selectedChatId={selectedByokChatId}
-                  />
-                </LineStackLayout>
-              )}
               <AiRequestChat
                 aiConfigurationPresetsWithAvailability={getAiConfigurationPresetsWithAvailability(
                   { limits, getAiSettings }
@@ -1911,8 +1938,10 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 onStartNewAiRequest={startNewAiRequest}
                 onSendUserMessage={async ({
                   userMessage,
+                  byokImageIds,
                 }: {|
                   userMessage: string,
+                  byokImageIds?: Array<string>,
                 |}) => {
                   const chatAiRequestId =
                     selectedByokChatId || selectedAiRequestId;
@@ -1920,6 +1949,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                   await onSendMessage({
                     aiRequestId: chatAiRequestId,
                     userMessage,
+                    byokImageIds,
                     editorFunctionCallResults:
                       getEditorFunctionCallResults(chatAiRequestId) || [],
                   });
@@ -1974,13 +2004,17 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                         const image = getByokImage(imageId);
                         return image ? { dataUrl: image.dataUrl } : null;
                       },
-                      // Phase 9.4 (D5): the BYOK badge, the exact token row
-                      // and the per-chat model/effort dropdowns.
-                      byokHeader: byokChatSeam.byokHeaderState,
+                      // Phase 13.1: the header toggle and the bottom-bar
+                      // controls (effort pill, model picker, attachments).
+                      byokToggle: byokChatSeam.byokToggleState,
+                      byokChatControls: byokChatSeam.byokChatControls,
                       // Phase 9.6: the thumbs are stored locally only.
                       onSendFeedback: byokChatSeam.onSendByokFeedback,
                     }
                   : {
+                      // The header toggle is rendered on hosted chats too —
+                      // it is how a user flips BYOK on from the chat panel.
+                      byokToggle: byokChatSeam.byokToggleState,
                       // Feedback needs a server-side message to attach to,
                       // and manual tool-call processing is a no-op when the
                       // chat drives its own tools: both props are only

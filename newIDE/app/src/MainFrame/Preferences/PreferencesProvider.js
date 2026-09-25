@@ -31,6 +31,7 @@ import {
 } from '../../Utils/Language';
 import { type GamesDashboardOrderBy } from '../../GameDashboard/GamesList';
 import { type ByokSettings } from '../../AiGeneration/Byok/ByokTypes';
+import { type ByokRagSettings } from '../../AiGeneration/Byok/Rag/ByokRagTypes';
 import {
   CHECK_APP_UPDATES_TIMEOUT,
   PERIODIC_APP_UPDATES_TIMEOUT,
@@ -94,6 +95,7 @@ export const getInitialPreferences = (): {
   automaticallyUseCreditsForAiRequests: boolean,
   autosaveOnPreview: boolean,
   byok: ByokSettings,
+  byokRag: ByokRagSettings,
   backdropClickBehavior: string,
   blockPreviewAndExportOnDiagnosticErrors: boolean,
   codeEditorThemeName: string,

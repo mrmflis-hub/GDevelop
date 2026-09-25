@@ -14,7 +14,7 @@ describe('resolveDefaultDiscoveryPath', () => {
         'C:/Users/dev',
         'AppData',
         'Roaming',
-        'GDevelop',
+        'GDevelop 5',
         core.DISCOVERY_FILE_NAME
       )
     );
@@ -26,7 +26,7 @@ describe('resolveDefaultDiscoveryPath', () => {
         '/Users/dev',
         'Library',
         'Application Support',
-        'GDevelop',
+        'GDevelop 5',
         core.DISCOVERY_FILE_NAME
       )
     );
@@ -34,7 +34,7 @@ describe('resolveDefaultDiscoveryPath', () => {
 
   it('uses the config folder elsewhere', () => {
     expect(core.resolveDefaultDiscoveryPath('linux', '/home/dev')).toBe(
-      path.join('/home/dev', '.config', 'GDevelop', core.DISCOVERY_FILE_NAME)
+      path.join('/home/dev', '.config', 'GDevelop 5', core.DISCOVERY_FILE_NAME)
     );
   });
 });

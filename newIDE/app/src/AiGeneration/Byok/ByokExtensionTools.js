@@ -352,12 +352,107 @@ const writeFunctionEventsFromScript = (
 };
 
 /**
+ * Refactor the project after an existing parameter changed type — the same
+ * hook the extension editor triggers on a type change
+ * (onFunctionParameterTypeChanged → WholeProjectRefactorer.changeParameterType,
+ * with the function's parameters exposed as the scope's objects container).
+ * The parameter type must already be set when this runs (the editor sets it
+ * before refactoring too).
+ */
+const refactorParameterTypeChange = (
+  project: any,
+  extension: any,
+  args: Object,
+  eventsFunction: any,
+  parameterName: string
+): void => {
+  const customBehaviorName = readOptionalString(args, 'custom_behavior_name');
+  const customObjectName = readOptionalString(args, 'custom_object_name');
+  const eventsBasedBehavior = customBehaviorName
+    ? extension.getEventsBasedBehaviors().get(customBehaviorName)
+    : null;
+  const eventsBasedObject = customObjectName
+    ? extension.getEventsBasedObjects().get(customObjectName)
+    : null;
+
+  const parameterObjects = new gd.ObjectsContainer(
+    gd.ObjectsContainer.Function
+  );
+  const parameterVariables = new gd.VariablesContainer(
+    gd.VariablesContainer.Parameters
+  );
+  const parameterResources = new gd.ResourcesContainer(
+    gd.ResourcesContainer.Parameters
+  );
+  const propertyVariables = new gd.VariablesContainer(
+    gd.VariablesContainer.Properties
+  );
+  const propertyResources = new gd.ResourcesContainer(
+    gd.ResourcesContainer.Properties
+  );
+  try {
+    let projectScopedContainers;
+    if (eventsBasedBehavior) {
+      projectScopedContainers = gd.ProjectScopedContainers.makeNewProjectScopedContainersForBehaviorEventsFunction(
+        project,
+        extension,
+        eventsBasedBehavior,
+        eventsFunction,
+        parameterObjects,
+        parameterVariables,
+        propertyVariables,
+        parameterResources,
+        propertyResources
+      );
+    } else if (eventsBasedObject) {
+      projectScopedContainers = gd.ProjectScopedContainers.makeNewProjectScopedContainersForObjectEventsFunction(
+        project,
+        extension,
+        eventsBasedObject,
+        eventsFunction,
+        parameterObjects,
+        parameterVariables,
+        propertyVariables,
+        parameterResources,
+        propertyResources
+      );
+    } else {
+      projectScopedContainers = gd.ProjectScopedContainers.makeNewProjectScopedContainersForFreeEventsFunction(
+        project,
+        extension,
+        eventsFunction,
+        parameterObjects,
+        parameterVariables,
+        parameterResources
+      );
+    }
+    gd.WholeProjectRefactorer.changeParameterType(
+      project,
+      projectScopedContainers,
+      eventsFunction,
+      parameterObjects,
+      parameterName
+    );
+  } finally {
+    parameterObjects.delete();
+    parameterVariables.delete();
+    parameterResources.delete();
+    propertyVariables.delete();
+    propertyResources.delete();
+  }
+};
+
+/**
  * Apply the parameter operations of change_custom_function (Phase 11):
  * parameters_to_add / parameters_to_remove / parameters_to_move, executed
  * in that order. Returns one message per applied change; a wrong name or a
  * duplicate is skipped with the reason (the rest still applies).
+ * Naming an existing parameter with a type changes that parameter's type
+ * (with the project-wide usage refactor); without a type it stays a skip.
  */
 export const applyFunctionParameterChanges = (
+  project: any,
+  extension: any,
   eventsFunction: any,
   args: Object
 ): Array<string> => {
@@ -374,7 +469,25 @@ export const applyFunctionParameterChanges = (
         continue;
       }
       if (parameters.hasParameterNamed(name)) {
-        messages.push(`"${name}" already exists (skipped)`);
+        const metadata = parameters.getParameter(name);
+        const newType =
+          typeof parameter.type === 'string' ? parameter.type : '';
+        if (!newType || newType === metadata.getType()) {
+          messages.push(`"${name}" already exists (skipped)`);
+          continue;
+        }
+        metadata.setType(newType);
+        if (typeof parameter.description === 'string') {
+          metadata.setDescription(parameter.description);
+        }
+        refactorParameterTypeChange(
+          project,
+          extension,
+          args,
+          eventsFunction,
+          name
+        );
+        messages.push(`changed the type of "${name}" to ${newType}`);
         continue;
       }
       const metadata = parameters.insertNewParameter(
@@ -461,10 +574,41 @@ export const isChildObjectNameUsedInEvents = (
 };
 
 /**
+ * Apply the optional initial property values of a children_to_add entry to
+ * the created child object (its configuration's properties — a custom
+ * object type exposes its properties there, a plain Sprite has none).
+ * Unknown property names are reported in the messages, not fatal: the
+ * child is created either way.
+ */
+const applyChildInitialProperties = (
+  createdObject: any,
+  child: Object,
+  childName: string,
+  messages: Array<string>
+): void => {
+  if (!Array.isArray(child.initial_properties)) return;
+  for (const property of child.initial_properties) {
+    if (!property || typeof property !== 'object') continue;
+    const propertyName =
+      typeof property.name === 'string' ? property.name.trim() : '';
+    if (!propertyName) continue;
+    const applied = createdObject
+      .getConfiguration()
+      .updateProperty(propertyName, String(property.value));
+    if (!applied) {
+      messages.push(
+        `property "${propertyName}" not applied to "${childName}" (its type has no such property)`
+      );
+    }
+  }
+};
+
+/**
  * Apply the children operations of change_custom_object (Phase 11):
- * children_to_add (name + object type) and children_to_remove (guarded by
- * the usage check). Returns the messages; nothing is applied when the
- * guard refuses (the failure is returned instead).
+ * children_to_add (name + object type + optional initial property values)
+ * and children_to_remove (guarded by the usage check). Returns the
+ * messages; nothing is applied when the guard refuses (the failure is
+ * returned instead).
  */
 export const applyCustomObjectChildrenChanges = (
   project: any,
@@ -495,6 +639,12 @@ export const applyCustomObjectChildrenChanges = (
         childObjects.getObjectsCount()
       );
       messages.push(`added child "${name}" (${objectType})`);
+      applyChildInitialProperties(
+        childObjects.getObject(name),
+        child,
+        name,
+        messages
+      );
     }
   }
 
@@ -1328,6 +1478,8 @@ const changeCustomFunctionTool: ByokExtraTool = {
     }
 
     const parameterMessages = applyFunctionParameterChanges(
+      project,
+      extension,
       eventsFunction,
       args
     );

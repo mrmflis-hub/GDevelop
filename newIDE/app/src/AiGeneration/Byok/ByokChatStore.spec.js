@@ -178,6 +178,63 @@ describe('ByokChatStore', () => {
       await ByokChatStore.deleteByokChat(chat.id);
     }
   });
+
+  describe('pickByokChatToSelectOnMount (Phase 13.2)', () => {
+    it('returns the pending selection when its chat exists', () => {
+      const chat = ByokChatStore.createByokChat();
+      try {
+        expect(ByokChatStore.pickByokChatToSelectOnMount(chat.id)).toBe(
+          chat.id
+        );
+      } finally {
+        ByokChatStore.deleteByokChat(chat.id);
+      }
+    });
+
+    it('falls back to the single working chat with a live orchestrator (remount after a project opens)', async () => {
+      const readyChat = ByokChatStore.createByokChat();
+      const workingChat = ByokChatStore.createByokChat();
+      try {
+        ByokChatStore.updateByokChat({ ...readyChat, status: 'ready' });
+        ByokChatStore.setByokOrchestrator(workingChat.id, {
+          suspend: () => {},
+        });
+        expect(ByokChatStore.pickByokChatToSelectOnMount(null)).toBe(
+          workingChat.id
+        );
+      } finally {
+        ByokChatStore.deleteByokOrchestrator(workingChat.id);
+        await ByokChatStore.deleteByokChat(readyChat.id);
+        await ByokChatStore.deleteByokChat(workingChat.id);
+      }
+    });
+
+    it('returns null with several working chats, or none', () => {
+      const firstWorking = ByokChatStore.createByokChat();
+      const secondWorking = ByokChatStore.createByokChat();
+      try {
+        ByokChatStore.setByokOrchestrator(firstWorking.id, {
+          suspend: () => {},
+        });
+        ByokChatStore.setByokOrchestrator(secondWorking.id, {
+          suspend: () => {},
+        });
+        expect(ByokChatStore.pickByokChatToSelectOnMount(null)).toBe(null);
+      } finally {
+        ByokChatStore.deleteByokOrchestrator(firstWorking.id);
+        ByokChatStore.deleteByokOrchestrator(secondWorking.id);
+        void ByokChatStore.deleteByokChat(firstWorking.id);
+        void ByokChatStore.deleteByokChat(secondWorking.id);
+      }
+      expect(ByokChatStore.pickByokChatToSelectOnMount(null)).toBe(null);
+    });
+
+    it('ignores a pending id whose chat no longer exists', () => {
+      expect(ByokChatStore.pickByokChatToSelectOnMount('byok-gone-away')).toBe(
+        null
+      );
+    });
+  });
 });
 
 function mockFn(fn: any): any {
