@@ -930,3 +930,130 @@ integrations.*
    should get valid `add_scene_events` batches where the pre-13 harness
    failed; a deliberately invalid batch should come back with a
    `retryHint` containing a runnable example.
+
+---
+
+## Task 17 — Phase 14 owner work: the query set, hosting, pipeline budget, training run, desktop QA
+
+*Added 2026-09-26 (the Phase 14 planning session). Everything the owner
+must do or approve before/during Phase 14 (`Phase14.md`). Items 17.1 and
+17.2 block steps 14.3/14.4; 17.3 blocks 14.2's pipeline run; 17.4 blocks
+14.3's training; 17.5 is the post-implementation QA pass.*
+
+### 17.1 — Write the query set (200 human queries) `[T17-queries]` — **the big one, blocks 14.3**
+
+You offered to write 100–200 "silly human queries" that don't use proper
+vocabulary. Target **200**, split **150 training** (labeled) + **50
+holdout** (never used for training or generation — eval only). The holdout
+is the more valuable half per query: it becomes the real-human-style
+retrieval eval we currently lack.
+
+**Format** — a JSON array, one object per query:
+
+```json
+{
+  "query": "how do i make the bad guys chase me",
+  "target": "Top-down shooter: enemy pathfinding/aggro (Pathfinder behavior)",
+  "bucket": "genre-topdown",
+  "register": "vague",
+  "holdout": false
+}
+```
+
+- `query`: write it the way a beginner would *type* it — lowercase, typos,
+  missing words are all good. English only (the embedder is
+  English-centric); broken grammar is welcome, other languages are not.
+- `target`: the GDevelop feature/doc area that SHOULD be retrieved (you
+  know the engine — one line is enough; name the doc page or feature if
+  you know it, e.g. `events/objects` or "Pathfinder behavior").
+- `bucket`: one of the 15 below.
+- `register`: `vague` | `medium` | `precise` — mix them roughly
+  50/30/20 overall.
+- `holdout`: mark exactly 50 `true`, spread across ALL buckets, not
+  clustered.
+
+**The 15 buckets** (aim ~10–14 queries each; they mirror the 13.5 task
+catalog and the docs tree):
+
+1. `genre-platformer` — "make the guy jump on bad guys", "mario style coin"
+2. `genre-topdown` — "zombies chase me and i shoot them"
+3. `genre-puzzle` — "match blocks that fall", "grid movement"
+4. `movement-controls` — jump/double-jump/dash, speed, "put arrows on the screen for my phone game"
+5. `camera` — follow player, bounds, shake — "camera keeps showing past the edge of my map"
+6. `collision-combat` — health, knockback, i-frames — "enemy walks through walls"
+7. `physics` — "ball sometimes goes through the wall", moving platforms, gravity feels wrong
+8. `objects-animation` — "character slides weird when walking", hitbox vs art, directions
+9. `variables-logic` — "game should remember i grabbed the coin", score, switches
+10. `text-ui` — "hearts in the corner", menus, buttons, dialog
+11. `audio` — "song restarts when i die", jump sounds, volume
+12. `save-load` — "my game forgets everything when i close it", checkpoints
+13. `levels-scenes` — "button for level 2", spawning, external layouts
+14. `effects-3d` — glow/particles/flash-on-hit; "can i make it like minecraft"
+15. `store-debug` — "is there a ready-made health thing", "add an enemy", "nothing happens when i press the key", "game lags with 100 enemies"
+
+**Archetypes to rotate through every bucket** (this is where retrieval
+wins live): the one-worder ("jump?"); wrong vocabulary (behaviors =
+"scripts", scenes = "screens/maps", expressions = "formulas"); goal-not-
+method ("i want the player to not leave the screen"); bug-report-as-
+request ("my enemy is stupid and walks into me after i killed him");
+other-engine framing ("like a roblox leaderboard", "unity rigidbody
+thing"); multi-intent ("add a coin AND make the camera follow me").
+
+**Delivery:** drop the file anywhere in the repo (e.g.
+`REVIEW/rag-queries.json`) or paste it in chat; the 14.3 session moves it
+to `newIDE/app/src/AiGeneration/Byok/docs/rag-eval-queries.json`.
+
+### 17.2 — Hosting for the prebuilt bundle and (maybe) the finetuned model `[T17-hosting]` — blocks 14.4
+
+- Confirm **GitHub Releases on `mrmflis-hub/GDevelop`** may carry the
+  bundle assets (per generation: one index JSON, roughly 5–15 MB, plus a
+  Qdrant snapshot variant; refreshed whenever corpus or embedder changes).
+- For the finetuned embedder (14.3): either a **free public Hugging Face
+  Hub repo** you create (simplest — the loader takes any Hub id) or tell
+  us to stay release-only (which pushes D14-7 toward custom-cache
+  loading; slightly more fragile).
+- Nothing else needed — no keys, no secrets, ever.
+
+### 17.3 — Approve the pipeline token budget `[T17-budget]` — blocks 14.2's run
+
+The maintainer-side scripts run on **your machine with your key** (env
+var; never shared). Rough totals on a budget endpoint:
+
+- **Doc minification** (14.2): ~601 pages ≈ 2–2.5M input + ~0.7M output
+  tokens.
+- **Synthetic query generation + judge pass** (14.3): ~5–10M input +
+  ~1.5–2M output tokens total.
+- Ballpark: **low single-digit dollars** on a gpt-4o-mini/deepseek-chat
+  class model; near-zero on a free-tier model (e.g. a glm flash via your
+  existing pool). Approve, cap, or name the endpoint.
+
+### 17.4 — Run the training notebook `[T17-train]` — blocks 14.3's export
+
+Once 14.3 hands you `train.ipynb` + `pairs.jsonl`: open in free Colab
+(T4), Runtime → Run all (minutes at 22M params), download the exported
+ONNX int8 weights, upload to the 17.2 hosting (or hand the files back).
+No ML experience needed; the notebook is self-contained.
+
+### 17.5 — Phase 14 desktop QA `[T17-qa]` — after implementation
+
+1. **Cache stability (14.1):** on an auto-caching endpoint (DeepSeek or
+   OpenAI), run a multi-round task that includes a notes write; the
+   provider dashboard/usage fields should show cached-input tokens rising
+   and **not resetting** after the note write (DeepSeek exposes
+   `prompt_cache_hit_tokens`).
+2. **Minified docs (14.2):** with RAG **off** (or on a fresh profile),
+   offline: ask the model something the bundled 15 pages don't cover (e.g.
+   about a behavior doc) — `search_knowledge` should return a category
+   map, then a minified page; `read_doc_page` fetches the full page when
+   online.
+3. **Prebuilt bundle (14.4):** fresh profile → RAG tab → download the
+   bundle (one consent dialog, sizes shown) → semantic search works with
+   **no** ~30-minute build; feed it a tampered/stale bundle file → refused
+   with a rebuild offer, never silently accepted.
+4. **Qdrant restore (14.4):** set up Qdrant → restore the prebuilt
+   snapshot → switch backend → search round-trips; the "build locally
+   instead" path still works.
+5. **Finetuned embedder (14.3, if shipped):** new picker entry shows size +
+   consent; download and run your own holdout queries against stock vs
+   tuned; sanity-check that the recorded gate decision matches what you
+   see.

@@ -34,3 +34,6 @@
 .Trashes
 Thumbs.db
 .claude
+.zcodeignore
+REVIEW/improvements-discussion.txt
+/qdrant/

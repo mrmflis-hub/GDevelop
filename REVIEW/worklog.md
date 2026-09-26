@@ -3373,3 +3373,155 @@ main.js: registerByokRagFileHandlers + registerByokQdrant at :511-512; byok-rag-
 passed + 1 pre-existing skip (one random untouched-suite flake per run,
 documented); `npm run lint`: 0 errors 0 warnings; Flow (direct binary):
 0 errors; `npm run check-format` (app + electron-app): clean.
+
+---
+
+## 2026-09-26 — Phase 14 planning session (docs only; no code, per the owner's standing "discuss only" instruction, later lifted for the two ordered deliverables)
+
+**Description of actions.** The owner brought `REVIEW/improvements-discussion.txt` —
+a deliberately one-sided consultation with Gemini (incomplete premises
+about the fork: claimed DuckDB/tinyLM/~300 tools/a triage phase that do
+not exist) — and asked for an assessment of what is usable. I re-verified
+every claim against the real tree before judging: `search_tools` returns
+full schemas and discovered tools are callable next turn
+(`ByokExtraTools.js:457`); the system prompt is rebuilt per round with
+live project notes folded in (`ByokOrchestrator.js:620-642`, `:653`,
+`:668`; notes section `Byok/Knowledge/ByokKnowledgeSections.js:424-446`);
+the request is stateless so system + 27 tool schemas + transcript are
+re-sent every round (`ByokOrchestrator.js:716-722`); the dynamic snapshot
+is tail-folded into the last user message (`:675-689`); no timestamps in
+the prompt; the bundled docs subset is 15 pages under `events/`
+(`BundledDocs.generated.js`) while `DOCs/docs/gdevelop5` holds ~601 md
+pages; the default embedder is `Xenova/all-MiniLM-L6-v2` (384 dims, ~25 MB,
+`Byok/Rag/ByokRagTypes.js:51-68`) loaded via a plain id pass-through to
+`transformers.pipeline` (`Byok/Rag/ByokRagEmbedder.js:89-93`); the
+13.5 task catalog (`ByokKnowledgeSections.js:189+`) grounds the query-set
+buckets. Outcomes agreed with the owner: adopt prompt-cache stability
+(snapshot-once system prompt), a bundled minified-docs layer (40–60 %
+band, category maps as corpus chunks, no monolithic index, no new skill),
+the prebuilt RAG bundle (GitHub Releases, opt-in, Qdrant snapshot
+restore), and gated embedder finetuning (owner-written query set +
+synthetic pairs, ship-if-better); reject the zero-shot classifier, the
+triage→coding split, and prefilling. Wrote `REVIEW/Phase14.md` (steps
+14.1–14.5, decisions D14-1…D14-7, phase gate) and `usertasks.md` Task 17
+(query-set brief, hosting, pipeline budget, training run, desktop QA) on
+the owner's explicit order; the owner's query-writing task 17.1 is the
+long pole for 14.3. A web check confirmed the finetuning tooling claims
+(Unsloth ships an official MiniLM finetuning notebook; embedding-model
+finetuning is supported).
+
+**Bugs found.** None — read-only planning session; no code was written or
+run beyond greps/reads.
+
+**Issues found.** (1) D14-7 (open): a true single-file bundle including
+embedder weights conflicts with the no-new-dependencies rule — either
+custom transformers.js cache injection (fragile) or a tiny `fflate`-class
+dep needing owner approval; default plan is the index-only JSON bundle,
+decision due at step 14.4 start. (2) The CI RAG eval runs on the hashing
+embedder, so the stock MiniLM's real top-3 baseline is still unmeasured —
+14.5's eval runner covers it, and it gates the D14-6 ship-if-better
+decision. (3) The consultant's cost model ("pay 15k once at triage") is
+backwards for our loop — the honest per-task cost is rounds × (system +
+tools + transcript), which is what makes 14.1 the top-value item; worth
+remembering before any future external consultation is taken at face
+value.
+
+**Files worked on.** Read/verified: `REVIEW/improvements-discussion.txt`,
+`newIDE/app/src/AiGeneration/Byok/ByokOrchestrator.js`,
+`Byok/ByokExtraTools.js`, `Byok/Knowledge/ByokKnowledgeSections.js`,
+`Byok/Knowledge/ByokRagTypes.js` (via `Byok/Rag/` listing),
+`Byok/Rag/ByokRagEmbedder.js`, `Byok/Rag/ByokRagCorpus.js`,
+`Byok/Rag/ByokRagTypes.js`, `Byok/ByokDocs.js`,
+`Byok/docs/gdevelop-docs/BundledDocs.generated.js`,
+`ByokPromptBudget.spec.js`, `REVIEW/Phase13.md` (format), `DOCs/` tree
+(page counts). Created: `REVIEW/Phase14.md`. Modified: `REVIEW/usertasks.md`
+(Task 17 added), `REVIEW/deferred.md` (2026-09-26 consultation-rejections
+entry), `AGENTS.md` (§2 status line; also fixed a pre-existing §8
+formatting artifact — a stray "*Last updated*" line breaking the first
+bullet — per the manual's own fix-the-manual rule), this file.
+
+**Triage.** no OOS. deferred: one new entry added (2026-09-26 consultation
+rejections: zero-shot classifier, triage split, prefilling, monolithic
+index/index-in-skill, 70–90 % minification, plus the open D14-7 packaging
+note). UT: Task 17 added (owner query set 17.1, hosting 17.2, budget
+approval 17.3, training run 17.4, desktop QA 17.5).
+
+**Gates.** Not run — no code changed (docs-only session); the four repo
+gates are unaffected.
+
+---
+
+## 2026-09-27 — Phase 14.4 (artifact half): the prebuilt RAG index bundle builder + the v1 artifact
+
+**Description of actions.** The owner ordered building the downloadable
+prebuilt index (the "Prebuilt index card" artifact of `Phase14.md` step
+14.4 / D14-3) — after I had explained that nothing in the app reads model
+files or a Qdrant binary from the repo root (he had placed `qdrant/` there;
+`/qdrant/` is now gitignored as a seatbelt). Implemented the maintainer-side
+builder `scripts/byok-embedder/build-byok-rag-bundle.js`: it loads the REAL
+`ByokRagCorpus` / `ByokRagIndex` / serialization modules through the app's
+own Babel config (`@babel/register` — no corpus logic re-implemented, so
+the manifest corpus hash is the app's own determinism hash), stubs only the
+`EditorFunctions` registry (pure iteration target of `ByokToolSchema`'s
+load-time merge — cuts the whole browser-side dependency subtree), embeds
+with transformers.js pinned to **dtype `q8`** (the app's WASM device
+default — `model_quantized.onnx`) with the embed call mirrored 1:1 from
+`ByokRagEmbedder` (mean pooling, normalize, re-normalized unit vectors),
+and wraps the serialized index in the D14-3 envelope
+`{bundle, formatVersion, created, embedder{id,dimensions,MB,dtype}, index,
+integrity.indexSha256}` where the hash is computed over the canonical
+`JSON.stringify(index)` — reproducible by the future importer because
+JSON.parse preserves key order (round-trip asserted in the build and in
+the spec). Built and **verified the v1 artifact**:
+`newIDE/app/build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-7b8a6b0.json`
+— **2,052 chunks** (engine-reference 1,962, docs 53, example 11, skill 26),
+**4.6 MB**, corpus hash `7b8a6b0`, embedder `Xenova/all-MiniLM-L6-v2 @ q8`
+(384 dims). The build's verification pass reloads the WRITTEN file,
+deserializes it (`deserializeByokRagIndex`), and runs 8 fixed spot-check
+queries through the pure `searchByokRagIndex` — all 8 returned on-topic
+top-3s (timer→timer expressions, collision→Collision conditions,
+"platformer game"→platformer-game skill, "save system"→save-system skill,
+…). Wrote the co-located spec `ByokRagBundleBuilder.spec.js` (5 tests:
+envelope shape/dtype pinning, hash stability across the importer round-
+trip, hash sensitivity to tampering, file-name versioning/sanitization,
+spot-check query sanity). The owner's next step is hosting (upload the
+artifact to a `byok-rag-bundle-v1` GitHub Release, Task 17.2); the RAG-tab
+download/import UI, the Qdrant snapshot variant, and steps 14.1–14.3/14.5
+remain — app code awaits the owner's order.
+
+**Bugs found.** None in the shipped code. (The first build run crashed with
+`self is not defined` — the src import closure reaches a web-worker module
+via `EditorFunctions`; fixed by the documented registry stub, see below.)
+
+**Issues found.** (1) The src closure pulls browser code through
+`ByokKnowledgeSections → ByokToolSchema → EditorFunctions`; the stub is
+safe because the corpus path only needs the static schema data, but if a
+future corpus source ever needs the real registry, the stub needs a second
+look. (2) transformers.js **Node** default dtype is fp32 (the q8 default
+is WASM-specific, `dtypes.js:59-64`) — a naive Node-side build would
+silently produce different vectors than the app; the script pins `q8`, and
+when step 14.3 touches `ByokRagEmbedder` the loader's legacy
+`quantized: true` should become an explicit `dtype` for the same reason.
+(3) The artifact is not yet consumable by the app (no download/import path
+until the rest of 14.4 is ordered) — the spot-check verification is the
+only consumer today. (4) A full Jest run's one-random-suite flake (see
+memory) is tolerated per the documented pattern.
+
+**Files worked on.** Created: `newIDE/app/scripts/byok-embedder/build-byok-rag-bundle.js`,
+`newIDE/app/src/AiGeneration/Byok/Rag/ByokRagBundleBuilder.spec.js`,
+artifact `newIDE/app/build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-7b8a6b0.json`
+(gitignored via the existing `build` entry; owner-uploaded, not committed).
+Modified: root `.gitignore` (`/qdrant/` seatbelt line), `AGENTS.md` (§2
+status), this file.
+
+**Triage.** no OOS. no deferred. no UT (hosting is already Task 17.2; the
+remaining 14.4 app work lives in `Phase14.md` step 14.4).
+
+**Gates.** `npm run check-format`: clean (after prettier-write of the two
+new files); `npm run lint`: 0 errors 0 warnings; Flow (direct binary):
+0 errors; full `npm test -- --watchAll=false --maxWorkers=1` run three
+times: 2432 passed + 1 pre-existing skip each run, with the documented
+one-random-untouched-suite flake per run (`ReadGameProjectJson.spec.js`
+twice, `AddBehavior.spec.js` once — both upstream `EditorFunctions`
+suites this checkout never modified, both green when run standalone;
+my new spec passes in the full runs and standalone).

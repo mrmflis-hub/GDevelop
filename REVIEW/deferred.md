@@ -299,3 +299,53 @@ them.
 - **`search_knowledge` over MCP, speech/audio attachments, multi-file
   project upload** — already listed as explicitly deferred by Phase 13 §5;
   recorded here so the deferral survives the phase doc.
+
+---
+
+## Deferred 2026-09-26 (Phase 14 planning session — external-consultation rejections)
+
+From `REVIEW/improvements-discussion.txt` (the owner's external LLM
+consultation); each idea was re-verified against the real tree, then
+accepted into `Phase14.md` or rejected here by the owner.
+
+- **Local zero-shot classifier for 2D/3D/genre routing.** Rejected by the
+  owner ("fully ignore", D14-4). *Why:* query-driven hybrid retrieval
+  (`search_knowledge`) plus the machine-checked task catalog (13.5) already
+  inject conditionally on what the model asks for, which is strictly more
+  flexible than fixed labels; a classifier would add a ~40 MB download on
+  top of the embedder, a second warm model, and a misroute risk with no
+  recovery. It substitutes nothing for the embedder (classifier routes,
+  embedder retrieves — orthogonal), so "conflict" is not the concern.
+  *When to tackle:* only if future evals show categorical retrieval misses
+  that query-driven search cannot fix. *Standing proposal:* none — do not
+  re-propose without new eval evidence.
+- **Triage→coding two-phase pipeline ("execution blueprint" hand-off).**
+  Rejected (D14-5). *Why:* contradicts the single-loop architecture all 13
+  phases built around (durable history, compaction, watchdog, per-chat
+  routing); doubles latency; adds a JSON-out failure mode on endpoints with
+  known variance. The sound kernel already exists: the compaction preserved
+  block is the state handoff across rounds; strong/fast per-chat routing is
+  the cheap-model lever. *Standing proposal:* none.
+- **Assistant prefilling (Anthropic).** Rejected (D14-5). *Why:*
+  Anthropic-only over an OpenAI-compatible surface — another
+  endpoint-compat matrix row (see the `reasoning_effort` scars). *Standing
+  proposal:* none unless a specific owner-requested provider demands it.
+- **Monolithic docs index file / index carried inside a skill.** Folded
+  into D14-2's design (per-category map chunks in the corpus). *Why:* the
+  model can only read through `search_knowledge`, so a standalone index
+  file is unreachable; a skill can auto-load into the prompt (build-workflow
+  rides from turn one), and a several-hundred-entry index would smuggle
+  itself into every chat. *Standing proposal:* category maps stay behind
+  search.
+- **Gemini-level 70–90 % doc minification ("strip the why").** Rejected in
+  favor of the 40–60 % constraint-preserving band (D14-2). *Why:* the
+  constraint text ("Rule:" lines, wrapper lifecycles, prerequisites) is
+  exactly what prevents broken applies in an agent corpus; lossiness at
+  injection is a correctness risk, not a size win. *Standing proposal:* the
+  14.2 sanity pass (engine-reference token check) is the guardrail; do not
+  loosen the density target without eval data.
+- **Single-file bundle including embedder weights (D14-7).** Open, not
+  rejected: index-only JSON (no new dependency) is the default plan; a true
+  weights+index single file needs either fragile custom transformers.js
+  cache injection or an owner-approved `fflate`-class dependency. *When to
+  tackle:* decision due at Phase 14 step 14.4 start.
