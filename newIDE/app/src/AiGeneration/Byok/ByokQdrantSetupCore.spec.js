@@ -7,6 +7,7 @@ const {
   getByokQdrantReleaseInfo,
   makeByokQdrantPaths,
   runByokQdrantSetup,
+  runByokQdrantSnapshotRestore,
   waitForByokQdrantHealth,
 } = require('./Rag/ByokQdrantSetupCore');
 
@@ -215,5 +216,136 @@ describe('makeByokQdrantPaths', () => {
     expect(paths.binaryPath).toContain('qdrant.exe');
     expect(paths.configPath).toContain('gdevelop-qdrant.yaml');
     expect(paths.endpointFilePath).toContain(BYOK_QDRANT_ENDPOINT_FILE_NAME);
+  });
+});
+
+describe('runByokQdrantSnapshotRestore (Phase 14.4, D14-3)', () => {
+  const makeRestoreDeps = (requests: Array<any>, responses: Object) => ({
+    isHealthy: async () => true,
+    requestJson: jest.fn(async (method: string, path: string, body?: any) => {
+      requests.push({ method, path, body });
+      if (responses[path]) return responses[path];
+      return { result: true };
+    }),
+  });
+
+  it('drops, uploads from the URL, verifies the points, and succeeds', async () => {
+    const requests: Array<any> = [];
+    const deps = makeRestoreDeps(requests, {
+      '/collections/gdevelop-byok': {
+        result: {
+          points_count: 2052,
+          config: { params: { vectors: { size: 384 } } },
+        },
+      },
+    });
+    const stages = [];
+    const outcome = await runByokQdrantSnapshotRestore({
+      baseUrl: 'http://127.0.0.1:6333',
+      snapshotUrl: 'https://example.com/snapshot.snap',
+      expectedDimensions: 384,
+      deps,
+      onStage: stage => stages.push(stage),
+    });
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.pointsCount).toBe(2052);
+    expect(stages).toEqual([
+      'health-check',
+      'dropping-collection',
+      'uploading',
+      'verifying',
+      'ready',
+    ]);
+    // The collection is dropped first, then Qdrant pulls the snapshot URL.
+    const deleteIndex = requests.findIndex(
+      request => request.method === 'DELETE'
+    );
+    const uploadIndex = requests.findIndex(
+      request => request.method === 'POST' && request.path.includes('upload')
+    );
+    expect(deleteIndex).toBeGreaterThanOrEqual(0);
+    expect(uploadIndex).toBeGreaterThan(deleteIndex);
+    const upload = requests[uploadIndex];
+    expect(upload.body).toEqual({ url: 'https://example.com/snapshot.snap' });
+  });
+
+  it('refuses to run against an unhealthy Qdrant', async () => {
+    const requests: Array<any> = [];
+    const outcome = await runByokQdrantSnapshotRestore({
+      baseUrl: 'http://127.0.0.1:6333',
+      snapshotUrl: 'https://example.com/snapshot.snap',
+      expectedDimensions: 384,
+      deps: {
+        isHealthy: async () => false,
+        requestJson: jest.fn(async () => {
+          throw new Error('should not be called');
+        }),
+      },
+    });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.stage).toBe('health-check');
+      expect(outcome.error).toContain('not running');
+    }
+    expect(requests).toHaveLength(0);
+  });
+
+  it('fails cleanly when the upload itself errors', async () => {
+    const outcome = await runByokQdrantSnapshotRestore({
+      baseUrl: 'http://127.0.0.1:6333',
+      snapshotUrl: 'https://example.com/snapshot.snap',
+      expectedDimensions: 384,
+      deps: {
+        isHealthy: async () => true,
+        requestJson: jest.fn(async (method, path) => {
+          if (method === 'POST') throw new Error('HTTP 500 boom');
+          return { result: true };
+        }),
+      },
+    });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.stage).toBe('uploading');
+      expect(outcome.error).toContain('boom');
+    }
+  });
+
+  it('fails when the restored collection stays empty (verifying)', async () => {
+    const outcome = await runByokQdrantSnapshotRestore({
+      baseUrl: 'http://127.0.0.1:6333',
+      snapshotUrl: 'https://example.com/snapshot.snap',
+      expectedDimensions: 384,
+      verifyTimeoutMs: 5,
+      pollIntervalMs: 1,
+      deps: makeRestoreDeps([], {
+        '/collections/gdevelop-byok': { result: { points_count: 0 } },
+      }),
+    });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.stage).toBe('verifying');
+      expect(outcome.error).toContain('empty');
+    }
+  });
+
+  it('fails when the vector dimensions do not match the embedder', async () => {
+    const outcome = await runByokQdrantSnapshotRestore({
+      baseUrl: 'http://127.0.0.1:6333',
+      snapshotUrl: 'https://example.com/snapshot.snap',
+      expectedDimensions: 384,
+      deps: makeRestoreDeps([], {
+        '/collections/gdevelop-byok': {
+          result: {
+            points_count: 10,
+            config: { params: { vectors: { size: 768 } } },
+          },
+        },
+      }),
+    });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.stage).toBe('verifying');
+      expect(outcome.error).toContain('768');
+    }
   });
 });

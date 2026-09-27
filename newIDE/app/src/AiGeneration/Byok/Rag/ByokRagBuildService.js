@@ -2,6 +2,8 @@
 import { type ByokRagSettings } from './ByokRagTypes';
 import {
   buildByokRagIndex,
+  computeByokRagCorpusHash,
+  deserializeByokRagIndex,
   isByokRagIndexUpToDate,
   serializeByokRagIndex,
   type ByokRagIndexProgress,
@@ -11,8 +13,13 @@ import {
   createByokRagInProcessStore,
   createByokRagQdrantFetchTransport,
   createByokRagQdrantStore,
+  importByokRagBundleIntoStore,
   type ByokRagStore,
 } from './ByokRagStorage';
+import {
+  checkByokRagBundleCompatibility,
+  validateByokRagBundleEnvelope,
+} from './ByokRagBundle';
 import { createByokRagFilesBackendForPlatform } from './ByokRagFileBackends';
 import { setByokRagRuntime } from './ByokRagSearch';
 
@@ -202,5 +209,73 @@ export const readByokRagIndexStatus = async (
     corpusHash: stored.manifest.corpusHash,
     builtAt: stored.manifest.builtAt,
     embedderId: stored.manifest.embedderId,
+  };
+};
+
+/**
+ * The corpus hash of THIS app installation's bundled corpus (the freshness
+ * check of the prebuilt bundle, D14-3). Injected in the tests; the default
+ * builds the real corpus (a couple of seconds, pure).
+ */
+export const getCurrentByokRagCorpusHash = async (
+  injectedCorpusHash?: ?string
+): Promise<string> => {
+  if (injectedCorpusHash) return injectedCorpusHash;
+  const { buildByokRagCorpus } = require('./ByokRagCorpus');
+  const chunks = await buildByokRagCorpus({});
+  return computeByokRagCorpusHash(chunks);
+};
+
+export type ByokRagImportOutcome =
+  | {| ok: true, chunkCount: number, embedderReady: boolean |}
+  | {| ok: false, error: string |};
+
+/**
+ * Import a downloaded prebuilt bundle (Phase 14.4, D14-3): validate the
+ * envelope, refuse any embedder/corpus mismatch (offer a local rebuild
+ * instead — never serve stale vectors), persist the index through the
+ * store exactly like a local build, and install the live runtime. The
+ * query-side embedder download (~25 MB, D13-9 consent) is part of the
+ * deal: it loads here, and a failure degrades to lexical search with an
+ * honest note rather than failing the import.
+ */
+export const importPrebuiltByokRagIndex = async (options: {|
+  settings: ByokRagSettings,
+  rawBundle: any,
+  corpusHash?: ?string,
+|}): Promise<ByokRagImportOutcome> => {
+  const { settings } = options;
+  const validation = validateByokRagBundleEnvelope(options.rawBundle);
+  if (!validation.ok) return { ok: false, error: validation.error };
+  const bundle = validation.bundle;
+
+  const corpusHash = await getCurrentByokRagCorpusHash(options.corpusHash);
+  const compatibility = checkByokRagBundleCompatibility(bundle, {
+    embedderId: settings.embedderId,
+    corpusHash,
+  });
+  if (!compatibility.ok) return { ok: false, error: compatibility.error };
+
+  const store = makeStoreForSettings(settings);
+  if (!store) {
+    return {
+      ok: false,
+      error: 'The index could not be stored on this platform.',
+    };
+  }
+  const importOutcome = await importByokRagBundleIntoStore(store, bundle);
+  if (!importOutcome.ok) return importOutcome;
+
+  const stored = deserializeByokRagIndex(bundle.index);
+  if (!stored) {
+    return { ok: false, error: 'The bundled index payload is malformed.' };
+  }
+  const embedderResult = await loadByokRagEmbedder(settings.embedderId);
+  const embedder = embedderResult.ok ? embedderResult.embedder : null;
+  setByokRagRuntime({ settings, index: stored, embedder });
+  return {
+    ok: true,
+    chunkCount: importOutcome.chunkCount,
+    embedderReady: !!embedder,
   };
 };

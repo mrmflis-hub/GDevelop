@@ -1003,7 +1003,19 @@ thing"); multi-intent ("add a coin AND make the camera follow me").
 `REVIEW/rag-queries.json`) or paste it in chat; the 14.3 session moves it
 to `newIDE/app/src/AiGeneration/Byok/docs/rag-eval-queries.json`.
 
-### 17.2 — Hosting for the prebuilt bundle and (maybe) the finetuned model `[T17-hosting]` — blocks 14.4
+### 17.2 — Hosting for the prebuilt bundle and (maybe) the finetuned model `[T17-hosting]` — blocks 14.4's download UX `[open]`
+
+**Updated 2026-09-27 (Phase 14 implemented):** the concrete asset to upload
+is `newIDE/app/build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-571d1b30.json`
+(**12.4 MB, 4,026 chunks** — engine-reference 1,962, docs 53, example 11,
+skill 26, docs-min 1,974 — corpus `571d1b30`, embedder
+`Xenova/all-MiniLM-L6-v2 @ q8`); the v1 file (`…-7b8a6b0.json`) is
+superseded — do not upload it. Release tag shape: `byok-rag-bundle-v2`
+(the RAG tab finds any tag with the `byok-rag-bundle-` prefix). The
+optional Qdrant snapshot variant is a second asset on the same release
+(name it `…-qdrant-snapshot`); produce it by restoring the JSON bundle
+into a local Qdrant and taking a collection snapshot, or skip it — the
+in-process import path is complete without it.
 
 - Confirm **GitHub Releases on `mrmflis-hub/GDevelop`** may carry the
   bundle assets (per generation: one index JSON, roughly 5–15 MB, plus a
@@ -1014,7 +1026,12 @@ to `newIDE/app/src/AiGeneration/Byok/docs/rag-eval-queries.json`.
   loading; slightly more fragile).
 - Nothing else needed — no keys, no secrets, ever.
 
-### 17.3 — Approve the pipeline token budget `[T17-budget]` — blocks 14.2's run
+### 17.3 — Approve the pipeline token budget `[T17-budget]` — **CLOSED 2026-09-27** `[done]`
+
+Closed by the owner's implementation order: the doc minification ran as
+7 waves of parallel coding agents (zero endpoint tokens spent), so the
+budget concern is moot. Reopens only if a future `DOCs/` refresh is run
+through an endpoint instead.
 
 The maintainer-side scripts run on **your machine with your key** (env
 var; never shared). Rough totals on a budget endpoint:

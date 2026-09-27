@@ -321,6 +321,7 @@ const RETRIEVAL_MAP_SECTION_TEXT = [
   '- engine reference & EventScript examples: search_reference(query) — the exact names, parameters and runnable examples of every action, condition, expression, object and behavior.',
   '- bundled docs: search_docs(query) + read_doc(page).',
   '- the WHOLE corpus at once (grep the docs): search_knowledge(query) — the engine reference, the docs, the skills and the runnable EventScript examples in one search (you can grep the full engine documentation on-device).',
+  '- the whole wiki, minified and bundled offline (the docs-min chunks): browse by category map first — search_knowledge("docs", tags: ["map"]) returns one map per wiki category (every page as path — title — summary); pull a page\'s minified chunks with a content search (tags: ["docs-min"]), and read_doc_page(path) when the minified page is not enough.',
   '- skills: load_skill(name) — the playbooks listed in the Available skills section.',
   '',
   'Common tasks and the search that solves them:',

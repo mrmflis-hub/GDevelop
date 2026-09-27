@@ -59,6 +59,15 @@ const makeTestIndex = async () => {
   });
 };
 
+const makeTestVectorBase64 = (): string => {
+  const bytes = new Uint8Array(new Float32Array(384).buffer);
+  let binary = '';
+  for (let index = 0; index < bytes.length; index++) {
+    binary += String.fromCharCode(bytes[index]);
+  }
+  return btoa(binary);
+};
+
 describe('createByokRagInProcessStore (the storage contract: in-process)', () => {
   it('saves, loads and clears an index', async () => {
     const backend = makeMemoryBackend();
@@ -200,5 +209,112 @@ describe('createByokRagQdrantFetchTransport', () => {
     await expect(
       failingTransport.request('PUT', '/collections/x', { a: 1 })
     ).rejects.toThrow('500');
+  });
+});
+
+describe('importByokRagBundleIntoStore (Phase 14.4)', () => {
+  const makeBundleFixture = () => ({
+    bundle: 'byok-rag-bundle',
+    formatVersion: 1,
+    created: '2026-09-27T00:00:00.000Z',
+    embedder: {
+      id: 'Xenova/all-MiniLM-L6-v2',
+      dimensions: 384,
+      approximateDownloadMegabytes: 25,
+      dtype: 'q8',
+    },
+    index: {
+      manifest: {
+        schemaVersion: 1,
+        embedderId: 'Xenova/all-MiniLM-L6-v2',
+        corpusHash: '1a2b3c4d',
+        chunkCount: 1,
+        backend: 'in-process',
+        builtAt: '2026-09-27T00:00:00.000Z',
+      },
+      chunks: [
+        {
+          id: 'docs:0:0',
+          source: 'docs',
+          title: 'Timers',
+          tags: ['docs'],
+          text: 'Timers count time.',
+        },
+      ],
+      vectorsBase64: [makeTestVectorBase64()],
+    },
+    integrity: { indexSha256: 'a'.repeat(64) },
+  });
+
+  it('round-trips a valid bundle through the in-process store', async () => {
+    const { importByokRagBundleIntoStore } = require('./Rag/ByokRagStorage');
+    const backend = makeMemoryBackend();
+    const store = createByokRagInProcessStore(backend);
+    const outcome = await importByokRagBundleIntoStore(
+      store,
+      makeBundleFixture()
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error('refused');
+    expect(outcome.chunkCount).toBe(1);
+    // The persisted file is exactly what a local build would have saved,
+    // and it loads back through the store.
+    expect(backend.files.has('index.json')).toBe(true);
+    const loaded = await store.loadIndex();
+    expect(loaded && loaded.chunks[0].title).toBe('Timers');
+    expect(loaded && loaded.vectors).toHaveLength(1);
+  });
+
+  it('uploads a valid bundle into the Qdrant store as points', async () => {
+    const { importByokRagBundleIntoStore } = require('./Rag/ByokRagStorage');
+    const requests: Array<any> = [];
+    const transport = {
+      request: jest.fn(async (method: string, path: string, body?: any) => {
+        requests.push({ method, path, body });
+        if (method === 'GET' && path.startsWith('/collections/gdevelop-byok')) {
+          return {
+            result: { config: { params: { vectors: { size: 384 } } } },
+          };
+        }
+        return { result: true };
+      }),
+    };
+    const store = createByokRagQdrantStore({ transport: (transport: any) });
+    const outcome = await importByokRagBundleIntoStore(
+      store,
+      makeBundleFixture()
+    );
+    expect(outcome.ok).toBe(true);
+    expect(
+      requests.some(
+        request =>
+          request.method === 'PUT' &&
+          request.path.startsWith('/collections/gdevelop-byok/points')
+      )
+    ).toBe(true);
+  });
+
+  it('refuses invalid or malformed bundles WITHOUT writing anything', async () => {
+    const { importByokRagBundleIntoStore } = require('./Rag/ByokRagStorage');
+    const backend = makeMemoryBackend();
+    const store = createByokRagInProcessStore(backend);
+
+    const notABundle = await importByokRagBundleIntoStore(store, {
+      hello: 'world',
+    });
+    expect(notABundle.ok).toBe(false);
+
+    const malformedIndex = makeBundleFixture();
+    malformedIndex.index.vectorsBase64 = [];
+    const malformed = await importByokRagBundleIntoStore(store, malformedIndex);
+    expect(malformed.ok).toBe(false);
+
+    const emptyIndex = makeBundleFixture();
+    emptyIndex.index.chunks = [];
+    emptyIndex.index.vectorsBase64 = [];
+    const empty = await importByokRagBundleIntoStore(store, emptyIndex);
+    expect(empty.ok).toBe(false);
+
+    expect(backend.files.size).toBe(0);
   });
 });

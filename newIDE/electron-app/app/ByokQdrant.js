@@ -203,11 +203,72 @@ const ensureStarted = async app => {
   }
 };
 
+/** One JSON request over the loopback Qdrant REST API (the restore deps). */
+const requestJson = (baseUrl, method, requestPath, body) =>
+  new Promise((resolve, reject) => {
+    const payload = body === undefined ? null : JSON.stringify(body);
+    const request = http.request(
+      `${baseUrl}${requestPath}`,
+      {
+        method,
+        headers: payload
+          ? {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(payload),
+            }
+          : {},
+      },
+      response => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          if (response.statusCode >= 400) {
+            reject(
+              new Error(
+                `Qdrant ${method} ${requestPath}: ${
+                  response.statusCode
+                } ${text}`
+              )
+            );
+            return;
+          }
+          try {
+            resolve(text ? JSON.parse(text) : null);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      }
+    );
+    request.on('error', reject);
+    if (payload) request.write(payload);
+    request.end();
+  });
+
 const registerByokQdrant = (ipcMain, app) => {
   ipcMain.handle('byok-qdrant-setup', async () => {
     const outcome = await runSetup(app);
     if (outcome.ok) lastKnownBaseUrl = outcome.baseUrl;
     return outcome;
+  });
+  // Phase 14.4 (D14-3): the Qdrant branch of the prebuilt bundle — restore
+  // the official collection snapshot from its release URL. The consent
+  // (snapshot download + Qdrant binary when missing) ran in the UI first.
+  ipcMain.handle('byok-qdrant-restore-snapshot', async (event, options) => {
+    const setupOutcome = await runSetup(app);
+    if (!setupOutcome.ok) return setupOutcome;
+    lastKnownBaseUrl = setupOutcome.baseUrl;
+    return core.runByokQdrantSnapshotRestore({
+      baseUrl: setupOutcome.baseUrl,
+      snapshotUrl: options.snapshotUrl,
+      expectedDimensions: options.expectedDimensions,
+      deps: {
+        isHealthy,
+        requestJson: (method, requestPath, body) =>
+          requestJson(setupOutcome.baseUrl, method, requestPath, body),
+      },
+    });
   });
   ipcMain.handle('byok-qdrant-status', async () => {
     if (lastKnownBaseUrl) {

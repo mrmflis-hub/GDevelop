@@ -4,6 +4,7 @@ import {
   type ByokRagSerializedIndex,
   deserializeByokRagIndex,
 } from './ByokRagIndex';
+import { validateByokRagBundleEnvelope } from './ByokRagBundle';
 
 /**
  * The RAG index storage (Phase 13.7/13.8): one interface, two
@@ -32,6 +33,48 @@ export type ByokRagStore = {|
   loadIndex: () => Promise<?ByokRagStoredIndex>,
   clear: () => Promise<void>,
 |};
+
+/**
+ * Import a prebuilt bundle (Phase 14.4, D14-3): validate the envelope
+ * (again — the Electron main verified the sha256, this is the defense in
+ * depth the untrusted-data rule demands), deserialize the index, persist
+ * it through the store exactly like a local build would. Returns the
+ * chunk count, or a refusal with the reason — a bad bundle NEVER writes.
+ */
+export const importByokRagBundleIntoStore = async (
+  store: ByokRagStore,
+  rawBundle: any
+): Promise<
+  {| ok: true, chunkCount: number |} | {| ok: false, error: string |}
+> => {
+  const validation = validateByokRagBundleEnvelope(rawBundle);
+  if (!validation.ok) return { ok: false, error: validation.error };
+  const bundle = validation.bundle;
+  const deserialized = deserializeByokRagIndex(bundle.index);
+  if (!deserialized) {
+    return {
+      ok: false,
+      error: 'The bundled index payload is malformed — rebuild locally.',
+    };
+  }
+  if (deserialized.chunks.length === 0) {
+    return {
+      ok: false,
+      error: 'The bundled index is empty — rebuild locally.',
+    };
+  }
+  try {
+    await store.saveIndex(bundle.index);
+  } catch (error) {
+    return {
+      ok: false,
+      error: `The imported index could not be saved: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  return { ok: true, chunkCount: deserialized.chunks.length };
+};
 
 const INDEX_FILE_NAME = 'index.json';
 

@@ -184,6 +184,22 @@ needs a helper; keep changes minimal), `REVIEW/worklog.md`.
 4. Compaction keeps the same system string (the history rewrite busts the
    cache once regardless; that is accepted and rare by design).
 
+**AMENDMENT (owner order 2026-09-27, implemented the same day).** Point 3's
+"tail-folded project snapshot … already cache-friendly" was verified after
+implementation and found only half true: the fold targeted the last USER
+message, which sits mid-request once tool rounds append after it, and the
+Phase 9.7 per-round refresh rewrote it after every editing round — so an
+edit-heavy turn (50–100 rounds in a real build) re-busted the prefix from
+that message on each round. The owner ordered the fix: the snapshot now
+rides its OWN synthetic trailing user message at the very tail of the
+request (`buildMessagesForModel`), so the transcript replay is purely
+append-only and a refresh only ever changes the request's final message;
+everything before it (system + tools + the whole transcript) stays
+cacheable prefix. Spec-proven across editing rounds AND a completion-gate
+nudge round. The transcript itself still never contains the snapshot (the
+UI never renders the JSON blob), and the message stays valid OpenAI
+protocol (a user message may follow tool results).
+
 **Tests:**
 
 - Spec: a simulated multi-round conversation including a round where the

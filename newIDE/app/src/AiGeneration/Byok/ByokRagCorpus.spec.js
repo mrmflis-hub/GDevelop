@@ -83,10 +83,136 @@ describe('the corpus builders', () => {
     const sources = new Set(corpusA.map(chunk => chunk.source));
     expect(Array.from(sources).sort()).toEqual([
       'docs',
+      'docs-min',
+      'docs-min-map',
       'engine-reference',
       'example',
       'skill',
     ]);
+    // The docs-min grades sit after the skills and before nothing else in
+    // the bundled part (user docs are opt-in and last).
+    const lastBundled = corpusA
+      .filter(chunk => chunk.source !== 'user-docs')
+      .map(chunk => chunk.source);
+    expect(lastBundled[lastBundled.length - 1]).toBe('docs-min');
+  });
+
+  it('builds the minified-docs map chunks: one category browse-listing each (Phase 14.2)', () => {
+    const {
+      buildByokRagMinifiedDocsMapChunks,
+    } = require('./Rag/ByokRagCorpus');
+    const {
+      listByokMinifiedDocCategories,
+      getByokMinifiedDocPagesOfCategory,
+    } = require('./ByokMinifiedDocs');
+    const chunks = buildByokRagMinifiedDocsMapChunks();
+    const categories = listByokMinifiedDocCategories();
+    expect(chunks.length).toBeGreaterThanOrEqual(categories.length);
+    for (const chunk of chunks) {
+      expect(chunk.source).toBe('docs-min-map');
+      expect(chunk.tags).toEqual(expect.arrayContaining(['docs-min', 'map']));
+    }
+    // A category with few pages is one map chunk listing exactly its pages.
+    const smallCategory = categories.find(
+      category =>
+        getByokMinifiedDocPagesOfCategory(category).length > 0 &&
+        getByokMinifiedDocPagesOfCategory(category).length < 20
+    );
+    if (!smallCategory) throw new Error('No small category in the artifact');
+    const pages = getByokMinifiedDocPagesOfCategory(smallCategory);
+    // Listing lines have the exact `path — title — summary` shape (the
+    // header line contains an em dash too, so match the shape); a category
+    // line-packs into as many map chunks as it needs.
+    const mapChunksOfCategory = chunks.filter(chunk =>
+      chunk.tags.includes(smallCategory)
+    );
+    expect(mapChunksOfCategory.length).toBeGreaterThanOrEqual(1);
+    const lines = mapChunksOfCategory
+      .flatMap(chunk => chunk.text.split('\n'))
+      .filter(line => /^\S+\.md — .+ — /.test(line));
+    expect(lines).toHaveLength(pages.length);
+    for (const page of pages) {
+      expect(lines.some(line => line.startsWith(`${page.path} — `))).toBe(true);
+    }
+    // A big category is line-packed into several self-describing chunks.
+    const bigCategory = categories.find(
+      category => getByokMinifiedDocPagesOfCategory(category).length > 100
+    );
+    if (!bigCategory) throw new Error('No big category in the artifact');
+    const bigMapChunks = chunks.filter(chunk =>
+      chunk.tags.includes(bigCategory)
+    );
+    expect(bigMapChunks.length).toBeGreaterThan(1);
+    for (const chunk of bigMapChunks) {
+      expect(chunk.text).toContain(`category map "${bigCategory}"`);
+      // One page per line — a listing is never sentence-mangled.
+      expect(
+        chunk.text
+          .split('\n')
+          .slice(1)
+          .every(line => line.includes(' — '))
+      ).toBe(true);
+    }
+    // Deterministic: the same inputs build the same chunks.
+    expect(buildByokRagMinifiedDocsMapChunks().map(c => c.id)).toEqual(
+      chunks.map(c => c.id)
+    );
+  });
+
+  it('packs whole lines into size-capped chunks without splitting a line', () => {
+    const { packByokRagLines } = require('./Rag/ByokRagCorpus');
+    expect(packByokRagLines(['only one line'])).toEqual(['only one line']);
+    expect(packByokRagLines([])).toEqual([]);
+    const lines = Array.from(
+      { length: 20 },
+      (_, index) =>
+        `page-${index}.md — Title ${index} — Summary of page ${index}.`
+    );
+    const packed = packByokRagLines(lines, 50);
+    expect(packed.length).toBeGreaterThan(1);
+    for (const part of packed) {
+      expect(part.length).toBeLessThanOrEqual(50 * 4 + 200);
+      for (const line of part.split('\n')) {
+        expect(lines).toContain(line);
+      }
+    }
+    expect(packed.join('\n').split('\n')).toEqual(lines);
+  });
+
+  it('builds the minified-docs page chunks with the read_doc_page pointer on every chunk (Phase 14.2)', () => {
+    const {
+      buildByokRagMinifiedDocsPageChunks,
+    } = require('./Rag/ByokRagCorpus');
+    const { getByokMinifiedDocPages } = require('./ByokMinifiedDocs');
+    const pages = getByokMinifiedDocPages();
+    const chunks = buildByokRagMinifiedDocsPageChunks();
+    // Every wiki page yields at least one chunk.
+    expect(chunks.length).toBeGreaterThanOrEqual(pages.length);
+    const pathsCovered = new Set(
+      chunks.map(chunk =>
+        chunk.id
+          .split(':')
+          .slice(1, -1)
+          .join(':')
+      )
+    );
+    for (const page of pages) {
+      expect(pathsCovered.has(page.path)).toBe(true);
+    }
+    for (const chunk of chunks.slice(0, 50)) {
+      expect(chunk.source).toBe('docs-min');
+      expect(chunk.tags).toContain('docs-min');
+      const pagePath = chunk.id
+        .split(':')
+        .slice(1, -1)
+        .join(':');
+      expect(chunk.text).toContain(`Full page: read_doc_page('${pagePath}').`);
+      expect(chunk.text).toContain(chunk.title);
+    }
+    // Deterministic ids (the corpus hash depends on it).
+    expect(buildByokRagMinifiedDocsPageChunks().map(c => c.id)).toEqual(
+      chunks.map(c => c.id)
+    );
   });
 
   it('indexes the opt-in local docs folder through the injected reader', async () => {

@@ -211,6 +211,62 @@ Status as of 2026-09-24 (update at the end of every session):
   221 suites / 2428 tests, all four gates green. `REVIEW/FTmodel.md` =
   the local fine-tuned generation track (LoRA/Unsloth, ternary
   Bonsai-class bases) — explicitly long-term, NOT scheduled.
+- **Phase 14 IMPLEMENTED 2026-09-27** (the owner ordered steps 14.1,
+  14.2, 14.4, 14.5 in chat and **deferred 14.3** — "move on without
+  finetuned model"). **14.1 (prompt-cache stability, D14-1):** the
+  orchestrator composes the system prompt ONCE per chat and reuses it
+  byte-identical (`systemPromptSnapshot` in `ByokOrchestrator.js`);
+  invalidation only on a `hasOpenedProject()` flip or a new chat —
+  spec-proven across note writes and settings churn. **Same-day owner
+  order (cache follow-up):** the project snapshot no longer folds into
+  the last user message (that rewrote a mid-request message on every
+  editing round); it rides its OWN synthetic trailing user message at
+  the request tail, making the transcript replay purely append-only — a
+  refresh only ever changes the final message, so in 50–100-round build
+  turns the cacheable prefix covers system + tools + the whole
+  transcript (spec-proven across editing rounds and a completion-gate
+  nudge; amendment recorded in Phase14.md step 14.1). **14.2 (minified
+  docs layer, D14-2):** the whole `gdevelop5` wiki (601/601 pages, 0.50
+  compression — dead center of the 40–60 % band) minified by 7 waves of
+  ≤ 5 parallel agents into the committed artifact
+  `Byok/docs/gdevelop-docs/MinifiedDocs.generated.js` (2.3 MB), assembled
+  + validated by `scripts/build-byok-minified-docs.js` (per-page JSON
+  batches, deterministic engine-token sanity pass with a 4-entry
+  documented allowlist, tag whitelist = folder facets + 2d/3d), exposed
+  by `ByokMinifiedDocs.js` and two new corpus grades in `ByokRagCorpus`
+  (`docs-min-map` per-category listings, line-packed;
+  `docs-min` page chunks, every chunk carrying
+  `Full page: read_doc_page('<path>')`); retrieval-map hint line added,
+  prompt bumped **byok-v10**; corpus 2,052 → 4,026 chunks. **The
+  ranking fix this forced:** the wiki's prose chunks crushed the 24-query
+  eval gate to 17 % (exact hits crowding + vector dilution), so
+  `ByokRagSearch` now scores lexical hits positionally (title > tags >
+  text) and re-ranks both halves by per-source weights
+  (`BYOK_RAG_SOURCE_WEIGHTS`, curated tiers above wiki prose) — hashing
+  79 % / stock MiniLM 83 % top-3, gate ≥ 70 % green. **14.4 (prebuilt
+  RAG bundle, D14-3/D14-7(a)):** pure validation in
+  `Rag/ByokRagBundle.js` (envelope shape, embedder-in-catalog +
+  dimensions, sha256 shape; corpus/embedder mismatch = refused with a
+  rebuild offer), `importByokRagBundleIntoStore` in `ByokRagStorage`,
+  `importPrebuiltByokRagIndex` in `ByokRagBuildService` (loads the
+  query-side embedder, honest lexical degrade on failure), Electron
+  `byok-rag-bundle-info`/`byok-rag-bundle-download` (sha256-verified in
+  main, node crypto) + `byok-qdrant-restore-snapshot` (Qdrant pulls the
+  release snapshot itself via the url-body upload API;
+  `runByokQdrantSnapshotRestore` pure core), and the RAG tab's
+  **Prebuilt index card** (release lookup on mount, up-to-date /
+  update-available / offline states, ONE consent naming index + embedder
+  sizes, "Build locally instead" always visible). **v2 artifact built +
+  verified:** `build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-571d1b30.json`
+  (4,026 chunks, corpus `571d1b30`, 8 spot-checks on-topic) — the v1
+  file (7b8a6b0) is superseded; owner uploads via Task 17.2.
+  **14.5:** `scripts/byok-embedder/eval-embedder.js` (the
+  embedder-agnostic runner from the 14.3 file list; hashing + real-model
+  + `--queries` holdout mode) over the shared 24-query set
+  (`Byok/evals/byok-rag-eval-queries.json`, now the spec's source too);
+  prompt budget re-measured 11,842 tokens worst-case (prompt 5,900 +
+  tools 5,942) — under the 15k cap, +60 vs Phase 13 for the hint line.
+  226 suites / 2,489 tests, all four gates green.
 
 - **Audits:** every 2026-09-21 audit B-finding is fixed. The remaining open
   findings are consolidated in `REVIEW/audit2209.md` (full detail) and triaged
@@ -417,9 +473,8 @@ The repository moves; the phase docs were written on 2026-09-13 (Phases 1–4)
 and 2026-09-21 (Phases 5–9). If a line number, function name, or structure has
 shifted upstream:
 
-- Re-locate the equivalent spot yourself (search, don't guess).
-*Last updated: 2026-09-25.*
-  `file:line`.
+- Re-locate the equivalent spot yourself (search, don't guess), and cite
+  it as `file:line`.
 - Keep the *intent* of the step (the ACs), not the literal line numbers.
 
 This applies to this manual too: if AGENTS.md contradicts reality, fix the
@@ -427,4 +482,4 @@ manual in the same session and say so in the worklog.
 
 ---
 
-*Last updated: 2026-09-25.*
+*Last updated: 2026-09-27.*

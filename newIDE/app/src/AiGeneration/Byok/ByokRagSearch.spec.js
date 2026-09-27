@@ -169,56 +169,13 @@ describe('searchByokRagKnowledge', () => {
 });
 
 describe('the search_knowledge eval set (top-3 hit rate, on-device)', () => {
+  // The shared eval set (14.5): the same queries the Node-side
+  // eval-embedder.js runner scores an embedder with — one source of truth.
   const EXPECTED_QUERIES: Array<{|
     query: string,
     expectedSource: string,
     expectedHint?: string,
-  |}> = [
-    {
-      query: 'collision variable increment score',
-      expectedSource: 'example',
-      expectedHint: 'Collision',
-    },
-    {
-      query: 'timer spawn create objects',
-      expectedSource: 'example',
-      expectedHint: 'Timer',
-    },
-    {
-      query: 'switch to another scene menu',
-      expectedSource: 'example',
-      expectedHint: 'Scene',
-    },
-    {
-      query: 'play a sound effect',
-      expectedSource: 'engine-reference',
-      expectedHint: 'PlaySound',
-    },
-    {
-      query: 'play music',
-      expectedSource: 'engine-reference',
-      expectedHint: 'PlayMusic',
-    },
-    { query: 'camera position', expectedSource: 'engine-reference' },
-    { query: 'for each child structure variable', expectedSource: 'example' },
-    { query: 'repeat loop group events', expectedSource: 'example' },
-    { query: 'change animation speed', expectedSource: 'example' },
-    { query: 'save system checkpoints storage', expectedSource: 'skill' },
-    { query: 'platformer character jump', expectedSource: 'skill' },
-    { query: 'physics gravity forces', expectedSource: 'skill' },
-    { query: 'expression lerp', expectedSource: 'engine-reference' },
-    { query: 'expression clamp values', expectedSource: 'engine-reference' },
-    { query: 'asynchronous events', expectedSource: 'docs' },
-    { query: 'while events loop', expectedSource: 'docs' },
-    { query: 'object picking conditions', expectedSource: 'docs' },
-    { query: 'javascript code events', expectedSource: 'docs' },
-    { query: 'callback variables', expectedSource: 'docs' },
-    { query: 'trigger once shooting space key', expectedSource: 'example' },
-    { query: 'time delta frame rate movement', expectedSource: 'example' },
-    { query: 'hud score display menus', expectedSource: 'skill' },
-    { query: 'puzzle grid game', expectedSource: 'skill' },
-    { query: 'top down shooter enemies', expectedSource: 'skill' },
-  ];
+  |}> = require('./evals/byok-rag-eval-queries.json');
 
   it('returns the expected source in the top 3 for at least 70% of the eval queries', async () => {
     const embedder = makeByokHashingEmbedderForTests(128);
@@ -258,4 +215,87 @@ describe('the search_knowledge eval set (top-3 hit rate, on-device)', () => {
       );
     }
   }, 240000);
+});
+
+describe('search_knowledge over the minified wiki (Phase 14.2, D14-2)', () => {
+  // The whole wiki is bundled minified: with RAG OFF (no index, no
+  // embedder — lexical only) and fully offline, a chat can discover the
+  // right page through its category map and read the minified body.
+  it('discovers a page via its category map and its minified chunks, lexically', async () => {
+    const {
+      buildByokRagMinifiedDocsMapChunks,
+      buildByokRagMinifiedDocsPageChunks,
+    } = require('./Rag/ByokRagCorpus');
+    const chunks = [
+      ...buildByokRagMinifiedDocsMapChunks(),
+      ...buildByokRagMinifiedDocsPageChunks(),
+    ];
+    expect(chunks.length).toBeGreaterThan(500);
+
+    // Pick a real page from a real map line (path — title — summary); the
+    // header line of a map chunk also contains an em dash, so match the
+    // listing shape exactly.
+    const mapChunks = chunks.filter(chunk => chunk.source === 'docs-min-map');
+    const firstLine = mapChunks[0].text
+      .split('\n')
+      .find(line => /^\S+\.md — .+ — /.test(line));
+    if (!firstLine) throw new Error('The map chunk lists no pages');
+    const pagePath = firstLine.slice(0, firstLine.indexOf(' — '));
+    const pageTitle = firstLine.split(' — ')[1];
+    const term = pageTitle
+      .split(/\s+/)
+      .filter(word => word.length > 3)
+      .map(word => word.toLowerCase().replace(/[^a-z0-9]/g, ''))
+      .find(Boolean);
+    if (!term) throw new Error('No usable search term in the page title');
+
+    // The drill-down the prompt's hint line teaches: browse by map first
+    // (tags: ["map"]), then pull the page's minified chunks.
+    const deps: ByokRagSearchDeps = {
+      index: null,
+      embedder: null,
+      lexicalChunks: chunks,
+    };
+    const mapResult = await searchByokRagKnowledge({
+      query: term,
+      tags: ['map'],
+      deps,
+    });
+    expect(mapResult.mode).toBe('lexical');
+    expect(mapResult.success).toBe(true);
+    expect(mapResult.hits.length).toBeGreaterThan(0);
+    expect(
+      mapResult.hits.every(hit => hit.chunk.source === 'docs-min-map')
+    ).toBe(true);
+
+    const pageResult = await searchByokRagKnowledge({ query: term, deps });
+    expect(pageResult.mode).toBe('lexical');
+    const pageHit = pageResult.hits.find(
+      hit =>
+        hit.chunk.source === 'docs-min' &&
+        hit.chunk.id.startsWith(`docs-min:${pagePath}:`)
+    );
+    if (!pageHit) throw new Error(`No minified chunk hit for ${pagePath}`);
+    // The hit itself carries the full-depth pointer.
+    expect(pageHit.chunk.text).toContain(
+      `Full page: read_doc_page('${pagePath}').`
+    );
+  });
+});
+
+describe('getByokRagSourceWeight (the Phase 14.2 vector re-ranking)', () => {
+  it('weights the curated tiers above the minified-wiki prose, 1 for unknowns', () => {
+    const { getByokRagSourceWeight } = require('./Rag/ByokRagSearch');
+    expect(getByokRagSourceWeight('engine-reference')).toBeGreaterThan(
+      getByokRagSourceWeight('docs-min')
+    );
+    expect(getByokRagSourceWeight('skill')).toBeGreaterThan(
+      getByokRagSourceWeight('docs-min-map')
+    );
+    expect(getByokRagSourceWeight('docs')).toBeGreaterThan(
+      getByokRagSourceWeight('docs-min')
+    );
+    expect(getByokRagSourceWeight('user-docs')).toBe(1);
+    expect(getByokRagSourceWeight('anything-else')).toBe(1);
+  });
 });

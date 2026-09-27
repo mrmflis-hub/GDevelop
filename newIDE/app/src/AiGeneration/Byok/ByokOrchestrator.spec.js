@@ -15,6 +15,7 @@ import {
 } from './ByokClient';
 import { cacheByokModels, clearByokModels } from './ByokModelsCache';
 import { registerByokImage } from './ByokImageContent';
+import * as ByokProjectNotesModule from './ByokProjectNotes';
 
 jest.mock('./ByokClient', () => ({
   sendByokChatCompletionWithRetries: jest.fn(),
@@ -684,7 +685,7 @@ describe('ByokOrchestrator', () => {
     expect(aiRequest.status).toBe('suspended');
   });
 
-  it('sends the system prompt and folds the snapshot into the user message', async () => {
+  it('sends the system prompt and the snapshot as its own trailing user message', async () => {
     mockSendByokChatCompletion.mockResolvedValueOnce(
       makeResponse({ text: 'ok' })
     );
@@ -704,7 +705,15 @@ describe('ByokOrchestrator', () => {
       (message: any) => message.role === 'user'
     );
     expect(userMessage.content).toContain('Inspect this');
-    expect(userMessage.content).toContain('{"scenes":[]}');
+    // The snapshot never touches the user's message: it rides the LAST
+    // message of the request (the append-only cache contract).
+    expect(userMessage.content).not.toContain('{"scenes":[]}');
+    const lastMessage = messages[messages.length - 1];
+    expect(lastMessage.role).toBe('user');
+    expect(lastMessage.content).toContain(
+      '[Current simplified project snapshot, as JSON'
+    );
+    expect(lastMessage.content).toContain('{"scenes":[]}');
   });
 
   it('refuses to dispatch a hallucinated non-whitelisted tool and tells the model', async () => {
@@ -1956,5 +1965,288 @@ describe('ByokOrchestrator: images (Phase 6)', () => {
       ])
     );
     expect(getByokImage(image.id)).not.toBe(null);
+  });
+});
+
+describe('ByokOrchestrator: prompt-cache stability (Phase 14.1)', () => {
+  // The notes loader is spied on (the spec environment has no DOM): the
+  // spy returns fresh notes from the second call on, which a non-frozen
+  // prompt would pick up (the exact cache-buster D14-1 freezes).
+  let notesLoader: any;
+  beforeEach(() => {
+    mockSendByokChatCompletion.mockReset();
+    (createByokCancellation: any).mockImplementation(() => ({
+      token: { __fakeCancelToken: true },
+      cancel: mockFn(jest.fn()),
+    }));
+    clearByokModels();
+    notesLoader = mockFn(jest.fn(async () => null));
+    jest
+      .spyOn(ByokProjectNotesModule, 'loadByokProjectNotes')
+      // $FlowFixMe[cannot-write]
+      .mockImplementation(identifier => notesLoader(identifier));
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('reuses the system message byte-identically across rounds, including after update_project_notes', async () => {
+    // Round 1: the model updates the project notes (which really persist
+    // mid-chat). Round 2: another tool call. Round 3: the final answer.
+    mockSendByokChatCompletion
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [
+            makeToolCall(
+              'call-1',
+              'update_project_notes',
+              '{"conventions":"Pixel-art tiles only"}'
+            ),
+          ],
+        })
+      )
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [makeToolCall('call-2', 'describe_instances', '{}')],
+        })
+      )
+      .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+    // The loader + executor together simulate what the real
+    // update_project_notes handler causes: round 1 composes from empty
+    // notes, the tool call persists them mid-chat, and the storage would
+    // answer with fresh values from the next prompt build on.
+    let notesArrived = false;
+    notesLoader.mockImplementation(async () =>
+      notesArrived
+        ? {
+            conventions: 'Pixel-art tiles only',
+            inProgress: '',
+            decisions: '',
+            updatedAt: '2026-09-27T00:00:00.000Z',
+          }
+        : null
+    );
+    const executeFunctionCalls = mockFn(
+      jest.fn(async (functionCalls: Array<any>) => {
+        for (const functionCall of functionCalls) {
+          if (functionCall.function.name === 'update_project_notes') {
+            notesArrived = true;
+          }
+        }
+        return {
+          results: functionCalls.map((functionCall: any) => ({
+            status: 'finished',
+            call_id: functionCall.call_id,
+            success: true,
+            output: { message: 'done' },
+          })),
+          createdSceneNames: [],
+          createdProject: null,
+        };
+      })
+    );
+    const { orchestrator, aiRequest } = makeOrchestrator({
+      executeFunctionCalls,
+      getProjectNotesIdentifier: () => 'spec-freeze',
+    });
+
+    await orchestrator.startNewChat('Note it down and inspect the scene');
+
+    expect(aiRequest.status).toBe('ready');
+    expect(mockSendByokChatCompletion).toHaveBeenCalledTimes(3);
+    const modelCalls = mockSendByokChatCompletion.mock.calls.map(
+      call => call[0].options
+    );
+    // The system message is byte-identical across all three rounds — the
+    // mid-chat note write must NOT re-compose it (D14-1).
+    const systemContents = modelCalls.map(options => options.messages[0]);
+    expect(
+      systemContents.every(
+        message =>
+          message.role === 'system' &&
+          message.content === systemContents[0].content
+      )
+    ).toBe(true);
+    // The frozen prompt was composed BEFORE the note existed: the fresh
+    // notes never leaked into it (staleness accepted until chat end).
+    expect(systemContents[0].content).not.toContain('Pixel-art tiles only');
+    // The notes loader really ran (round one composed the prompt from it).
+    expect(notesLoader).toHaveBeenCalled();
+    // The tools array is identical across rounds too (fixed order, fixed
+    // schemas — the other prefix-cache-stable block of the request).
+    const toolsJson = modelCalls.map(options => JSON.stringify(options.tools));
+    expect(toolsJson.every(json => json === toolsJson[0])).toBe(true);
+  });
+
+  it('invalidates the system snapshot exactly once when the project state flips mid-chat', async () => {
+    let projectIsOpen = false;
+    mockSendByokChatCompletion
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [makeToolCall('call-1', 'describe_instances', '{}')],
+        })
+      )
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [makeToolCall('call-2', 'describe_instances', '{}')],
+        })
+      )
+      .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+    // The project appears between round 1 and round 2 (the way
+    // initialize_project or a user opening one does).
+    const executeFunctionCalls = mockFn(
+      jest.fn(async (functionCalls: Array<any>) => {
+        projectIsOpen = true;
+        return {
+          results: functionCalls.map((functionCall: any) => ({
+            status: 'finished',
+            call_id: functionCall.call_id,
+            success: true,
+            output: { message: 'done' },
+          })),
+          createdSceneNames: [],
+          createdProject: null,
+        };
+      })
+    );
+    const { orchestrator, aiRequest } = makeOrchestrator({
+      executeFunctionCalls,
+      hasOpenedProject: () => projectIsOpen,
+      getProjectUserContent: async () =>
+        projectIsOpen ? '{"scenes":["Scene"]}' : null,
+    });
+
+    await orchestrator.startNewChat('Inspect twice');
+
+    expect(aiRequest.status).toBe('ready');
+    expect(mockSendByokChatCompletion).toHaveBeenCalledTimes(3);
+    const modelCalls = mockSendByokChatCompletion.mock.calls.map(
+      call => call[0].options
+    );
+    const systemContents = modelCalls.map(options => options.messages[0]);
+    // Round 1 (no project) vs rounds 2–3 (project open): ONE invalidation —
+    // the prompt is re-composed on the flip and then frozen again.
+    expect(systemContents[1].content).not.toBe(systemContents[0].content);
+    expect(systemContents[2].content).toBe(systemContents[1].content);
+    // The advertised tools follow the same state: initialize_project is
+    // offered only while no project exists, then drops out — and stays
+    // byte-identical within each state.
+    const round1Tools = modelCalls[0].tools.map(
+      (tool: any) => tool.function.name
+    );
+    const round2Tools = modelCalls[1].tools.map(
+      (tool: any) => tool.function.name
+    );
+    expect(round1Tools).toContain('initialize_project');
+    expect(round2Tools).not.toContain('initialize_project');
+    expect(JSON.stringify(modelCalls[2].tools)).toBe(
+      JSON.stringify(modelCalls[1].tools)
+    );
+  });
+
+  it('keeps the transcript replay append-only across EDITING rounds: the refreshed snapshot only ever changes the trailing message (owner order 2026-09-27)', async () => {
+    // A 3-round turn where EVERY round edits the project, so the Phase
+    // 9.7 per-round refresh fires between rounds — the exact case that
+    // used to rewrite the last user message mid-request and re-bust the
+    // provider prefix cache on every editing round.
+    let snapshotVersion = 1;
+    const getProjectUserContent = mockFn(
+      jest.fn(async () => `{"version":${snapshotVersion}}`)
+    );
+    const executeFunctionCalls = mockFn(
+      jest.fn(async (functionCalls: Array<any>) => {
+        snapshotVersion++;
+        return {
+          results: functionCalls.map((functionCall: any) => ({
+            status: 'finished',
+            call_id: functionCall.call_id,
+            success: true,
+            output: { message: 'done' },
+            didModifyProject: true,
+          })),
+          createdSceneNames: [],
+          createdProject: null,
+        };
+      })
+    );
+    mockSendByokChatCompletion
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [makeToolCall('call-1', 'create_scene', '{}')],
+        })
+      )
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [makeToolCall('call-2', 'create_scene', '{}')],
+        })
+      )
+      // Round 3 claims done WITHOUT verifying after edits — the Phase 8
+      // completion gate nudges once (a real build turn's shape), which
+      // appends a user-role nudge message and runs one more round.
+      .mockResolvedValueOnce(makeResponse({ text: 'Done.' }))
+      .mockResolvedValueOnce(makeResponse({ text: 'Done, verified.' }));
+    const { orchestrator, aiRequest } = makeOrchestrator({
+      executeFunctionCalls,
+      getProjectUserContent,
+    });
+
+    await orchestrator.startNewChat('Build the game');
+
+    expect(aiRequest.status).toBe('ready');
+    expect(mockSendByokChatCompletion).toHaveBeenCalledTimes(4);
+    const requests = mockSendByokChatCompletion.mock.calls.map(
+      call => call[0].options.messages
+    );
+
+    // The snapshot is ALWAYS the request's own last message, carrying the
+    // freshest content (refreshed after each editing round; the nudge
+    // round executes no tools, so it reuses the last refresh).
+    expect(requests[0][requests[0].length - 1].content).toContain(
+      '"version":1'
+    );
+    expect(requests[1][requests[1].length - 1].content).toContain(
+      '"version":2'
+    );
+    expect(requests[2][requests[2].length - 1].content).toContain(
+      '"version":3'
+    );
+    expect(requests[3][requests[3].length - 1].content).toContain(
+      '"version":3'
+    );
+    for (const messages of requests) {
+      const last = messages[messages.length - 1];
+      expect(last.role).toBe('user');
+      expect(last.content).toContain(
+        '[Current simplified project snapshot, as JSON'
+      );
+    }
+
+    // The user's message is never rewritten (the old fold behavior did
+    // exactly that): identical bytes across all rounds, snapshot-free.
+    const userMessages = requests.map(messages =>
+      messages.find(
+        (message: any) =>
+          message.role === 'user' &&
+          typeof message.content === 'string' &&
+          message.content.includes('Build the game')
+      )
+    );
+    expect(userMessages).toHaveLength(4);
+    for (const userMessage of userMessages) {
+      expect(userMessage.content).toBe(userMessages[0].content);
+      expect(userMessage.content).not.toContain(
+        'Current simplified project snapshot'
+      );
+    }
+
+    // The cache contract itself: strip the trailing snapshot off each
+    // request, and every earlier request is a byte-identical PREFIX of the
+    // next one — the provider can cache everything up to the tail, across
+    // editing rounds AND the completion-gate nudge alike.
+    const stripped = requests.map(messages => messages.slice(0, -1));
+    expect(stripped[1].slice(0, stripped[0].length)).toEqual(stripped[0]);
+    expect(stripped[2].slice(0, stripped[1].length)).toEqual(stripped[1]);
+    expect(stripped[3].slice(0, stripped[2].length)).toEqual(stripped[2]);
   });
 });

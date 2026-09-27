@@ -2,6 +2,11 @@
 import { getByokEventScriptExamples } from '../ByokEventScriptExamples';
 import { getByokSkills } from '../ByokSkills';
 import { listByokBundledDocPages, readBundledByokDocPage } from '../ByokDocs';
+import {
+  listByokMinifiedDocCategories,
+  getByokMinifiedDocPagesOfCategory,
+  getByokMinifiedDocPages,
+} from '../ByokMinifiedDocs';
 import { getByokEngineReferenceEntries } from '../ByokEngineReference';
 import { type ByokRagChunk } from './ByokRagTypes';
 
@@ -93,7 +98,7 @@ export const chunkByokRagText = (
 /** Build the chunks of one document under a stable id prefix. */
 const buildChunksForDocument = (
   source: string,
-  documentIndex: number,
+  documentIndex: number | string,
   title: string,
   tags: Array<string>,
   text: string
@@ -174,6 +179,77 @@ export const buildByokRagExampleChunks = (): Array<ByokRagChunk> =>
   }));
 
 /**
+ * Pack whole LINES into chunks under the target size (one page per line
+ * stays one line — the sentence-splitting chunker would mangle a listing).
+ * Pure and deterministic; used by the category-map grade.
+ */
+export const packByokRagLines = (
+  lines: Array<string>,
+  targetTokens: number = BYOK_RAG_CHUNK_TARGET_TOKENS
+): Array<string> => {
+  const targetChars = targetTokens * 4;
+  const packed: Array<string> = [];
+  let current: Array<string> = [];
+  let currentChars = 0;
+  for (const line of lines) {
+    if (current.length > 0 && currentChars + line.length + 1 > targetChars) {
+      packed.push(current.join('\n'));
+      current = [];
+      currentChars = 0;
+    }
+    current.push(line);
+    currentChars += line.length + 1;
+  }
+  if (current.length > 0) packed.push(current.join('\n'));
+  return packed;
+};
+
+/**
+ * The minified-docs category maps (Phase 14.2, D14-2): one document per
+ * top-level wiki category, one line per page (`path — title — summary`) —
+ * the browsable index of the whole wiki, no monolithic file. A big
+ * category's map is line-packed into several chunks (each self-describing).
+ */
+export const buildByokRagMinifiedDocsMapChunks = (): Array<ByokRagChunk> =>
+  listByokMinifiedDocCategories().flatMap(category => {
+    const pages = getByokMinifiedDocPagesOfCategory(category);
+    if (pages.length === 0) return [];
+    const lines = pages.map(
+      page => `${page.path} — ${page.title} — ${page.summary}`
+    );
+    const header = `Minified docs category map "${category}" (${
+      pages.length
+    } pages; each line: path — title — summary).`;
+    return packByokRagLines(lines).map((packedLines, chunkIndex) => ({
+      id: `docs-min-map:${category}:${chunkIndex}`,
+      source: 'docs-min-map',
+      title: `Minified docs map: ${category}`,
+      tags: ['docs-min', 'map', category],
+      text: `${header}\n${packedLines}`,
+    }));
+  });
+
+/**
+ * The minified wiki pages themselves (D14-2): the summary + the minified
+ * body, chunked by the standard chunker, every chunk carrying the page
+ * header (title + path) and the `read_doc_page` pointer for full depth.
+ */
+export const buildByokRagMinifiedDocsPageChunks = (): Array<ByokRagChunk> =>
+  getByokMinifiedDocPages().flatMap(page =>
+    chunkByokRagText(page.body).map((chunkText, chunkIndex) => ({
+      id: `docs-min:${page.path}:${chunkIndex}`,
+      source: 'docs-min',
+      title: page.title,
+      tags: ['docs-min', page.category, ...page.tags],
+      text: [
+        `${page.title} (${page.path}) — ${page.summary}`,
+        chunkText,
+        `Full page: read_doc_page('${page.path}').`,
+      ].join('\n\n'),
+    }))
+  );
+
+/**
  * The shape of the injected reader for the opt-in local docs folder
  * (D13-1): lists the .md files of a folder and reads one. The desktop
  * implementation walks the folder through the RAG file backend; tests
@@ -223,8 +299,8 @@ export const buildByokRagUserDocsChunks = async (
 
 /**
  * The whole corpus, in a stable order: engine reference, docs, examples,
- * skills, then the opt-in user docs. Same inputs → same chunks (the index
- * manifest hashes them).
+ * skills, the minified-wiki map/page grades (14.2), then the opt-in user
+ * docs. Same inputs → same chunks (the index manifest hashes them).
  */
 export const buildByokRagCorpus = async (options: {|
   docsFolderPath?: string,
@@ -234,6 +310,8 @@ export const buildByokRagCorpus = async (options: {|
   ...buildByokRagDocsChunks(),
   ...buildByokRagExampleChunks(),
   ...(await buildByokRagSkillChunks()),
+  ...buildByokRagMinifiedDocsMapChunks(),
+  ...buildByokRagMinifiedDocsPageChunks(),
   ...(options.docsFolderPath && options.docsFolderReader
     ? await buildByokRagUserDocsChunks(
         options.docsFolderPath,

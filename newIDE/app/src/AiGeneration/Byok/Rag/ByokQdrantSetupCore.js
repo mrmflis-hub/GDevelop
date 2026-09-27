@@ -222,6 +222,99 @@ const runByokQdrantSetup = async options => {
   }
 };
 
+/**
+ * Restore a prebuilt collection snapshot into a healthy Qdrant (Phase
+ * 14.4, D14-3): the Qdrant branch of the prebuilt bundle. Qdrant pulls the
+ * official snapshot itself from the release URL (its native
+ * snapshots/upload API accepts a `url` body — no multipart, the
+ * megabytes never pass through the app), the existing collection is
+ * replaced, and the point count + vector dimensions are verified before
+ * the caller flips the backend. Pure state machine over injected deps
+ * (fake HTTP in the tests, loopback http in the Electron main).
+ */
+const runByokQdrantSnapshotRestore = async options => {
+  const report = options.onStage || (() => {});
+  const collection = options.collection || 'gdevelop-byok';
+  const verifyTimeoutMs = options.verifyTimeoutMs || 120000;
+  const pollIntervalMs = options.pollIntervalMs || 1000;
+
+  report('health-check');
+  if (!(await options.deps.isHealthy(options.baseUrl))) {
+    return {
+      ok: false,
+      stage: 'health-check',
+      error: 'Qdrant is not running — set it up first, then restore.',
+    };
+  }
+
+  // A snapshot restore must land on a clean slate: an existing collection
+  // with a different config makes the upload fail halfway.
+  report('dropping-collection');
+  try {
+    await options.deps.requestJson('DELETE', `/collections/${collection}`);
+  } catch (error) {
+    // A missing collection is the expected "nothing to drop".
+  }
+
+  report('uploading');
+  try {
+    await options.deps.requestJson(
+      'POST',
+      `/collections/${collection}/snapshots/upload?wait=true`,
+      { url: options.snapshotUrl }
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      stage: 'uploading',
+      error: `The snapshot restore failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  report('verifying');
+  const startedAt = Date.now();
+  let pointsCount = 0;
+  let vectorSize = 0;
+  while (Date.now() - startedAt < verifyTimeoutMs) {
+    // eslint-disable-next-line no-await-in-loop
+    const info = await options.deps
+      .requestJson('GET', `/collections/${collection}`)
+      .catch(() => null);
+    const result = info && info.result ? info.result : null;
+    pointsCount =
+      result && result.points_count ? Number(result.points_count) : 0;
+    const vectors =
+      result && result.config && result.config.params
+        ? result.config.params.vectors
+        : null;
+    vectorSize = vectors && vectors.size ? Number(vectors.size) : 0;
+    if (pointsCount > 0) break;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+  }
+  if (pointsCount === 0) {
+    return {
+      ok: false,
+      stage: 'verifying',
+      error: 'The restored collection is empty — the snapshot did not land.',
+    };
+  }
+  if (options.expectedDimensions && vectorSize !== options.expectedDimensions) {
+    return {
+      ok: false,
+      stage: 'verifying',
+      error: `The restored collection has ${vectorSize}-dim vectors, expected ${
+        options.expectedDimensions
+      } — pick the bundle of your embedder.`,
+    };
+  }
+
+  report('ready');
+  return { ok: true, baseUrl: options.baseUrl, collection, pointsCount };
+};
+
 module.exports = {
   BYOK_QDRANT_DOWNLOAD_URL_BASE,
   BYOK_QDRANT_ENDPOINT_FILE_NAME,
@@ -230,5 +323,6 @@ module.exports = {
   getByokQdrantReleaseInfo,
   makeByokQdrantPaths,
   runByokQdrantSetup,
+  runByokQdrantSnapshotRestore,
   waitForByokQdrantHealth,
 };

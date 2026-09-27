@@ -1,5 +1,6 @@
 // @flow
 import { t, Trans } from '@lingui/macro';
+
 import * as React from 'react';
 
 import PreferencesContext from '../../../MainFrame/Preferences/PreferencesContext';
@@ -19,13 +20,22 @@ import {
   type ByokRagSettings,
 } from './ByokRagTypes';
 import {
+  makeByokRagBundleReleasesApiUrl,
+  parseByokRagBundleReleaseInfo,
+  type ByokRagBundleReleaseInfo,
+} from './ByokRagBundle';
+import {
   rebuildByokRagIndex,
   readByokRagIndexStatus,
+  importPrebuiltByokRagIndex,
   type ByokRagBuildProgress,
 } from './ByokRagBuildService';
 import {
   invokeByokQdrantSetup,
   invokeByokQdrantStatus,
+  invokeByokQdrantSnapshotRestore,
+  invokeByokRagBundleInfo,
+  invokeByokRagBundleDownload,
   type ByokQdrantStatus,
 } from './ByokRagFileBackends';
 import { openFilePicker } from '../../../Utils/FileSystem';
@@ -60,6 +70,22 @@ const ByokRagSettingsTab = (): React.Node => {
   const [qdrantMessage, setQdrantMessage] = React.useState<React.Node | null>(
     null
   );
+  // The prebuilt-bundle card (Phase 14.4, D14-3/D14-7(a)): release lookup
+  // on mount, one consent covering index + query embedder, import through
+  // the tested service. Opt-in only — nothing downloads by itself.
+  const [
+    bundleRelease,
+    setBundleRelease,
+  ] = React.useState<?ByokRagBundleReleaseInfo>(null);
+  const [bundleUnavailable, setBundleUnavailable] = React.useState<boolean>(
+    false
+  );
+  const [isImportingBundle, setIsImportingBundle] = React.useState<boolean>(
+    false
+  );
+  const [bundleMessage, setBundleMessage] = React.useState<React.Node | null>(
+    null
+  );
 
   const updateRagSetting = (partial: Partial<ByokRagSettings>) => {
     setMultipleValues({ byokRag: { ...ragSettings, ...partial } });
@@ -73,6 +99,113 @@ const ByokRagSettingsTab = (): React.Node => {
     },
     [ragSettings]
   );
+
+  // The prebuilt-release lookup runs once per mount (the same ref guard):
+  // "update available" is SURFACED, never auto-downloaded (D14-3).
+  const didLookupBundleRef = React.useRef<boolean>(false);
+  React.useEffect(
+    () => {
+      if (didLookupBundleRef.current) return;
+      didLookupBundleRef.current = true;
+      void (async () => {
+        const outcome = await invokeByokRagBundleInfo(
+          makeByokRagBundleReleasesApiUrl()
+        );
+        if (!outcome.ok) {
+          setBundleUnavailable(true);
+          return;
+        }
+        const release = parseByokRagBundleReleaseInfo(outcome.releases);
+        if (!release || !release.indexAsset) {
+          setBundleUnavailable(true);
+          return;
+        }
+        setBundleRelease(release);
+      })();
+    },
+    [refreshStatus]
+  );
+
+  /**
+   * The version state of the local index against the newest release: the
+   * asset FILE NAME carries the corpus hash + embedder id the bundle was
+   * built with (the builder's naming contract), so the comparison is
+   * offline and exact.
+   */
+  const getBundleVersionState = (): 'up-to-date' | 'update-available' => {
+    if (!bundleRelease || !bundleRelease.indexAsset || !indexStatus) {
+      return 'update-available';
+    }
+    const isCurrent =
+      bundleRelease.indexAsset.name.includes(indexStatus.corpusHash || '/') &&
+      bundleRelease.indexAsset.name.includes(
+        indexStatus.embedderId.replace(/[^a-zA-Z0-9._-]/g, '-')
+      );
+    return isCurrent ? 'up-to-date' : 'update-available';
+  };
+
+  /** Download + import the prebuilt index (one consent, D14-7(a)). */
+  const onDownloadBundle = async () => {
+    const indexAsset =
+      bundleRelease && bundleRelease.indexAsset
+        ? bundleRelease.indexAsset
+        : null;
+    if (!indexAsset) return;
+    const embedder = BYOK_RAG_EMBEDDERS.find(
+      candidate => candidate.id === ragSettings.embedderId
+    );
+    const indexMegabytes = Math.max(
+      1,
+      Math.round(indexAsset.sizeBytes / (1024 * 1024))
+    );
+    const embedderMegabytes = embedder
+      ? embedder.approximateDownloadMegabytes
+      : 25;
+    const accepted = await showConfirmation({
+      title: t`Download the prebuilt index?`,
+      message: t`This downloads the ready-made search index (~${indexMegabytes} MB) instead of building it locally (~30 minutes). The query-side embedding model (~${embedderMegabytes} MB) downloads with it — both stay on your machine.`,
+      confirmButtonLabel: t`Download and install`,
+      dismissButtonLabel: t`Cancel`,
+    });
+    if (!accepted) return;
+
+    setIsImportingBundle(true);
+    setBundleMessage(null);
+    const download = await invokeByokRagBundleDownload(indexAsset.downloadUrl);
+    if (!download.ok) {
+      setIsImportingBundle(false);
+      setBundleMessage(download.error);
+      return;
+    }
+    const outcome = await importPrebuiltByokRagIndex({
+      settings: ragSettings,
+      rawBundle: download.bundle,
+    });
+    setIsImportingBundle(false);
+    if (outcome.ok) {
+      setBundleMessage(
+        outcome.embedderReady ? (
+          <Trans>
+            Prebuilt index installed ({outcome.chunkCount} chunks) — semantic
+            search is ready.
+          </Trans>
+        ) : (
+          <Trans>
+            Prebuilt index installed ({outcome.chunkCount} chunks), but the
+            embedding model could not load — search runs exact-text until you
+            rebuild.
+          </Trans>
+        )
+      );
+      await refreshStatus();
+    } else {
+      // D14-3: a mismatch is refused, never silently served — the local
+      // rebuild is the standing alternative (the button below).
+      setBundleMessage(
+        `${outcome.error} You can always build the index locally instead.`
+      );
+    }
+  };
 
   // The status refresh runs once per mount (a ref guards it): the settings
   // object is re-created every render, and the status objects come back
@@ -167,6 +300,59 @@ const ByokRagSettingsTab = (): React.Node => {
         <Trans>
           {(outcome.error || 'The setup failed.') +
             ' The built-in in-process index keeps working — you can retry later.'}
+        </Trans>
+      );
+    }
+    setQdrantStatus(await invokeByokQdrantStatus());
+  };
+
+  /** Restore the prebuilt collection snapshot into the managed Qdrant. */
+  const onRestoreSnapshot = async () => {
+    const snapshotAsset =
+      bundleRelease && bundleRelease.snapshotAsset
+        ? bundleRelease.snapshotAsset
+        : null;
+    if (!snapshotAsset) return;
+    const embedder = BYOK_RAG_EMBEDDERS.find(
+      candidate => candidate.id === ragSettings.embedderId
+    );
+    const snapshotMegabytes = Math.max(
+      1,
+      Math.round(snapshotAsset.sizeBytes / (1024 * 1024))
+    );
+    const accepted = await showConfirmation({
+      title: t`Restore the prebuilt Qdrant snapshot?`,
+      message: t`Qdrant downloads the ready-made collection (~${snapshotMegabytes} MB) from the fork's release and replaces the local one. The Qdrant binary itself is downloaded first when it is not installed yet.`,
+      confirmButtonLabel: t`Restore snapshot`,
+      dismissButtonLabel: t`Cancel`,
+    });
+    if (!accepted) return;
+
+    setQdrantBusy(true);
+    setQdrantMessage(null);
+    const outcome = await invokeByokQdrantSnapshotRestore({
+      snapshotUrl: snapshotAsset.downloadUrl,
+      expectedDimensions: embedder ? embedder.dimensions : 384,
+    });
+    setQdrantBusy(false);
+    if (outcome.ok) {
+      setQdrantMessage(
+        <Trans>
+          Prebuilt snapshot restored ({outcome.pointsCount} points) — the
+          permanent index is ready.
+        </Trans>
+      );
+      if (outcome.baseUrl) {
+        updateRagSetting({
+          backend: 'qdrant',
+          qdrantBaseUrl: outcome.baseUrl,
+        });
+      }
+    } else {
+      setQdrantMessage(
+        <Trans>
+          {(outcome.error || 'The snapshot restore failed.') +
+            ' The built-in in-process index keeps working.'}
         </Trans>
       );
     }
@@ -286,6 +472,63 @@ const ByokRagSettingsTab = (): React.Node => {
         </Line>
       )}
       <Text size="block-title">
+        <Trans>Prebuilt index (skip the local build)</Trans>
+      </Text>
+      <Text>
+        <Trans>
+          Download a ready-made search index from the fork's releases instead of
+          building it locally. Always optional — the local build stays available
+          below, and nothing downloads without your consent.
+        </Trans>
+      </Text>
+      <Line noMargin>
+        <Text size="body2" color="secondary">
+          {bundleUnavailable
+            ? 'Not available right now (offline, web build, or no release published) — build locally instead.'
+            : bundleRelease && bundleRelease.indexAsset
+            ? `${bundleRelease.tag} · ${
+                bundleRelease.indexAsset.name
+              } · ${Math.max(
+                1,
+                Math.round(bundleRelease.indexAsset.sizeBytes / (1024 * 1024))
+              )} MB · ${
+                indexStatus
+                  ? getBundleVersionState() === 'up-to-date'
+                    ? 'Your local index is up to date.'
+                    : 'Update available (your local index was built from an older corpus).'
+                  : 'No local index yet — this replaces the ~30-minute build.'
+              }`
+            : 'Checking the releases…'}
+        </Text>
+      </Line>
+      <Line noMargin>
+        <RaisedButton
+          label={
+            isImportingBundle ? (
+              <Trans>Downloading…</Trans>
+            ) : (
+              <Trans>Download prebuilt index</Trans>
+            )
+          }
+          onClick={onDownloadBundle}
+          disabled={
+            isImportingBundle || !bundleRelease || !bundleRelease.indexAsset
+          }
+        />
+        <FlatButton
+          label={<Trans>Build locally instead</Trans>}
+          onClick={onRebuild}
+          disabled={isBuilding || isImportingBundle}
+        />
+      </Line>
+      {bundleMessage && (
+        <Line noMargin>
+          <Text size="body2" color="secondary">
+            {bundleMessage}
+          </Text>
+        </Line>
+      )}
+      <Text size="block-title">
         <Trans>Extra documentation folder (optional)</Trans>
       </Text>
       <TextField
@@ -335,6 +578,13 @@ const ByokRagSettingsTab = (): React.Node => {
           onClick={onSetupQdrant}
           disabled={qdrantBusy}
         />
+        {bundleRelease && bundleRelease.snapshotAsset && (
+          <FlatButton
+            label={<Trans>Restore prebuilt snapshot</Trans>}
+            onClick={onRestoreSnapshot}
+            disabled={qdrantBusy}
+          />
+        )}
       </Line>
       {qdrantMessage && (
         <Line noMargin>

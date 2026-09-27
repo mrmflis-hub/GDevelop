@@ -3525,3 +3525,315 @@ one-random-untouched-suite flake per run (`ReadGameProjectJson.spec.js`
 twice, `AddBehavior.spec.js` once — both upstream `EditorFunctions`
 suites this checkout never modified, both green when run standalone;
 my new spec passes in the full runs and standalone).
+
+---
+
+## 2026-09-27 — Phase 14 implemented (steps 14.1, 14.2, 14.4, 14.5; 14.3 deferred by the owner)
+
+**Date.** 2026-09-27.
+
+**Description of actions.**
+The owner ordered steps 14.1, 14.2, 14.4 and 14.5 in chat ("we will move on
+without finetuned model" defers 14.3), directed the doc minification at
+`DOCs\` with parallel agents (max 5 per wave — 7 waves of 5 processed all
+601 pages), and the prebuilt-bundle rebuild ("there is already built script
+that will need to be re-run once docs are minified").
+
+*14.1 — prompt-cache stability (D14-1).* `ByokOrchestrator.js` now composes
+the system prompt ONCE per chat (`systemPromptSnapshot`) and reuses it
+byte-identical; the ONLY invalidation is a `hasOpenedProject()` flip (which
+also re-advertises the tool set the prompt mirrors) — notes writes, skill
+churn and settings edits stay frozen until chat end. Two new specs drive
+3-round chats: one with a real mid-chat `update_project_notes` (asserting
+byte-equal system messages + byte-equal `tools` arrays across rounds and
+that fresh notes never leak into the frozen prompt), one flipping the
+project state mid-chat (exactly one recomposition; initialize_project
+drops out of the tools exactly once).
+
+*14.2 — minified docs layer (D14-2).* New pipeline
+`scripts/build-byok-minified-docs.js` (plan / prompt / assemble / validate):
+walks `DOCs/docs/gdevelop5` (601 pages, 0 stubs skipped), bin-packs pages
+into 35 balanced batches, and assembles the agents' per-page JSON outputs
+into the committed artifact `Byok/docs/gdevelop-docs/MinifiedDocs.generated.js`
+(2.3 MB, 601 entries, overall compression **0.50** — dead center of the
+40–60 % band; 23 per-page ratio warnings, all table/prose-carveout pages).
+Validation: exact path matching against the plan, required fields, the
+deterministic engine-token sanity pass (backticked `Name(` spans vs the
+engine reference; allowlist of 4 documented false positives: MovementX,
+MovementY, Profile, SecondsToHHMMSS000), tag whitelist (folder facets +
+2d/3d heuristic winning over LLM suggestions), band enforcement, and a
+prettier pass so the artifact passes check-format. App side:
+`ByokMinifiedDocs.js` (untrusted-shape filtering + accessors), two corpus
+grades in `ByokRagCorpus` — `docs-min-map` (one per-category listing,
+line-packed so a listing is never sentence-mangled) and `docs-min` (page
+chunks, each carrying `Full page: read_doc_page('<path>')`) — the
+retrieval-map hint line in `ByokKnowledgeSections.js`, and the prompt bump
+to **byok-v10**. The lexical-offline AC is spec-proven: with RAG off,
+`search_knowledge(tags: ["map"])` browses the maps and a content search
+returns the page's minified chunk with the depth pointer.
+
+*The regression the wiki forced (fixed in-session).* Adding ~1,970
+docs-min chunks (corpus 2,052 → **4,026**) dropped the 24-query eval gate
+to **17 %**: uniform-score exact hits from wiki prose crowded out the
+vector half, and long prose chunks outscored the small curated entries.
+`ByokRagSearch.js` now scores lexical hits positionally (title 3 > tags 2
+> text 1 per term) and re-ranks BOTH halves by per-source weights
+(`BYOK_RAG_SOURCE_WEIGHTS`: engine-reference/example/skill 1.25, docs
+1.1, docs-min 0.8, maps 0.7) on one merged scale with a wider candidate
+pool. Gate restored and re-measured via the new runner (below).
+
+*14.4 — prebuilt RAG bundle (D14-3, D14-7 default (a): index-only JSON +
+the existing consented embedder download, no new deps).* New
+`Rag/ByokRagBundle.js`: envelope validation (kind, formatVersion,
+embedder-in-catalog + dimensions, integrity-hash shape) and release
+distillation from the GitHub API shape; `checkByokRagBundleCompatibility`
+refuses a different embedder ("switch the embedder… or rebuild locally")
+and a stale corpus ("older than this app version — rebuild locally") —
+never silently served. `ByokRagStorage.importByokRagBundleIntoStore`
+(defense-in-depth re-validation, nothing written on refusal, round-trips
+through both the in-process and Qdrant stores).
+`ByokRagBuildService.importPrebuiltByokRagIndex` (compat check against
+the live corpus hash, store, live runtime, query-side embedder load with
+an honest lexical degrade). Electron: `byok-rag-bundle-info` +
+`byok-rag-bundle-download` in `ByokRagFiles.js` (sha256 verified in main
+with node crypto over the canonical index re-stringification; 200 MB
+cap; redirect-following https), `byok-qdrant-restore-snapshot` in
+`ByokQdrant.js` over the new pure `runByokQdrantSnapshotRestore` core in
+`ByokQdrantSetupCore.js` (health → drop collection → Qdrant-native
+snapshot upload by URL → poll point count + verify vector dimensions).
+RAG tab: the **Prebuilt index card** — release lookup on mount, the
+version states (up-to-date / update-available via the asset-name corpus
+hash, offline → disabled download + "build locally instead" always
+visible), ONE consent naming both downloads with sizes, the import
+result/refusal messages, and the Qdrant **Restore prebuilt snapshot**
+button (own consent incl. the Qdrant-binary note) appearing only when the
+release carries the snapshot asset.
+
+*14.5 — verification & eval round.* New
+`scripts/byok-embedder/eval-embedder.js` — the embedder-agnostic runner
+of the 14.3 file list (hashing CI-parity mode, real transformers.js
+models pinned to q8, `--queries` for the owner's future holdout set) —
+and the eval set extracted to `Byok/evals/byok-rag-eval-queries.json`
+(shared with the Jest gate, one source of truth). Measured on the full
+4,026-chunk corpus: **hashing 19/24 (79 %)**, **stock MiniLM 20/24
+(83 %)** — both above the 70 % gate; finetuned N/A (owner-deferred).
+Prompt budget re-measured with the hint line: **11,842 tokens worst-case**
+(prompt 5,900 + tools 5,942, 27 advertised tools, 2 KB custom
+instructions) — under the 15k hard cap, ~+60 vs Phase 13. The **v2
+artifact** was rebuilt and verified:
+`newIDE/app/build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-571d1b30.json`
+(4,026 chunks — engine-reference 1,962, docs 53, example 11, skill 26,
+docs-min 1,974 — corpus `571d1b30`; reload + 8 spot-check queries
+on-topic, incl. wiki queries landing on docs-min pages and engine queries
+still landing on engine-reference entries). The v1 artifact (`7b8a6b0`)
+is superseded — the owner uploads v2 via Task 17.2.
+
+**Bugs found.**
+- [fixed] The docs-min corpus crushed the retrieval eval gate to 17 %
+  (`ByokRagSearch.spec.js` eval, 2026-09-27): uniform-score exact hits
+  from wiki prose starved the vector half, and hashing-vector dilution
+  favored long prose over the curated chunks. Fixed in-session with
+  positional lexical scoring + per-source weights (measured above); the
+  fix is the reason the shipped search now ranks curated title hits above
+  wiki prose hits on both the lexical and vector paths.
+- [fixed] The working tree carried an accidental local revert of
+  `AGENTS.md` (HEAD `28709031a4` contained the Phase-14 status block; the
+  tree had deleted it and duplicated a `*Last updated*` line inside §8).
+  Restored and updated this session; root cause unknown (likely a
+  mis-ordered write in a previous session's end-of-session edit).
+- [fixed] `scripts/build-byok-minified-docs.js` initially emitted the
+  artifact in a format prettier rejects (double quotes / same-line long
+  values) and used `parser: 'babel'` which this repo's prettier 1.15.3
+  cannot resolve — the emitter now formats through the project's own
+  prettier with the .prettierrc options; `npm run check-format` is clean.
+- [logged] The full-suite run's documented one-random-untouched-suite
+  flake appeared once (225/226 suites, 0 failing tests, exit 0 via the
+  tail pipe; the failing suite had no test failures — the known pattern
+  from memory); a full re-run is in progress at session end.
+
+**Issues found.**
+- Two minification agents normalized upstream PROSE typos against the
+  verbatim-keeping contract (batch-022 "Triggred Once" -> "Triggered Once";
+  batch-033 "Returns a Hash a MD5" -> "Returns an MD5 hash"). Identifier
+  typos were kept verbatim everywhere (several agents verified their
+  name preservation programmatically); accepted, filed as [O14-prose-typos].
+- 4 of the 24 eval queries ("timer spawn create objects", "play a sound
+  effect", "physics gravity forces", "expression clamp values") now have
+  relevant-but-different docs-min hits in their top-3 instead of the
+  strict expected source - the gate stays green (79/83 %); this is the
+  D14-2 "displacement decided by eval data" data point, filed as
+  [O14-displacement].
+- 23 per-page compression warnings above 0.9 (all reference-table or stub
+  pages where KEEP content dominates; two tiny stub pages exceed 1.0
+  because the honest summary is longer than the 2-line source). Accepted
+  per the contract's carve-out; listed by the assemble report.
+- The bundle-info/download handlers take their URLs from renderer-side
+  tested constants (single source of truth); the renderer is trusted app
+  code, but the channels do fetch arbitrary URLs passed from it - same
+  trust level as the existing Qdrant/MCP channels.
+- Cache-precision nuance (verified post-session, 2026-09-27): the Phase
+  14 doc's "dynamic content at the tail, where it cannot bust the prefix"
+  holds only for the system-adjacent prefix. The snapshot fold targets the
+  last USER message (ByokOrchestrator.js buildMessagesForModel), which
+  sits mid-request once tool rounds append after it, and the Phase 9.7
+  per-round refresh rewrites it after any editing round - so an
+  edit-heavy turn re-busts the prefix from that message on each edit
+  round. The system prompt + tools block (~11.8k tokens) stays cached
+  (the 14.1 win); read-only turns are fully append-only. Pre-existing
+  designed trade-off (freshness was chosen over cache), recorded here for
+  accuracy; a possible future optimization is a synthetic trailing user
+  message carrying the snapshot.
+- The prompt budget remains above the 8-10k aim (11.8k worst-case) -
+  pre-existing standing item; its levers are already in outofscoped.md.
+
+**Files worked on.**
+Created: newIDE/app/scripts/build-byok-minified-docs.js,
+newIDE/app/scripts/byok-embedder/eval-embedder.js,
+newIDE/app/src/AiGeneration/Byok/ByokMinifiedDocs.js (+ .spec.js),
+newIDE/app/src/AiGeneration/Byok/ByokMinifiedDocsPipeline.spec.js,
+newIDE/app/src/AiGeneration/Byok/ByokRagImport.spec.js,
+newIDE/app/src/AiGeneration/Byok/Rag/ByokRagBundle.js (+ .spec.js),
+newIDE/app/src/AiGeneration/Byok/evals/byok-rag-eval-queries.json,
+newIDE/app/src/AiGeneration/Byok/docs/gdevelop-docs/MinifiedDocs.generated.js
+(committed artifact: 601 pages, 2.3 MB),
+newIDE/app/build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-571d1b30.json
+(gitignored build output; owner-uploaded via Task 17.2).
+Modified: Byok/ByokOrchestrator.js (+ spec), Byok/Knowledge/ByokKnowledgeSections.js,
+Byok/ByokPrompts.js (+ spec), Byok/ByokRagSearch.spec.js,
+Byok/ByokRagCorpus.spec.js, Byok/ByokRagStorage.spec.js,
+Byok/ByokQdrantSetupCore.spec.js, Byok/ByokRagSettingsTab.spec.js,
+Byok/Rag/ByokRagCorpus.js, Byok/Rag/ByokRagSearch.js, Byok/Rag/ByokRagTypes.js,
+Byok/Rag/ByokRagStorage.js, Byok/Rag/ByokRagBuildService.js,
+Byok/Rag/ByokRagFileBackends.js, Byok/Rag/ByokRagSettingsTab.js,
+electron-app/app/ByokRagFiles.js, electron-app/app/ByokQdrant.js,
+AGENTS.md (S2 status + S8 footer repair), REVIEW/usertasks.md,
+REVIEW/outofscoped.md, REVIEW/deferred.md, this file.
+
+**Triage.**
+- outofscoped.md: +2 entries - [O14-displacement] [open] (eval data on
+  docs-min displacing the strict expected sources in 4/24 top-3s; revisit
+  only on a future eval round) and [O14-prose-typos] [open] (decide
+  whether the next minification run pins verbatim-everything or blesses
+  prose fixes).
+- deferred.md: +1 - step 14.3 (embedder finetuning) deferred BY OWNER
+  ORDER 2026-09-27; its embedder-agnostic eval runner shipped in 14.5,
+  the pairs/notebook/catalog-entry/ship-if-better-gate half waits on
+  Tasks 17.1 + 17.4.
+- usertasks.md: Task 17 updated - 17.2 now names the concrete v2 artifact
+  to upload (v1 superseded), 17.3 closed by the owner's agent-waves order
+  (no endpoint tokens spent), 17.5's QA checklist maps 1:1 to the four
+  implemented steps.
+- No other UT.
+
+**Gates.**
+npm run lint: 0 errors 0 warnings. Flow (direct binary): 0 errors.
+npm run check-format: clean (after the emitter's prettier pass).
+Full npm test -- --watchAll=false --maxWorkers=1: 2,488 passed + 1
+pre-existing skip each run; the documented one-random-suite flake hit
+ByokRagCorpus.spec.js at suite level (zero failing tests, passes
+standalone 11/11 - the known memory pattern; a third unfiltered run at
+session end confirmed the same shape). All fifteen Byok suites green
+standalone (191 tests).
+
+**Audit greps (session artifacts).**
+
+    grep -rln "docs-min" src/AiGeneration/Byok --include=*.js (excl. spec/generated)
+      -> ByokMinifiedDocs.js, Knowledge/ByokKnowledgeSections.js, Rag/ByokRagCorpus.js, Rag/ByokRagSearch.js
+    grep -c "systemPromptSnapshot" src/AiGeneration/Byok/ByokOrchestrator.js -> 7
+    grep -rn "byok-rag-bundle-info|byok-rag-bundle-download|byok-qdrant-restore-snapshot" (renderer+electron) -> 6 hits
+    grep -c "runByokQdrantSnapshotRestore" (core + electron) -> 2 + 1
+    grep -n "byok-v10" src/AiGeneration/Byok/ByokPrompts.js -> line 41 export
+    node scripts/build-byok-minified-docs.js validate -> 601/601 pages, ratio 0.50, 0 errors (23 warnings)
+    git status --porcelain -> only the intended new files; no stray .md outside REVIEW
+
+---
+
+## 2026-09-27 (second session) — Cache optimization: the project snapshot rides the request tail
+
+**Date.** 2026-09-27.
+
+**Description of actions.**
+The owner ordered the follow-up to the cache nuance logged by the previous
+session ("caching optimisation is very important since game building single
+phase can be easily 50-100 turns of calls"): stop folding the project
+snapshot into the last user message and give it its own synthetic trailing
+user message, so the transcript replay becomes purely append-only.
+
+`ByokOrchestrator.buildMessagesForModel` now appends
+`{role: 'user', content: '[Current simplified project snapshot, as JSON -
+may be slightly stale after your edits]
+<content>'}` as the LAST message
+of every request instead of rewriting the last plain-text user message in
+place. Consequences, verified: the user's message bytes never change; the
+Phase 9.7 per-round refresh (`maybeRefreshProjectSnapshot`) only ever
+changes the request's final message, so the cacheable prefix now covers
+system + tools + the WHOLE transcript across editing rounds; the snapshot
+still never enters the transcript (the UI never renders the JSON blob);
+sub-agents (which carry their own snapshot via `startNewChat`) get the
+same shape; the message list stays valid OpenAI protocol (a user message
+may follow tool results).
+
+Spec work (`ByokOrchestrator.spec.js`): the old fold test now asserts the
+new shape (the user message is snapshot-free; the trailing user message
+carries the label + JSON). A new test in the Phase 14.1 describe drives a
+4-round turn - two EDITING rounds (each advancing the mock
+`getProjectUserContent` version and marking `didModifyProject`), an
+unverified done-claim that triggers the Phase 8 completion-gate NUDGE
+round (the realistic build-turn shape), and the verified final answer -
+and asserts: (a) the tail message carries snapshot v1/v2/v3/v3, (b) the
+user's message is byte-identical and snapshot-free in all four requests,
+(c) the cache contract itself: with the trailing snapshot stripped, every
+earlier request is a byte-identical PREFIX of the next one, across edits
+and the nudge alike.
+
+**Bugs found.**
+- [fixed during test authoring] The first version of the new spec errored
+  because a done-claim after unverified edits triggers the one-shot
+  completion-gate nudge - an extra model round the 3-mock chain did not
+  cover. Not a code bug: the nudge round is now explicitly part of the
+  test (4 mocks), which makes the test MORE faithful to a real build turn.
+
+**Issues found.**
+- The uncached cost per round is now exactly one snapshot-length message
+  (it refreshes after edits by design, Phase 9.7 freshness choice - kept).
+  The only remaining one-time cache busters are the project flip, the
+  compaction rewrite, and the one-way image degrade - all pre-existing
+  and accepted.
+- The random suite flake has now hit the seam-spec family twice in a
+  row (useByokChatSeam.spec.js, then ByokSeam.spec.js - both mount the
+  same Probe tree, both fail at suite setup on the
+  useEnsureExtensionInstalled hook mock, both pass standalone). If a
+  third run lands in this family again it is a real intermittent mock
+  reset-ordering bug worth fixing, not background noise; watch it.
+
+**Files worked on.**
+Modified: `newIDE/app/src/AiGeneration/Byok/ByokOrchestrator.js`
+(buildMessagesForModel + its docstring), `newIDE/app/src/AiGeneration/Byok/ByokOrchestrator.spec.js`
+(rewritten fold test + the new append-only prefix test),
+`REVIEW/Phase14.md` (dated amendment under step 14.1 point 3),
+`REVIEW/worklog.md` (previous session's "Issues found" gained the
+nuance bullet earlier today; this entry records the fix), `AGENTS.md`
+(S2 line), this file.
+
+**Triage.** no OOS. no deferred. no UT.
+
+**Gates.** ByokOrchestrator suite 58/58; ByokSubAgents/ByokCompactor/
+ByokSeam/ByokTranscript/useByokChat 90/90; `npm run lint` 0/0; Flow
+(direct binary) 0 errors; prettier clean on the touched files. Full
+`npm test -- --watchAll=false --maxWorkers=1`: 2,489 passed + 1
+pre-existing skip, 226 suites, one suite-level FAIL with ZERO failing
+tests: ByokSeam.spec.js - the same `useEnsureExtensionInstalled`
+mock-reset signature that hit useByokChatSeam.spec.js in the previous
+full run (the documented random flake; SECOND consecutive hit in the
+seam-spec family, logged below). Passes standalone 17/17 immediately
+after; the change cannot plausibly reach it (the failure is at Probe
+mount, before any request construction), but the family repeat is now
+on record.
+
+**Audit greps (session artifacts).**
+
+    grep -n "simplified project snapshot" src/AiGeneration/Byok/ByokOrchestrator.js
+      -> 2 hits: the getProjectUserContent option comment (updated to say
+         "trailing user message") + the ONE construction site (the tail push)
+    grep -c "messages\[index\] = {" src/AiGeneration/Byok/ByokOrchestrator.js -> 0 (no in-place message rewrites remain in the request builder)
+    npm test ByokOrchestrator -> 58 passed (incl. "append-only across EDITING rounds")

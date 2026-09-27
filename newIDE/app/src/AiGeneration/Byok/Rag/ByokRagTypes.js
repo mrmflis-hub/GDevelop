@@ -70,6 +70,43 @@ export const BYOK_RAG_DEFAULT_EMBEDDER_ID = 'Xenova/all-MiniLM-L6-v2';
 export const getByokRagEmbedderInfo = (id: string): ?ByokRagEmbedderInfo =>
   BYOK_RAG_EMBEDDERS.find(embedder => embedder.id === id) || null;
 
+// --- The prebuilt index bundle (Phase 14.4, D14-3 / D14-7 (a)) --------------
+
+/**
+ * The envelope of a prebuilt RAG index bundle, exactly as
+ * `scripts/byok-embedder/build-byok-rag-bundle.js` writes it: the app's own
+ * serialized index plus embedder identity + a sha256 integrity hash. The
+ * artifact lives on the fork's GitHub Releases; importing is opt-in only.
+ */
+export type ByokRagBundleManifest = {|
+  bundle: 'byok-rag-bundle',
+  formatVersion: number,
+  created: string,
+  embedder: {|
+    id: string,
+    dimensions: number,
+    approximateDownloadMegabytes: number,
+    dtype: string,
+  |},
+  integrity: {| indexSha256: string |},
+  index: any, // ByokRagSerializedIndex — validated by deserializeByokRagIndex
+|};
+
+/** The bundle format this app understands (bump = incompatible). */
+export const BYOK_RAG_BUNDLE_FORMAT_VERSION = 1;
+
+/** The `bundle` discriminator of the envelope. */
+export const BYOK_RAG_BUNDLE_KIND = 'byok-rag-bundle';
+
+/** The fork repository hosting the bundle releases (owner Task 17.2). */
+export const BYOK_RAG_BUNDLE_REPO = 'mrmflis-hub/GDevelop';
+
+/** The release tag prefix of bundle generations (`byok-rag-bundle-v1`…). */
+export const BYOK_RAG_BUNDLE_TAG_PREFIX = 'byok-rag-bundle-v';
+
+/** The Qdrant collection snapshot asset name suffix of a release. */
+export const BYOK_RAG_BUNDLE_SNAPSHOT_SUFFIX = '-qdrant-snapshot';
+
 /** The RAG preferences blob (a top-level `byokRag` preferences key). */
 export type ByokRagSettings = {|
   enabled: boolean,

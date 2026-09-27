@@ -119,3 +119,23 @@ The permanent record for all of the above is in `worklog.md`
   rename entry to the rail's context menu is a ~15-line change. Blocked
   on: owner confirmation that the phase's action list was meant to be
   exhaustive.
+
+
+## 2026-09-27 — Phase 14 filings
+
+- `[O14-displacement]` `[open]` — Docs-min displacement data: on 4 of the
+  24 eval queries ("timer spawn create objects", "play a sound effect",
+  "physics gravity forces", "expression clamp values") the weighted
+  top-3 now carries relevant-but-different minified-wiki pages instead of
+  the strict expected source (gate green at hashing 79 % / MiniLM 83 %).
+  This is exactly the D14-2 data that decides whether docs-min chunks
+  later displace curated chunks; revisit on the next eval round (or the
+  owner's Task 17.1 queries), not before.
+- `[O14-prose-typos]` `[open]` — Two minification agents normalized
+  upstream PROSE typos (batch-022 "Triggred Once"→"Triggered Once";
+  batch-033 "Returns a Hash a MD5"→"Returns an MD5 hash") against the
+  verbatim-keeping contract; identifiers were kept verbatim everywhere.
+  Decide before the next `DOCs/` refresh whether
+  `scripts/build-byok-minified-docs.js`'s contract pins verbatim-everything
+  or explicitly blesses prose-only fixes (one line in
+  MINIFICATION_CONTRACT).

@@ -145,3 +145,70 @@ export const invokeByokQdrantStatus = async (): Promise<?ByokQdrantStatus> => {
   if (!ipcRenderer) return null;
   return await ipcRenderer.invoke('byok-qdrant-status');
 };
+
+// --- The prebuilt-bundle IPC bridges (Phase 14.4) ---------------------------
+
+export type ByokRagBundleInfoOutcome =
+  | {| ok: true, releases: any |}
+  | {| ok: false, error: string |};
+
+/**
+ * The GitHub releases listing for the bundle (the URL comes from the
+ * tested constants; the parsing/distilling happens renderer-side in
+ * ByokRagBundle.js).
+ */
+export const invokeByokRagBundleInfo = async (
+  apiUrl: string
+): Promise<ByokRagBundleInfoOutcome> => {
+  if (!ipcRenderer) {
+    return {
+      ok: false,
+      error: 'The prebuilt index needs the desktop app.',
+    };
+  }
+  return await ipcRenderer.invoke('byok-rag-bundle-info', apiUrl);
+};
+
+export type ByokRagBundleDownloadOutcome =
+  | {| ok: true, bundle: any |}
+  | {| ok: false, error: string |};
+
+/**
+ * Download + sha256-verify a bundle asset (the Electron main does the
+ * hashing; the payload is handed to the renderer for the tested import).
+ */
+export const invokeByokRagBundleDownload = async (
+  downloadUrl: string
+): Promise<ByokRagBundleDownloadOutcome> => {
+  if (!ipcRenderer) {
+    return {
+      ok: false,
+      error: 'The prebuilt index needs the desktop app.',
+    };
+  }
+  return await ipcRenderer.invoke('byok-rag-bundle-download', downloadUrl);
+};
+
+export type ByokQdrantRestoreOutcome = {|
+  ok: boolean,
+  baseUrl?: string,
+  collection?: string,
+  pointsCount?: number,
+  stage?: string,
+  error?: string,
+|};
+
+/** Restore the prebuilt collection snapshot into the managed Qdrant. */
+export const invokeByokQdrantSnapshotRestore = async (options: {|
+  snapshotUrl: string,
+  expectedDimensions: number,
+|}): Promise<ByokQdrantRestoreOutcome> => {
+  if (!ipcRenderer) {
+    return {
+      ok: false,
+      stage: 'health-check',
+      error: 'Qdrant management needs the desktop app.',
+    };
+  }
+  return await ipcRenderer.invoke('byok-qdrant-restore-snapshot', options);
+};

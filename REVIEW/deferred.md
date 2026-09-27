@@ -349,3 +349,19 @@ accepted into `Phase14.md` or rejected here by the owner.
   weights+index single file needs either fragile custom transformers.js
   cache injection or an owner-approved `fflate`-class dependency. *When to
   tackle:* decision due at Phase 14 step 14.4 start.
+
+
+## 2026-09-27 — Phase 14.3 (embedder finetuning) deferred by owner order
+
+- The owner ordered steps 14.1/14.2/14.4/14.5 with "we will move on
+  without finetuned model": the gated finetune (synthetic pairs, Colab
+  notebook, third catalog entry, D14-6 ship-if-better gate) is deferred
+  until Tasks 17.1 (the 200 human queries) and 17.4 (the training run)
+  are back on the table.
+- What shipped anyway: `scripts/byok-embedder/eval-embedder.js` — the
+  embedder-agnostic eval runner from 14.3's file list (hashing CI parity,
+  real transformers.js models pinned to q8, `--queries` holdout mode for
+  the Task 17.1 set), plus the shared 24-query set
+  `Byok/evals/byok-rag-eval-queries.json`.
+- Baseline numbers for the future gate decision (full 4,026-chunk corpus,
+  top-3 hit rate): hashing 19/24 (79 %), stock MiniLM 20/24 (83 %).

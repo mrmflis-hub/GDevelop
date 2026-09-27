@@ -124,8 +124,9 @@ describe('ByokPrompts', () => {
 
 describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
   it('pins the prompt version', () => {
-    // Bumped to byok-v8 in Phase 12 (discovery + runtime guidance).
-    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v9');
+    // Bumped to byok-v10 in Phase 14 (minified-wiki hint + snapshot-once prompt).
+    // byok-v9 was Phase 13; byok-v8 was Phase 12 (discovery + runtime guidance).
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v10');
   });
 
   it('teaches the F2 obligatory to-do list and per-item progress updates', () => {

@@ -79,6 +79,16 @@ describe('ByokPromptBudget (Phase 13.5)', () => {
     );
   });
 
+  it('carries the minified-wiki drill-down hint line in the retrieval map (Phase 14.2)', async () => {
+    // One degradable hint line teaches the map → page chunks →
+    // read_doc_page drill-down; it must survive inside the budget (the
+    // two cap tests above prove the totals, this one proves the line).
+    const measurement = await measureTurn(true);
+    expect(measurement.systemPrompt).toContain('docs-min');
+    expect(measurement.systemPrompt).toContain('read_doc_page');
+    expect(measurement.systemPrompt).toContain('tags: ["map"]');
+  });
+
   it('advertises the core set, not the whole catalog', async () => {
     const measurement = await measureTurn(true);
     // The core list + search_tools: far below the full 63-tool catalog.

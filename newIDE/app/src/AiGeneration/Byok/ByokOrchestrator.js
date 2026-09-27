@@ -216,9 +216,10 @@ export type ByokOrchestratorOptions = {|
         createdProject: any,
       |}>)
     | null,
-  // Builds the simplified project snapshot folded into the user message
-  // sent to the model (the local replacement of prepareAiUserContent, which
-  // uploads to GDevelop's servers) — also read at call time.
+  // Builds the simplified project snapshot sent to the model as the
+  // request's trailing user message (the local replacement of
+  // prepareAiUserContent, which uploads to GDevelop's servers) — also read
+  // at call time.
   getProjectUserContent: () => Promise<string | null>,
   onAiRequestUpdated: (aiRequest: AiRequest) => void,
   // Whether a call would modify the project (byokCallRequiresApproval +
@@ -608,11 +609,35 @@ export const createByokOrchestrator = (
    * custom instructions). Async: the notes and the skills metadata come
    * from async storages (localStorage reads + a possible IPC round-trip for
    * the user skills).
+   *
+   * Prompt-cache stability (Phase 14.1, D14-1): the prompt is composed
+   * ONCE per chat and then reused byte-identical, so provider prefix
+   * caches survive note writes, skill-list churn and settings edits (the
+   * stateless chat/completions loop re-sends the whole prompt every round —
+   * busting it from position zero ~10–20 times per task was the single
+   * biggest avoidable cost). The snapshot invalidates ONLY when
+   * `hasOpenedProject()` flips (a project opened or closed mid-chat — that
+   * also re-advertises the tool set, which the prompt's tool line mirrors).
+   * Mid-chat staleness of notes/skills/custom instructions is accepted
+   * until the chat ends: the note changes come from the model's own
+   * `update_project_notes` calls, which are already in the transcript.
+   * Compaction keeps the same string (its history rewrite busts the cache
+   * once regardless — rare by design).
    */
+  let systemPromptSnapshot: string | null = null;
+  let systemPromptSnapshotHasProject = false;
+
   const buildSystemPrompt = async (): Promise<string> => {
     // A sub-agent carries a fixed, scoped charter instead of the composed
     // knowledge prompt (its context is deliberately minimal).
     if (options.systemPrompt) return options.systemPrompt;
+    const hasProject = hasOpenedProject();
+    if (
+      systemPromptSnapshot !== null &&
+      systemPromptSnapshotHasProject === hasProject
+    ) {
+      return systemPromptSnapshot;
+    }
     const notesIdentifier = options.getProjectNotesIdentifier
       ? options.getProjectNotesIdentifier()
       : null;
@@ -622,10 +647,10 @@ export const createByokOrchestrator = (
     const skills = await listByokSkillMetadata();
     const composedPrompt = buildByokSystemPrompt({
       toolNames: getAdvertisedToolNames(),
-      hasOpenedProject: hasOpenedProject(),
+      hasOpenedProject: hasProject,
       context: makeByokPromptContext({
         toolNames: getAdvertisedToolNames(),
-        hasOpenedProject: hasOpenedProject(),
+        hasOpenedProject: hasProject,
         skills,
         engineReferenceAvailable: isByokEngineReferenceAvailable(),
         docsAvailable: true,
@@ -637,18 +662,34 @@ export const createByokOrchestrator = (
     // the first message looked like a game-build request, and the user did
     // not turn the heuristic off (Phase 8.3).
     const skillBody = await getAutoSuggestedSkillBody();
-    if (!skillBody) return composedPrompt;
-    return `${composedPrompt}\n\n[Auto-loaded skill: build-workflow — its pipeline applies to this conversation]\n${skillBody}`;
+    const prompt = skillBody
+      ? `${composedPrompt}\n\n[Auto-loaded skill: build-workflow — its pipeline applies to this conversation]\n${skillBody}`
+      : composedPrompt;
+    systemPromptSnapshot = prompt;
+    systemPromptSnapshotHasProject = hasProject;
+    return prompt;
   };
 
   /**
    * The system prompt + the transcript replayed as OpenAI messages. Tool
    * outputs referencing images emit a following user message with the
    * surviving image parts (the latest `imagesToKeep` of the chat); the
-   * latest project snapshot is folded into the last user message that
-   * carries plain text (kept out of the transcript itself, so the UI never
-   * renders a JSON blob) — the same "fresh state with every message"
-   * behavior as the server flow.
+   * latest project snapshot rides its OWN synthetic user message at the
+   * very tail of the request (kept out of the transcript itself, so the
+   * UI never renders a JSON blob) — the same "fresh state with every
+   * message" behavior as the server flow.
+   *
+   * Why the tail and not a fold into the last user message (the shape
+   * until 2026-09-27, owner order): the transcript replay must stay
+   * byte-identical APPEND-ONLY so provider prefix caches survive the whole
+   * agent loop. Folding rewrote a message that sits MID-request once tool
+   * rounds append after it, and the Phase 9.7 per-round snapshot refresh
+   * (maybeRefreshProjectSnapshot) re-busted the prefix from that message
+   * on every editing round — in a 50–100-round build turn, everything
+   * after the system prompt was re-paid almost every round. As the last
+   * message, the refreshing snapshot only ever changes the request's final
+   * message; everything before it (system + tools + the whole transcript)
+   * stays cacheable prefix.
    */
   const buildMessagesForModel = async (): Promise<Array<any>> => {
     const transcript = getOutput();
@@ -672,21 +713,10 @@ export const createByokOrchestrator = (
 
     if (!latestProjectContent) return messages;
 
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const message = messages[index];
-      if (message.role !== 'user') continue;
-      // The synthetic image messages (array content) are not the user's
-      // message: the snapshot folds into the real one.
-      if (Array.isArray(message.content)) continue;
-
-      messages[index] = {
-        role: 'user',
-        content: `${
-          message.content
-        }\n\n[Current simplified project snapshot, as JSON — may be slightly stale after your edits]\n${latestProjectContent}`,
-      };
-      break;
-    }
+    messages.push({
+      role: 'user',
+      content: `[Current simplified project snapshot, as JSON — may be slightly stale after your edits]\n${latestProjectContent}`,
+    });
     return messages;
   };
 

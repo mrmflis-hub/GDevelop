@@ -26,9 +26,11 @@ export type ByokRagSearchResult = {|
 |};
 
 /**
- * The lexical half: substring scoring over the title, the tags and the text
- * (title 100, tags 80, text 40; multi-word queries need every term to hit
- * somewhere). Pure.
+ * The lexical half: AND-semantics over the query terms (every term must
+ * hit somewhere), scored by WHERE each term hit — title (3) above tags (2)
+ * above body text (1) — and multiplied by the source weight, so a curated
+ * chunk whose TITLE names the query outranks a minified-wiki chunk that
+ * merely contains all the words in prose. Pure.
  */
 export const searchByokRagChunksLexically = (
   chunks: Array<ByokRagChunk>,
@@ -44,17 +46,23 @@ export const searchByokRagChunksLexically = (
     const title = chunk.title.toLowerCase();
     const text = chunk.text.toLowerCase();
     const tags = chunk.tags.map(tag => tag.toLowerCase()).join(' ');
-    // AND semantics: every term must hit somewhere in the chunk — a
-    // grep-style fallback must be precise, not recall-oriented.
-    let matchedTerms = 0;
+    let score = 0;
+    let matchedAllTerms = true;
     for (const term of terms) {
-      if (title.includes(term)) matchedTerms++;
-      else if (tags.includes(term)) matchedTerms++;
-      else if (text.includes(term)) matchedTerms++;
+      if (title.includes(term)) score += 3;
+      else if (tags.includes(term)) score += 2;
+      else if (text.includes(term)) score += 1;
+      else {
+        matchedAllTerms = false;
+        break;
+      }
     }
-    if (matchedTerms !== terms.length) continue;
-    const score = 40 + (terms.length > 1 ? 20 : 0);
-    hits.push({ chunk, score, match: 'exact' });
+    if (!matchedAllTerms) continue;
+    hits.push({
+      chunk,
+      score: score * getByokRagSourceWeight(chunk.source),
+      match: 'exact',
+    });
   }
   hits.sort((a, b) => b.score - a.score || (a.chunk.id < b.chunk.id ? -1 : 1));
   return hits.slice(0, resultLimit);
@@ -101,6 +109,28 @@ export type ByokRagSearchDeps = {|
     limit: number
   ) => Promise<Array<ByokRagSearchHit>>,
 |};
+
+/**
+ * The per-source ranking weights of the vector half (Phase 14.2): the
+ * whole minified wiki joined the corpus (~1.5k prose chunks), and with the
+ * hashing test embedder generic wiki prose started outscoring the exact
+ * engine/example/skill chunks the queries were about (long chunks simply
+ * overlap more terms). The weights keep every chunk reachable — a genuinely
+ * better wiki match still wins — while the curated tiers stay on top for
+ * near-equal similarity. The exact/lexical half is unaffected.
+ */
+export const BYOK_RAG_SOURCE_WEIGHTS: { [string]: number } = {
+  'engine-reference': 1.25,
+  example: 1.25,
+  skill: 1.25,
+  docs: 1.1,
+  'docs-min': 0.8,
+  'docs-min-map': 0.7,
+  'user-docs': 1,
+};
+
+export const getByokRagSourceWeight = (source: string): number =>
+  BYOK_RAG_SOURCE_WEIGHTS[source] || 1;
 
 /**
  * The hybrid search: exact/tag hits first, then the vector top-k (merged,
@@ -172,36 +202,48 @@ export const searchByokRagKnowledge = async (options: {|
   }
 
   const queryVector = (await options.deps.embedder.embed([query]))[0];
-  const vectorHits: Array<ByokRagSearchHit> = [];
 
+  // A wider candidate pool than the result limit: the source weights below
+  // re-rank it, so the pre-weight top-k must not already be all one source.
+  const candidateLimit = Math.max(limit * 4, 24);
+  let vectorCandidates: Array<ByokRagSearchHit> = [];
   if (options.deps.qdrantSearch) {
-    const remoteHits = await options.deps.qdrantSearch(queryVector, limit * 2);
-    vectorHits.push(
-      ...remoteHits.filter(hit => matchesTagFilter(hit.chunk)).slice(0, limit)
+    const remoteHits = await options.deps.qdrantSearch(
+      queryVector,
+      candidateLimit
     );
+    vectorCandidates = remoteHits.filter(hit => matchesTagFilter(hit.chunk));
   } else {
-    const indexHits = searchByokRagIndex(index, queryVector, limit * 2);
-    for (const hit of indexHits) {
-      if (!matchesTagFilter(hit.chunk)) continue;
-      vectorHits.push({ chunk: hit.chunk, score: hit.score, match: 'vector' });
-      if (vectorHits.length >= limit) break;
-    }
+    vectorCandidates = searchByokRagIndex(index, queryVector, candidateLimit)
+      .filter(hit => matchesTagFilter(hit.chunk))
+      .map(hit => ({ chunk: hit.chunk, score: hit.score, match: 'vector' }));
   }
+  const vectorHits = vectorCandidates
+    .map(hit => ({
+      ...hit,
+      score: hit.score * getByokRagSourceWeight(hit.chunk.source),
+    }))
+    .sort((a, b) => b.score - a.score || (a.chunk.id < b.chunk.id ? -1 : 1))
+    .slice(0, limit);
 
-  // Merge: exact first, then the vector hits that are not already present.
-  const seenIds = new Set(exactHits.map(hit => hit.chunk.id));
-  const merged = [...exactHits];
-  for (const hit of vectorHits) {
-    if (seenIds.has(hit.chunk.id)) continue;
-    seenIds.add(hit.chunk.id);
-    merged.push(hit);
-  }
+  // Merge on the shared scale (both halves are source-weighted now): a
+  // title-matching exact hit scores ~3+ per term, a strong vector match
+  // ≤ ~1.25, so exact evidence leads without starving the vector half the
+  // way the pre-14.2 fixed "exact block first" order did once the whole
+  // wiki joined the corpus.
+  const merged = [...exactHits, ...vectorHits]
+    .filter(
+      (hit, position, all) =>
+        all.findIndex(other => other.chunk.id === hit.chunk.id) === position
+    )
+    .sort((a, b) => b.score - a.score || (a.chunk.id < b.chunk.id ? -1 : 1))
+    .slice(0, limit);
   return {
     success: true,
     message: `${
       merged.length
     } chunk(s) for "${query}" (exact + semantic). Read around a hit with chunk_id.`,
-    hits: merged.slice(0, limit),
+    hits: merged,
     mode: 'hybrid',
   };
 };
