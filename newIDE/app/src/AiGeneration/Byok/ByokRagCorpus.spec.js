@@ -110,7 +110,12 @@ describe('the corpus builders', () => {
     expect(chunks.length).toBeGreaterThanOrEqual(categories.length);
     for (const chunk of chunks) {
       expect(chunk.source).toBe('docs-min-map');
-      expect(chunk.tags).toEqual(expect.arrayContaining(['docs-min', 'map']));
+      expect(chunk.tags).toEqual(
+        expect.arrayContaining(['docs-min-map', 'map'])
+      );
+      // audit011026 B-PROMPT-9: the map chunks no longer claim the page-chunk
+      // tag — tags:["docs-min"] must hit pages, not maps.
+      expect(chunk.tags).not.toContain('docs-min');
     }
     // A category with few pages is one map chunk listing exactly its pages.
     const smallCategory = categories.find(
@@ -237,5 +242,27 @@ describe('the corpus builders', () => {
 
     // No folder configured: no chunks, no reader call.
     expect(await buildByokRagUserDocsChunks('', reader)).toEqual([]);
+  });
+});
+
+describe('chunkByokRagText: fenced code blocks (audit011026 B-RAG-14)', () => {
+  it('never splits a fence containing a blank line across chunks', () => {
+    const text = [
+      'Intro paragraph.',
+      '',
+      '```js',
+      'const a = 1;',
+      '',
+      'const b = 2;',
+      '```',
+      '',
+      'Outro paragraph.',
+    ].join('\n');
+    const chunks = chunkByokRagText(text, 30);
+    // The fence (opener + body + closer) must live inside ONE chunk.
+    const fenceChunks = chunks.filter(chunk => chunk.includes('```'));
+    expect(fenceChunks).toHaveLength(1);
+    expect(fenceChunks[0]).toContain('const a = 1;');
+    expect(fenceChunks[0]).toContain('const b = 2;');
   });
 });

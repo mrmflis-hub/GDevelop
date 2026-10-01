@@ -27,6 +27,9 @@ const isSafeChatFileName = fileName => {
   if (fileName.includes('/') || fileName.includes('\\')) return false;
   if (fileName.includes('..')) return false;
   if (fileName !== fileName.trim()) return false;
+  // A colon would create a Windows Alternate Data Stream instead of the
+  // intended file (audit011026 B-ELEC-12).
+  if (fileName.includes(':')) return false;
   return true;
 };
 
@@ -74,7 +77,17 @@ const writeByokChatFile = (userDataPath, fileName, content) => {
     }
     const chatsFolder = getByokChatsFolder(userDataPath);
     fs.mkdirSync(chatsFolder, { recursive: true });
-    fs.writeFileSync(path.join(chatsFolder, fileName), content, 'utf8');
+    // Atomic write (audit011026 B-ELEC-10): a crash mid-write of the final
+    // path left a truncated chat that the renderer's quarantine then hid —
+    // temp + same-volume rename keeps the previous file intact until the
+    // new one is fully on disk.
+    const finalPath = path.join(chatsFolder, fileName);
+    const temporaryPath = path.join(
+      chatsFolder,
+      `${fileName}.tmp-${process.pid}`
+    );
+    fs.writeFileSync(temporaryPath, content, 'utf8');
+    fs.renameSync(temporaryPath, finalPath);
     return { ok: true, data: null };
   } catch (error) {
     return { ok: false, error: String(error) };

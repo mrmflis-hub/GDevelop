@@ -77,6 +77,11 @@ export const createByokRagIdbFilesBackend = (): ByokRagFilesBackend => {
       const request = run(transaction.objectStore(BYOK_RAG_IDB_STORE));
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
+      // IndexedDB commits (and quota-aborts) at TRANSACTION level: without
+      // the abort handler a quota abort after a successful put resolved as
+      // success and silently lost the write (audit011026 B-RAG-12).
+      transaction.onabort = () =>
+        reject(transaction.error || new Error('IndexedDB write aborted.'));
       transaction.oncomplete = () => database.close();
     });
   };
@@ -186,7 +191,28 @@ export const invokeByokRagBundleDownload = async (
       error: 'The prebuilt index needs the desktop app.',
     };
   }
-  return await ipcRenderer.invoke('byok-rag-bundle-download', downloadUrl);
+  // The main process downloads, sha256-verifies and keeps the bundle under
+  // a fixed file name (audit011026 B-ELEC-7): the renderer reads the
+  // verified bytes back through the regular file channel instead of
+  // receiving the whole parsed object as an IPC structured clone.
+  const download = await ipcRenderer.invoke(
+    'byok-rag-bundle-download',
+    downloadUrl
+  );
+  if (!download || !download.ok) {
+    return {
+      ok: false,
+      error: download && download.error ? download.error : 'Download failed.',
+    };
+  }
+  const readBack = await ipcRenderer.invoke('byok-rag-read', download.fileName);
+  if (!readBack || !readBack.ok || typeof readBack.data !== 'string') {
+    return {
+      ok: false,
+      error: 'The verified bundle could not be read back.',
+    };
+  }
+  return { ok: true, bundle: JSON.parse(readBack.data) };
 };
 
 export type ByokQdrantRestoreOutcome = {|

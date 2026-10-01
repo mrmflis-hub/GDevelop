@@ -7,6 +7,7 @@ import {
   type ByokEventBatch,
 } from './ByokLocalEventWriter';
 import { parseByokEventScript } from './ByokEventScriptParser';
+import { validateByokEventScript } from './ByokLocalEventWriter';
 import {
   describeInstancesInContainer,
   INSTANCE_POSITION_SEMANTICS_MESSAGE,
@@ -278,6 +279,21 @@ const makeAddExternalEventsTool = (): ByokExtraTool => ({
     const eventBatches = readEventBatches(args);
     const eventScript =
       typeof args.event_script === 'string' ? args.event_script : '';
+    if (eventBatches.length > 0 && eventScript) {
+      return makeFailure(
+        'Pass either event_batches or event_script, not both — the batches are anchored changes, the script rewrites the whole sheet.'
+      );
+    }
+    // The script is validated BEFORE the sheet is created or associated:
+    // a parse failure after the insert left an empty sheet behind while
+    // reporting didModifyProject:false (audit011026 B-TOOL-3). NOTE: a
+    // missing mode defaults to "replace" (destructive) — the schema
+    // description says so explicitly (audit011026 B-TOOL-8).
+    const mode = args.mode === 'insert' ? 'insert' : 'replace';
+    if (eventScript) {
+      const invalidScript = validateByokEventScript(project, eventScript);
+      if (invalidScript) return makeFailure(invalidScript);
+    }
     const newOrChangedAiGeneratedEventIds: Set<string> = new Set();
     if (eventBatches.length > 0) {
       const output = byokApplyEventBatchesToEventsList({
@@ -305,7 +321,6 @@ const makeAddExternalEventsTool = (): ByokExtraTool => ({
       };
     }
     if (eventScript) {
-      const mode = args.mode === 'insert' ? 'insert' : 'replace';
       const failure = applyWholeSheetEventScript(
         project,
         externalEvents.getEvents(),

@@ -290,3 +290,51 @@ describe('ByokCompactor: helpers', () => {
     expect(summary).toContain('summarized');
   });
 });
+
+describe('compaction churn guard (audit011026 B-CORE-5)', () => {
+  const makeTurn = (index: number): any => ({
+    type: 'message',
+    status: 'completed',
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: [
+      index % 2 === 0
+        ? { type: 'user_request', status: 'completed', text: `turn ${index}` }
+        : { type: 'output_text', status: 'completed', text: `ok ${index}` },
+    ],
+  });
+  const makeTranscript = (turnPairs: number): Array<any> => {
+    const transcript: Array<any> = [];
+    for (let index = 0; index < turnPairs * 2; index++) {
+      transcript.push(makeTurn(index));
+    }
+    return transcript;
+  };
+
+  it('tags its synthetic head messages so they do not count as turns, and a just-compacted transcript is not re-compactable', async () => {
+    // 12 user turns, keep 10: the first 2 turns get summarized.
+    const transcript = makeTranscript(12);
+    const outcome = await compactByokTranscript({
+      transcript,
+      summarizer: async digest => `SUMMARY(${digest.slice(0, 10)})`,
+      preservedBlockText: 'PRESERVED',
+      keepLastTurns: 10,
+      keepLastToolTurns: 6,
+    });
+    expect(outcome).not.toBeNull();
+    const compacted = (outcome: any).transcript;
+    expect((compacted[0]: any).byokCompactionSynthetic).toBe(true);
+    expect((compacted[1]: any).byokCompactionSynthetic).toBe(true);
+    // The synthetic messages must not count as turns: the compacted
+    // transcript holds exactly the 10 kept turns, so compacting it again
+    // immediately (the churn) finds nothing older than the window.
+    expect(findKeptTurnsStartIndex(compacted, 10)).toBe(0);
+    const secondOutcome = await compactByokTranscript({
+      transcript: compacted,
+      summarizer: async digest => digest,
+      preservedBlockText: 'PRESERVED',
+      keepLastTurns: 10,
+      keepLastToolTurns: 6,
+    });
+    expect(secondOutcome).toBeNull();
+  });
+});

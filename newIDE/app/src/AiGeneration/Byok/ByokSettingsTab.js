@@ -51,6 +51,7 @@ import {
   refreshByokModels,
 } from './ByokModelsCache';
 import { sendByokChatCompletionWithRetries } from './ByokClient';
+import { buildEventScriptSourceView } from '../../EventsSheet/EventsTree/TextRenderer/EventScriptSourceView';
 import {
   buildLegacyMigrationProviders,
   makeByokProviderId,
@@ -212,11 +213,20 @@ type ConnectionTestResult = {| ok: boolean, message: React.Node |};
 
 /**
  * Read the scratch project back into the plain shape the scorers run on.
+ * The events are rendered as EventScript text — the exact format the
+ * scorers parse with parseByokEventScript (the same source view the
+ * read_events_source tool serves). The historical alternative
+ * (`gd.Serializer.toJSON(scene.getEvents())`) was doubly wrong: it passed
+ * an EventsList where a SerializerElement is required (a type confusion
+ * that crashed the libGD WASM heap and poisoned the module until reload —
+ * the outofscoped.md O1 entry), and its output was gd serialized JSON,
+ * which the EventScript scorer can never parse.
  */
-const snapshotProjectForBenchmark = (
+const BYOK_BENCHMARK_SNAPSHOT_MAX_CHARS = 30000;
+
+export const snapshotProjectForBenchmark = (
   project: any
 ): ByokBenchmarkProjectSnapshot => {
-  const gd: libGDevelop = global.gd;
   const scenes = [];
   for (let index = 0; index < project.getLayoutsCount(); index++) {
     const scene = project.getLayoutAt(index);
@@ -231,7 +241,11 @@ const snapshotProjectForBenchmark = (
     }
     let eventsSource = null;
     try {
-      eventsSource = gd.Serializer.toJSON(scene.getEvents());
+      const view = buildEventScriptSourceView({
+        eventsList: scene.getEvents(),
+        maxChars: BYOK_BENCHMARK_SNAPSHOT_MAX_CHARS,
+      });
+      eventsSource = view.text.length > 0 ? view.text : null;
     } catch (error) {
       // An unreadable events list scores as "no events written".
     }
@@ -246,6 +260,27 @@ const snapshotProjectForBenchmark = (
     firstSceneName:
       project.getLayoutsCount() > 0 ? project.getLayoutAt(0).getName() : null,
   }: any);
+};
+
+/**
+ * A libGD/WASM abort during a benchmark run is not an endpoint error: the
+ * module is poisoned until the window reloads, and "the endpoint returned
+ * an unexpected error" sends the user debugging the wrong side.
+ */
+export const describeByokBenchmarkCrash = (rawError: any): string | null => {
+  const message =
+    rawError instanceof Error ? rawError.message : String(rawError);
+  if (/memory access out of bounds|abort\(/i.test(message)) {
+    return 'The GDevelop engine crashed while running the benchmark (a WebAssembly memory error). Reload the IDE window, then run the benchmark again.';
+  }
+  return null;
+};
+
+/** Delete the scratch project wrapper (leaks the WASM heap if skipped). */
+const deleteScratchProject = (scratchProject: any): void => {
+  if (scratchProject && typeof scratchProject.delete === 'function') {
+    scratchProject.delete();
+  }
 };
 
 /**
@@ -628,8 +663,20 @@ const ByokSettingsTab = (): React.Node => {
   };
 
   const onRemoveProvider = (provider: ByokProvider) => {
+    const remainingProviders = removeByokProvider(
+      byokSettings.providers,
+      provider.id
+    );
+    // Re-migrate the routing profiles NOW (audit011026 B-UI-9): dangling
+    // profiles pointed at the removed provider fell through to the GLOBAL
+    // endpoint until the tab was remounted.
+    const migrated = migrateByokRoutingProfiles({
+      ...byokSettings,
+      providers: remainingProviders,
+    });
     updateByokSetting({
-      providers: removeByokProvider(byokSettings.providers, provider.id),
+      providers: remainingProviders,
+      ...(migrated ? { ...migrated } : {}),
     });
     void clearByokKey(provider.keyRef);
     clearByokModels();
@@ -650,8 +697,15 @@ const ByokSettingsTab = (): React.Node => {
     setProviderUnderTestId(provider.id);
     setProviderTestResults(previous => ({ ...previous, [provider.id]: null }));
 
+    // The PROVIDER'S own model (audit011026 B-UI-8): the global model name
+    // belongs to the global endpoint — cross-vendor setups failed "model
+    // not found" for providers that worked fine.
+    const providerModel =
+      provider.modelSettings.length > 0
+        ? provider.modelSettings[0].modelName
+        : '';
     const options: ByokChatCompletionOptions = {
-      model: byokSettings.modelName,
+      model: providerModel,
       messages: [{ role: 'user', content: 'ping' }],
       timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
     };
@@ -772,6 +826,7 @@ const ByokSettingsTab = (): React.Node => {
       ...previous,
       [benchmarkKey]: '',
     }));
+    let scratchProject: any = null;
     try {
       const draftKey = providerKeyDrafts[provider.id];
       const storedKey = await loadByokKey(provider.keyRef);
@@ -786,7 +841,7 @@ const ByokSettingsTab = (): React.Node => {
         return;
       }
       // eslint-disable-next-line no-new-wrappers
-      const scratchProject = new (gd: any).ProjectHelper.createNewGDJSProject();
+      scratchProject = new (gd: any).ProjectHelper.createNewGDJSProject();
       const endpointUrl = provider.endpointUrl || byokSettings.endpointUrl;
       const report: ByokBenchmarkReport = await runByokBenchmark({
         modelName,
@@ -825,14 +880,21 @@ const ByokSettingsTab = (): React.Node => {
         }));
       }
     } catch (rawError) {
-      const byokError = classifyByokError(rawError);
+      const crashText = describeByokBenchmarkCrash(rawError);
+      const failureText =
+        crashText !== null
+          ? crashText
+          : ((renderByokErrorMessage(
+              classifyByokError(rawError)
+            ): any): string);
       if (isSubscribedRef.current) {
         setBenchmarkReportsByKey(previous => ({
           ...previous,
-          [benchmarkKey]: ((renderByokErrorMessage(byokError): any): string),
+          [benchmarkKey]: failureText,
         }));
       }
     } finally {
+      deleteScratchProject(scratchProject);
       if (isSubscribedRef.current) setBenchmarkUnderKey(null);
     }
   };
@@ -857,6 +919,7 @@ const ByokSettingsTab = (): React.Node => {
   const onRunBenchmark = async () => {
     setIsBenchmarkRunning(true);
     setBenchmarkReportText(null);
+    let scratchProject: any = null;
     try {
       const storedKey = await loadByokKey();
       if (storedKey.status !== 'ok') {
@@ -864,7 +927,7 @@ const ByokSettingsTab = (): React.Node => {
         return;
       }
       // eslint-disable-next-line no-new-wrappers
-      const scratchProject = new (gd: any).ProjectHelper.createNewGDJSProject();
+      scratchProject = new (gd: any).ProjectHelper.createNewGDJSProject();
       const connection = {
         baseUrl: byokSettings.endpointUrl,
         apiKey: storedKey.key,
@@ -901,11 +964,14 @@ const ByokSettingsTab = (): React.Node => {
       });
       setBenchmarkReportText(formattedReport);
     } catch (rawError) {
-      const byokError = classifyByokError(rawError);
+      const crashText = describeByokBenchmarkCrash(rawError);
       setBenchmarkReportText(
-        ((renderByokErrorMessage(byokError): any): string)
+        crashText !== null
+          ? crashText
+          : ((renderByokErrorMessage(classifyByokError(rawError)): any): string)
       );
     } finally {
+      deleteScratchProject(scratchProject);
       if (isSubscribedRef.current) setIsBenchmarkRunning(false);
     }
   };

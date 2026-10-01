@@ -203,12 +203,18 @@ describe('ByokChatPersistence: the naming convention', () => {
     expect(name).toBe('create a forest scene with_2026-09-24');
   });
 
-  it('makes a file-system-safe file name', () => {
-    expect(makeByokChatFileName('create a forest scene_2026-09-24')).toBe(
-      'create-a-forest-scene_2026-09-24.md'
+  it('makes a file-system-safe file name embedding the chat id (audit011026 B-UI-3)', () => {
+    expect(
+      makeByokChatFileName('create a forest scene_2026-09-24', 'byok-abc123')
+    ).toBe('create-a-forest-scene_2026-09-24-byok-abc123.md');
+    expect(makeByokChatFileName('a/b\\c:d*e?"f', 'byok-x')).not.toMatch(
+      /[/\\:*?"]/
     );
-    expect(makeByokChatFileName('a/b\\c:d*e?"f')).not.toMatch(/[/\\:*?"]/);
-    expect(makeByokChatFileName('')).toBe('chat.md');
+    // The id suffix keeps two same-named chats from sharing a file.
+    expect(makeByokChatFileName('same name', 'byok-1')).not.toBe(
+      makeByokChatFileName('same name', 'byok-2')
+    );
+    expect(makeByokChatFileName('', 'byok-x')).toBe('chat-byok-x.md');
   });
 });
 

@@ -410,6 +410,33 @@ export const byokApplyEventBatchesToEventsList = ({
  * serialized text is exactly what applyEventsChanges expects. Exported for
  * tests of the parse → gd → apply pipeline.
  */
+/**
+ * Pre-validate an EventScript batch against the project WITHOUT touching
+ * anything: parse + a real gd round-trip (audit011026 B-TOOL-3 — the
+ * create/change tools used to insert/rename/parameter-mutate first and
+ * fail on the script after, reporting didModifyProject:false on an
+ * already-mutated project). Returns the failure message or null.
+ */
+export const validateByokEventScript = (
+  project: any,
+  eventScript: string
+): ?string => {
+  const parseResult = parseByokEventScript(eventScript);
+  if (parseResult.error) {
+    return `The EventScript is not valid (line ${
+      parseResult.error.lineNumber
+    }, column ${parseResult.error.columnNumber}): ${parseResult.error.message}`;
+  }
+  try {
+    byokParsedEventsToGeneratedEventsJson(parseResult.events, project);
+    return null;
+  } catch (error) {
+    return `The events could not be applied: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+};
+
 export const byokParsedEventsToGeneratedEventsJson = (
   parsedEvents: Array<Object>,
   project: any

@@ -18,7 +18,7 @@ description: Author EventScript reliably — full grammar reminders, placement t
 - Empty body: `pass`. Comments: `comment "text"`. Links: `link "Scene"`.
 
 ## Placement relations
-- `insert_at_end` / `insert_at_beginning` (scene level), `insert_before_event` / `insert_after_event` (siblings), `insert_as_sub_event` (child of the target), `insert_and_replace_event`, `replace_entire_event_and_sub_events`, `delete_event` (no script needed).
+- `insert_at_end` (scene level), `insert_before_event` / `insert_after_event` (siblings), `insert_as_sub_event` (child of the target), `insert_and_replace_event`, `replace_entire_event_and_sub_events`, `delete_event` (no script needed).
 - Prefer targeted relations over replacing the whole scene: smaller diffs, fewer conflicts.
 
 ## Repair loop

@@ -391,7 +391,6 @@ describe('ByokKnowledgeSections: context factory', () => {
       hasOpenedProject: false,
       skills: [],
       engineReferenceAvailable: false,
-      docsAvailable: false,
       projectNotes: null,
       customInstructions: '',
     });

@@ -10,8 +10,13 @@ on:` line pointing at the numbered decision in `usertasks.md`.
 Rules for agents: see `AGENTS.md` §5.2. If nothing new belongs here at the
 end of a session, the worklog entry says `no OOS`.
 
-**Status: 2 open entries** (the benchmark WASM crash filed 2026-09-24 by the
-QA session 5; the Polygon2d lifecycle call, still blocked on the owner).
+**Status: open entries** (the Polygon2d lifecycle call, blocked on the
+owner; the environment/decision rows below). The benchmark WASM crash
+filed 2026-09-24 was FIXED and verified on 2026-10-01 (root cause: a
+type-confused `gd.Serializer.toJSON(scene.getEvents())` in
+`ByokSettingsTab.js`'s snapshot reader — audit011026 B-TOOL-1; permanent
+record in `worklog.md`) and was removed. The Recents-rail Rename was
+re-added and verified on 2026-10-01 (audit011026 O6) and was removed.
 The live-redraw entry filed by the Phase 11+12 session was **fixed
 and verified on 2026-09-24** (the owner approved the MainFrame touchpoint as
 usertasks Task 15; the new external-item fan-out channel is implemented and
@@ -42,24 +47,6 @@ The permanent record for all of the above is in `worklog.md`
 (2026-09-23 Phase 10 entry and the phase entries cited above).
 
 ## Open entries
-
-- **Benchmark tool execution crashes the libGD WASM heap ("memory access
-  out of bounds") when applying an event-writing batch to the scratch
-  project** (surfaced 2026-09-24 during the QA-round-1 benchmark re-test,
-  QA session 5; reproduced with both mimo-v2.6-flash and glm-5.3-flash).
-  `runByokBenchmark` task 2 ("Write a working event batch") dies inside
-  `executeByokBenchmarkCalls` with `memory access out of bounds`; tasks 3-4
-  then fail with the same error, and the poisoned WASM module makes every
-  later benchmark run fail instantly at
-  `ProjectHelper.createNewGDJSProject` with the misleading classification
-  "The endpoint returned an unexpected error." until the page is reloaded.
-  The fix belongs in the benchmark's own tool-application path (likely a
-  wrapper lifecycle issue of the same family as the Polygon2d entry below —
-  the chat-side event writer does not crash). Blocked on: nothing
-  structural, but it needs a headless repro of the benchmark's scratch
-  flow; the two spec-visible effects (per-task crash capture works, error
-  classification mislabels WASM aborts as endpoint errors) are the
-  regression surface.
 
 - **Polygon2d wrapper leak + lifecycle asymmetry in the collision-mask
   editors** (surfaced 2026-09-24 while porting sprite mask editing).
@@ -112,15 +99,6 @@ The permanent record for all of the above is in `worklog.md`
   pass on the remaining fat schemas (`put_2d_instances` ~570, `add_scene_events`
   ~440). Blocked on: an owner call — accept the landing or commission the
   further slimming.
-- **Rename is gone from the BYOK Recents rows.** The removed
-  `ByokChatHistory` dialog had inline rename; Phase 13's rail action list
-  (D13-4) is open/archive/delete only, so rename was dropped with the
-  dialog. `ByokChatPersistence.renameChat` still exists — re-adding a
-  rename entry to the rail's context menu is a ~15-line change. Blocked
-  on: owner confirmation that the phase's action list was meant to be
-  exhaustive.
-
-
 ## 2026-09-27 — Phase 14 filings
 
 - `[O14-displacement]` `[open]` — Docs-min displacement data: on 4 of the
@@ -139,3 +117,34 @@ The permanent record for all of the above is in `worklog.md`
   `scripts/build-byok-minified-docs.js`'s contract pins verbatim-everything
   or explicitly blesses prose-only fixes (one line in
   MINIFICATION_CONTRACT).
+
+
+## 2026-10-01 — audit011026 triage (see REVIEW/audit011026.md for detail)
+
+- `[B-TOOL-11]` `[open]` — The BYOK debugger binding is
+  first-connection-wins (`ByokPreviewSession.js` onConnectionOpened): a
+  preview the USER launches in the window between the BYOK launch and the
+  new preview's connection steals the binding (pause/profile then hit the
+  wrong preview). Fix = bind only connections opened after the launch
+  promise resolves. Blocked on: nothing structural; low priority (the
+  single-preview rule mostly masks it) and needs a desktop repro.
+- `[B-MCP-13]` `[open]` — The MCP activity ring is per-renderer module
+  state while main routes calls to the focused window: the Preferences
+  card misses every other window's calls (the consent/audit surface is
+  incomplete in multi-window setups). Fix = mirror completed activity to
+  main over IPC and aggregate in `byok-mcp-status`. Blocked on: a small
+  design pass (channel shape + ring merge), not a defect fix.
+- `[B-UI-13]` `[open]` — The durable-history rail re-reads and fully
+  parses every chat file per save and per rail action (O(total-bytes) per
+  interaction toward the 200 MB quota). Fix = an id→fileName index or
+  stat-only listing in the backends. Blocked on: a refactor with storage
+  churn; behavior is correct today.
+- `[B-ARTIFACT-1]` `[open]` — `MinifiedDocs.generated.js` (2.3 MB) was
+  never committed despite the Phase 14 docs saying so; it is STAGED as of
+  2026-10-01 — the owner's next commit must include it or fresh clones
+  fail every gate.
+- The O4 flake family gained a third member (2026-10-01 full run:
+  `ByokQdrantSetupCore.spec.js`, passes standalone; the seam family hit
+  twice on 2026-09-25/27). Still open below.
+- O3 (npm install prunes the libGD test alias), O5 (prompt budget accept
+  or slim), O14-displacement and O14-prose-typos remain open unchanged.

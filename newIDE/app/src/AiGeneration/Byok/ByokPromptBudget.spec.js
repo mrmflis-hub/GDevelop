@@ -18,7 +18,7 @@ import {
   toOpenAiToolsFormat,
 } from './ByokToolSchema';
 import { searchByokEngineReference } from './ByokEngineReference';
-import { listByokSkillMetadata } from './ByokSkills';
+import { findByNameokSkill, listByokSkillMetadata } from './ByokSkills';
 
 const BYOK_BUDGET_WARNING_TOKENS = 10000;
 const BYOK_BUDGET_HARD_CAP_TOKENS = 15000;
@@ -29,19 +29,34 @@ describe('ByokPromptBudget (Phase 13.5)', () => {
   const measureTurn = async (hasOpenedProject: boolean) => {
     const advertisedNames = getByokAdvertisedToolNames({ hasOpenedProject });
     const skills = await listByokSkillMetadata();
-    const systemPrompt = buildByokSystemPrompt({
-      toolNames: advertisedNames,
-      hasOpenedProject,
-      context: makeByokPromptContext({
+    // audit011026 B-PROMPT-8: the worst case includes the auto-suggested
+    // build-workflow body (capped at the orchestrator's constant) and a
+    // max-size notes payload — both ride inside the frozen system prompt.
+    const buildWorkflowSkill = await findByNameokSkill('build-workflow');
+    const autoSuggestSuffix = buildWorkflowSkill
+      ? `
+
+[Auto-loaded skill: build-workflow — its pipeline applies to this conversation]
+${buildWorkflowSkill.body.slice(0, 6000)}`
+      : '';
+    const systemPrompt =
+      buildByokSystemPrompt({
         toolNames: advertisedNames,
         hasOpenedProject,
-        skills,
-        engineReferenceAvailable: true,
-        docsAvailable: true,
-        projectNotes: null,
-        customInstructions: 'a'.repeat(2000),
-      }),
-    });
+        context: makeByokPromptContext({
+          toolNames: advertisedNames,
+          hasOpenedProject,
+          skills,
+          engineReferenceAvailable: true,
+          projectNotes: {
+            conventions: 'c'.repeat(1200),
+            inProgress: 'i'.repeat(1200),
+            decisions: 'd'.repeat(1200),
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          },
+          customInstructions: 'a'.repeat(2000),
+        }),
+      }) + autoSuggestSuffix;
     const toolsJson = JSON.stringify(
       toOpenAiToolsFormat(getByokToolSchemasForNames(advertisedNames))
     );

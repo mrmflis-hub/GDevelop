@@ -110,13 +110,24 @@ export const makeByokChatName = (chat: AiRequest): string => {
   return name;
 };
 
-/** Make a file-system-safe file name out of a chat name. */
-export const makeByokChatFileName = (chatName: string): string => {
+/**
+ * Make a file-system-safe file name out of a chat name AND its chat id
+ * (audit011026 B-UI-3): two same-day chats sharing their first five words
+ * ("make me a platformer…") used to derive the same file name and silently
+ * overwrote each other's history — the id makes every chat's file unique,
+ * the readable name stays the prefix.
+ */
+export const makeByokChatFileName = (
+  chatName: string,
+  chatId: string
+): string => {
   const safeName = chatName
     .replace(/[\\/:*?"<>|#%&{}$!'@+`=\s]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
-  return (safeName || 'chat') + CHAT_FILE_EXTENSION;
+    .slice(0, 60);
+  const safeChatId = chatId.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 40);
+  return `${safeName || 'chat'}-${safeChatId ||
+    'unnamed'}${CHAT_FILE_EXTENSION}`;
 };
 
 /**
@@ -436,7 +447,7 @@ export const createByokChatFileStore = (
     saveChat: async (chat: AiRequest): Promise<string> => {
       const chatFile = await findChatFile(chat.id);
       const chatName = makeByokChatName(chat);
-      const desiredFileName = makeByokChatFileName(chatName);
+      const desiredFileName = makeByokChatFileName(chatName, chat.id);
 
       // The name carries the last-interaction date: a saved chat whose
       // name changed is moved to the new file name.
@@ -480,7 +491,7 @@ export const createByokChatFileStore = (
       chat.title = title;
       // The display name drives the file name: after retitling, the chat
       // moves (the first prompt is overridden by the explicit title).
-      const desiredFileName = makeByokChatFileName(title);
+      const desiredFileName = makeByokChatFileName(title, chatId);
       if (chatFile.fileName !== desiredFileName) {
         await backend
           .moveFile(chatFile.fileName, desiredFileName)
@@ -518,14 +529,33 @@ export const createByokChatFileStore = (
       let evictedImageChatCount = 0;
       let evictedChatCount = 0;
 
+      // Orphaned image sidecars are swept FIRST (audit011026 B-UI-4): a
+      // sidecar whose .md is gone (a crash between the two deletes of
+      // deleteChat, or a lost name collision) was never enumerated by the
+      // chat-based loops below, yet counted against the quota forever.
+      const chatFiles = await listChatFiles();
+      const listedChatIds = new Set(
+        chatFiles.map(chatFile => chatFile.chat.id)
+      );
+      const allFiles = await backend.listFiles();
+      for (const file of allFiles) {
+        if (!file.fileName.endsWith(IMAGES_FILE_SUFFIX)) continue;
+        const chatIdOfSidecar = file.fileName.slice(
+          0,
+          -IMAGES_FILE_SUFFIX.length
+        );
+        if (listedChatIds.has(chatIdOfSidecar)) continue;
+        await backend.deleteFile(file.fileName).catch(() => {});
+        evictedImageChatCount++;
+      }
+
       let totalBytes = await backend.getTotalBytes();
       if (totalBytes <= capBytes) {
         return { evictedImageChatCount, evictedChatCount };
       }
 
       // Oldest chats first (listChatFiles is newest first).
-      const chatFiles = (await listChatFiles()).slice().reverse();
-      for (const chatFile of chatFiles) {
+      for (const chatFile of chatFiles.slice().reverse()) {
         if (totalBytes <= capBytes) break;
         const imagesFile = imagesFileNameForChatId(chatFile.chat.id);
         const imagesContent = await backend.readFile(imagesFile);
@@ -538,7 +568,7 @@ export const createByokChatFileStore = (
 
       // Still over with no image left: the oldest whole chats go (the
       // last resort — transcript text is lost only here).
-      for (const chatFile of chatFiles) {
+      for (const chatFile of chatFiles.slice().reverse()) {
         totalBytes = await backend.getTotalBytes();
         if (totalBytes <= capBytes) break;
         await backend.deleteFile(chatFile.fileName);

@@ -62,6 +62,7 @@ type Props = {|
   ) => void | Promise<void>,
   // Delete a BYOK chat of the rail (transcript + image sidecar).
   onDeleteByokChat?: ?(aiRequestId: string) => Promise<void>,
+  onRenameByokChat?: ?(aiRequestId: string, title: string) => Promise<void>,
   // Legacy archive-only handler (kept for older callers): used when
   // onSetByokChatArchived is not provided.
   onArchiveByokChat?: ?(aiRequestId: string) => void,
@@ -268,6 +269,7 @@ type AskAiHistoryContentProps = {|
     archived: boolean
   ) => void | Promise<void>,
   onDeleteByokChat?: ?(aiRequestId: string) => Promise<void>,
+  onRenameByokChat?: ?(aiRequestId: string, title: string) => Promise<void>,
   onArchiveByokChat?: ?(aiRequestId: string) => void,
   className?: string,
 |};
@@ -281,6 +283,7 @@ export const AskAiHistoryContent = ({
   onSetByokChatArchived,
   onDeleteByokChat,
   onArchiveByokChat,
+  onRenameByokChat,
   className,
 }: AskAiHistoryContentProps): React.Node => {
   const {
@@ -363,6 +366,10 @@ export const AskAiHistoryContent = ({
           }
         };
         return [
+          {
+            label: i18n._(t`Rename`),
+            click: () => setRenamedAiRequestId(aiRequestId),
+          },
           {
             label: isArchived ? i18n._(t`Unarchive`) : i18n._(t`Archive`),
             click: archiveClick,
@@ -474,6 +481,10 @@ export const AskAiHistoryContent = ({
           }}
           onEndRenaming={newTitle => {
             setRenamedAiRequestId(null);
+            if (isByokAiRequestId(aiRequestSummary.id) && onRenameByokChat) {
+              void onRenameByokChat(aiRequestSummary.id, newTitle);
+              return;
+            }
             renameAiRequest(aiRequestSummary.id, newTitle);
           }}
         />
@@ -603,6 +614,7 @@ export const AskAiHistory = ({
   onSetByokChatArchived,
   onDeleteByokChat,
   onArchiveByokChat,
+  onRenameByokChat,
 }: Props): React.Node => {
   const isDrawer = layout !== 'side-panel';
   // In a drawer, choosing a chat is the end of the interaction: close it.
@@ -625,6 +637,7 @@ export const AskAiHistory = ({
       onSetByokChatArchived={onSetByokChatArchived}
       onDeleteByokChat={onDeleteByokChat}
       onArchiveByokChat={onArchiveByokChat}
+      onRenameByokChat={onRenameByokChat}
       className={isDrawer ? undefined : classes.sidePanel}
     />
   );

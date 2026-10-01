@@ -9,11 +9,21 @@
  * without Electron.
  */
 
-/** The hard cap of one text attachment (the phase's starting value). */
+/** The hard cap of one text attachment, in CHARACTERS of the content. */
 export const BYOK_TEXT_ATTACHMENT_MAX_BYTES = 100 * 1000;
 
 /** How many leading bytes the binary sniff looks at. */
 export const BYOK_TEXT_ATTACHMENT_SNIFF_BYTES = 8192;
+
+/**
+ * The input-file cap of a text attachment (audit011026 B-UI-11): the file
+ * is stat'ed BEFORE it is read, so a multi-gigabyte log never loads (the
+ * content cap above only truncated AFTER the full read).
+ */
+export const BYOK_TEXT_ATTACHMENT_INPUT_MAX_BYTES = 10 * 1000 * 1000;
+
+/** The input-file cap of an image attachment (same rationale). */
+export const BYOK_IMAGE_ATTACHMENT_INPUT_MAX_BYTES = 20 * 1000 * 1000;
 
 /**
  * The extensions considered text: a file outside this list is refused with a
@@ -120,6 +130,26 @@ export const readByokTextAttachment = async (
     };
   }
 
+  // The size pre-check runs on the stat, before any byte is loaded
+  // (audit011026 B-UI-11). The test doubles may not implement stat — the
+  // cap then falls back to the post-read length below.
+  if (typeof fsLike.promises.stat === 'function') {
+    let stats: any = null;
+    try {
+      stats = await fsLike.promises.stat(filePath);
+    } catch (error) {
+      stats = null;
+    }
+    if (stats && stats.size > BYOK_TEXT_ATTACHMENT_INPUT_MAX_BYTES) {
+      return {
+        ok: false,
+        error: `"${name}" is larger than ${Math.round(
+          BYOK_TEXT_ATTACHMENT_INPUT_MAX_BYTES / (1024 * 1024)
+        )} MB — attach an excerpt instead.`,
+      };
+    }
+  }
+
   let buffer: any;
   try {
     buffer = await fsLike.promises.readFile(filePath);
@@ -129,18 +159,33 @@ export const readByokTextAttachment = async (
       error: `"${name}" could not be read.`,
     };
   }
-
-  const fullContent: string = buffer.toString('utf8');
-  if (
-    byokContentLooksBinary(
-      fullContent.slice(0, BYOK_TEXT_ATTACHMENT_SNIFF_BYTES)
-    )
-  ) {
+  if (buffer.length > BYOK_TEXT_ATTACHMENT_INPUT_MAX_BYTES) {
     return {
       ok: false,
-      error: `"${name}" looks like a binary file — only text files can be attached.`,
+      error: `"${name}" is larger than ${Math.round(
+        BYOK_TEXT_ATTACHMENT_INPUT_MAX_BYTES / (1024 * 1024)
+      )} MB — attach an excerpt instead.`,
     };
   }
+
+  // The binary sniff runs on the RAW BYTES of the head (audit011026
+  // B-UI-11): sniffing the decoded string let a binary file whose first
+  // NUL sits past 8192 decoded characters through as text. The buffer is a
+  // Uint8Array — a NUL byte is the binary marker.
+  const sniffByteCount = Math.min(
+    buffer.length,
+    BYOK_TEXT_ATTACHMENT_SNIFF_BYTES
+  );
+  for (let index = 0; index < sniffByteCount; index++) {
+    if (buffer[index] === 0) {
+      return {
+        ok: false,
+        error: `"${name}" looks like a binary file — only text files can be attached.`,
+      };
+    }
+  }
+
+  const fullContent: string = buffer.toString('utf8');
 
   const truncated = fullContent.length > BYOK_TEXT_ATTACHMENT_MAX_BYTES;
   return {
@@ -198,6 +243,16 @@ export const readByokImageAttachment = async (
     return {
       ok: false,
       error: `"${name}" could not be read.`,
+    };
+  }
+  // Images were uncapped entirely (audit011026 B-UI-11): a 100 MB PNG was
+  // fully read and base64-encoded (+33%) before any downscale.
+  if (buffer.length > BYOK_IMAGE_ATTACHMENT_INPUT_MAX_BYTES) {
+    return {
+      ok: false,
+      error: `"${name}" is larger than ${Math.round(
+        BYOK_IMAGE_ATTACHMENT_INPUT_MAX_BYTES / (1024 * 1024)
+      )} MB — downscale it before attaching.`,
     };
   }
 

@@ -149,13 +149,30 @@ export const updateByokChat = (aiRequest: AiRequest): void => {
       : existingChat
       ? existingChat.archivedAt
       : undefined;
+  // The per-chat model/effort selection (Phase 13.1) is preserved the same
+  // way (audit011026 B-UI-1): the orchestrator's record diverges from the
+  // store copy after the first message, and re-spreading it here used to
+  // wipe the selection the bottom-bar dropdown had just written. (The
+  // field is a BYOK-local extension of the upstream AiRequest — hence the
+  // any-casts, like everywhere else it is read or written.)
+  const incomingSelection = (aiRequest: any).byokModelSelection;
+  const byokModelSelection =
+    incomingSelection !== undefined
+      ? incomingSelection
+      : existingChat
+      ? (existingChat: any).byokModelSelection
+      : undefined;
 
-  byokChats.set(aiRequest.id, {
-    ...aiRequest,
-    archivedAt,
-    output: [...(aiRequest.output || [])],
-    updatedAt: new Date().toISOString(),
-  });
+  byokChats.set(
+    aiRequest.id,
+    (({
+      ...aiRequest,
+      archivedAt,
+      byokModelSelection,
+      output: [...(aiRequest.output || [])],
+      updatedAt: new Date().toISOString(),
+    }: any): AiRequest)
+  );
   notifyListeners();
   // A terminal status is one of the save points ("after the AI finishes"):
   // ready, error and suspended save right away; the in-flight updates save

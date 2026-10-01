@@ -8,6 +8,7 @@ import {
   unserializeFromJSObject,
 } from '../../Utils/Serializer';
 import { parseByokEventScript } from './ByokEventScriptParser';
+import { validateByokEventScript } from './ByokLocalEventWriter';
 import type { ByokExtraTool, ByokExtraToolResult } from './ByokExtraTools';
 
 /**
@@ -617,6 +618,24 @@ export const applyCustomObjectChildrenChanges = (
 ): {| messages: Array<string>, failure: ByokExtraToolResult | null |} => {
   const messages: Array<string> = [];
   const childObjects = eventsBasedObject.getObjects();
+
+  // Every removal's usage guard runs BEFORE any child is added: a guard
+  // firing after the adds left the additions applied while the whole call
+  // reported didModifyProject:false (audit011026 B-TOOL-3).
+  if (Array.isArray(args.children_to_remove)) {
+    for (const name of args.children_to_remove) {
+      if (typeof name !== 'string') continue;
+      if (!childObjects.hasObjectNamed(name)) continue;
+      if (isChildObjectNameUsedInEvents(eventsBasedObject, name)) {
+        return {
+          messages: [],
+          failure: makeFailure(
+            `Child "${name}" is used by the custom object's events — read them (they live in the object's functions), remove the usages, then remove the child.`
+          ),
+        };
+      }
+    }
+  }
 
   if (Array.isArray(args.children_to_add)) {
     for (const child of args.children_to_add) {
@@ -1306,6 +1325,15 @@ const createCustomFunctionTool: ByokExtraTool = {
       );
     }
 
+    // The script is validated BEFORE anything is inserted: a parse failure
+    // after the insert left a half-created function while reporting
+    // didModifyProject:false (audit011026 B-TOOL-3).
+    const createEventScript = readOptionalString(args, 'event_script');
+    if (createEventScript) {
+      const invalidScript = validateByokEventScript(project, createEventScript);
+      if (invalidScript) return makeFailure(invalidScript);
+    }
+
     const eventsFunction = functionsContainer.insertNewEventsFunction(
       functionName,
       functionsContainer.getEventsFunctionsCount()
@@ -1407,6 +1435,14 @@ const changeCustomFunctionTool: ByokExtraTool = {
         },
         didModifyProject: true,
       };
+    }
+
+    // Same pre-validation as creation: rename/settings/parameters must not
+    // apply first and fail on the script after (audit011026 B-TOOL-3).
+    const changeEventScript = readOptionalString(args, 'event_script');
+    if (changeEventScript) {
+      const invalidScript = validateByokEventScript(project, changeEventScript);
+      if (invalidScript) return makeFailure(invalidScript);
     }
 
     const messages: Array<string> = [];

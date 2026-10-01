@@ -1418,19 +1418,21 @@ describe('ByokOrchestrator: images (Phase 6)', () => {
     return { aiRequest, lastCallMessages };
   };
 
-  it('materializes screenshots as image parts, keeping only the latest 2', async () => {
+  it('materializes screenshots as image parts, replaying every sent image until an explicit eviction (audit011026 B-CORE-4)', async () => {
     const { aiRequest, lastCallMessages } = await runCaptureRounds({
       runtimeDeps: makeImageRuntimeDeps(),
     });
 
     expect(aiRequest.status).toBe('ready');
-    expect(countImageParts(lastCallMessages)).toBe(2);
-    // The oldest capture was replaced by a one-line placeholder.
+    // The monotonic survival rule: a third capture does NOT retroactively
+    // evict the first (that rewrote mid-transcript messages and re-busted
+    // the provider prefix cache on every capture). All three replay.
+    expect(countImageParts(lastCallMessages)).toBe(3);
     const placeholderText = lastCallMessages
       .filter((message: any) => Array.isArray(message.content))
       .map((message: any) => message.content[0].text)
       .join('\n');
-    expect(placeholderText).toContain('removed to save context');
+    expect(placeholderText).not.toContain('removed to save context');
   });
 
   it('sends no image part at all with imageSupport "no"', async () => {
@@ -2248,5 +2250,159 @@ describe('ByokOrchestrator: prompt-cache stability (Phase 14.1)', () => {
     expect(stripped[1].slice(0, stripped[0].length)).toEqual(stripped[0]);
     expect(stripped[2].slice(0, stripped[1].length)).toEqual(stripped[1]);
     expect(stripped[3].slice(0, stripped[2].length)).toEqual(stripped[2]);
+  });
+});
+
+describe('ByokOrchestrator: audit011026 fixes', () => {
+  let notesLoader: any;
+  beforeEach(() => {
+    mockSendByokChatCompletion.mockReset();
+    (createByokCancellation: any).mockImplementation(() => ({
+      token: { __fakeCancelToken: true },
+      cancel: mockFn(jest.fn()),
+    }));
+    clearByokModels();
+    notesLoader = mockFn(jest.fn(async () => null));
+    jest
+      .spyOn(ByokProjectNotesModule, 'loadByokProjectNotes')
+      // $FlowFixMe[cannot-write]
+      .mockImplementation(identifier => notesLoader(identifier));
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('B-CORE-1: sends the profile-resolved temperature and max_tokens on every main-loop call', async () => {
+    mockSendByokChatCompletion.mockResolvedValueOnce(
+      makeResponse({ text: 'Done.' })
+    );
+    const { orchestrator } = makeOrchestrator({
+      settings: {
+        ...DEFAULT_BYOK_SETTINGS,
+        providers: [
+          {
+            id: 'p1',
+            name: 'Provider One',
+            endpointUrl: 'https://p1.example.com/v1',
+            keyRef: 'p1',
+            modelSettings: [],
+          },
+        ],
+        strongProfile: {
+          providerId: 'p1',
+          modelName: 'small-local-model',
+          temperature: 0.7,
+          maxTokens: 999,
+        },
+      },
+      getApiKeyForProvider: async () => 'sk-p1',
+    });
+
+    await orchestrator.startNewChat('Hello');
+
+    expect(mockSendByokChatCompletion).toHaveBeenCalledTimes(1);
+    const options = mockSendByokChatCompletion.mock.calls[0][0].options;
+    expect(options.model).toBe('small-local-model');
+    expect(options.temperature).toBe(0.7);
+    expect(options.maxTokens).toBe(999);
+  });
+
+  it('B-CORE-2: a loop-guard stop in a parallel batch leaves no orphaned tool call', async () => {
+    const executeFunctionCalls = makeFakeExecutor();
+    let round = 0;
+    mockSendByokChatCompletion.mockImplementation(async () => {
+      round++;
+      if (round <= 3) {
+        return makeResponse({
+          toolCalls: [
+            makeToolCall(
+              `call-${round}`,
+              'describe_instances',
+              '{"scene_name":"Scene"}'
+            ),
+          ],
+        });
+      }
+      // Round 4: the identical call (the 4th repeat → stop) arrives in a
+      // parallel batch with siblings before and after it.
+      return makeResponse({
+        toolCalls: [
+          makeToolCall('call-4a', 'describe_scene', '{"scene_name":"Scene"}'),
+          makeToolCall(
+            'call-4b',
+            'describe_instances',
+            '{"scene_name":"Scene"}'
+          ),
+          makeToolCall('call-4c', 'read_game_project_json', '{}'),
+        ],
+      });
+    });
+    const { orchestrator, aiRequest } = makeOrchestrator({
+      executeFunctionCalls,
+    });
+
+    await orchestrator.startNewChat('Loop in parallel');
+
+    expect(aiRequest.status).toBe('error');
+    expect(aiRequest.error && aiRequest.error.code).toBe(
+      'byok-repeated-tool-call-loop'
+    );
+    // Every tool call of the final batch — proceeding, stopped and
+    // dropped-after-stop alike — has its matching function_call_output:
+    // an orphaned tool_call would make the transcript protocol-invalid
+    // and un-retryable on strict endpoints.
+    const lastAssistant = (aiRequest.output || [])
+      .filter(
+        message => message.type === 'message' && message.role === 'assistant'
+      )
+      .pop();
+    if (!lastAssistant) throw new Error('No assistant message found.');
+    const lastCallIds = lastAssistant.content
+      .filter((item: any) => item.type === 'function_call')
+      .map((item: any) => item.call_id);
+    expect(lastCallIds).toHaveLength(3);
+    const outputCallIds = new Set(
+      (aiRequest.output || [])
+        .filter(message => message.type === 'function_call_output')
+        .map(message => message.call_id)
+    );
+    for (const callId of lastCallIds) {
+      expect(outputCallIds.has(callId)).toBe(true);
+    }
+  });
+
+  it('B-CORE-3: switching the notes identifier between messages recomposes the prompt', async () => {
+    let identifier = 'proj-a';
+    mockSendByokChatCompletion
+      .mockResolvedValueOnce(makeResponse({ text: 'A talk' }))
+      .mockResolvedValueOnce(makeResponse({ text: 'B talk' }));
+    notesLoader.mockImplementation(async id =>
+      id === 'proj-a'
+        ? {
+            conventions: 'Conventions of project A',
+            inProgress: '',
+            decisions: '',
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          }
+        : {
+            conventions: 'Conventions of project B',
+            inProgress: '',
+            decisions: '',
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          }
+    );
+    const { orchestrator } = makeOrchestrator({
+      getProjectNotesIdentifier: () => identifier,
+    });
+
+    await orchestrator.startNewChat('First');
+    identifier = 'proj-b';
+    await orchestrator.sendUserMessage('Second');
+
+    const systemContents = mockSendByokChatCompletion.mock.calls.map(
+      call => call[0].options.messages[0].content
+    );
+    expect(systemContents[0]).toContain('Conventions of project A');
+    expect(systemContents[1]).toContain('Conventions of project B');
   });
 });

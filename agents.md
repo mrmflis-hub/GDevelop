@@ -482,4 +482,31 @@ manual in the same session and say so in the worklog.
 
 ---
 
-*Last updated: 2026-09-27.*
+- **Full-repository audit + fix session 2026-10-01** (`REVIEW/
+  audit011026.md` is the permanent record: 63 BYOK findings — 55 FIXED
+  this session with spec coverage, 4 triaged to `outofscoped.md`, 4
+  doc-claim corrections — plus 8 upstream findings with proposed fixes
+  awaiting reporting). Prompt bumped **byok-v11** (`read_doc_page` is now
+  a real no-project tool backed by the minified wiki, a prompt→registry
+  guard spec enforces taught-token resolution, the EventScript example
+  bugs are fixed, the map chunks carry `docs-min-map`). Headline fixes:
+  the benchmark WASM crash (outofscoped O1 — a type-confused
+  `gd.Serializer.toJSON(eventsList)`), the untracked MinifiedDocs artifact
+  (STAGED — the owner's commit must include it), per-chat model
+  selections no longer wiped, providers-only configs work end-to-end,
+  chat files embed the chat id, loop-guard stops no longer orphan tool
+  calls, temperature/max_tokens are sent, image replay is monotonic
+  (cache-safe), the persisted RAG index reloads after restarts, the
+  Qdrant dimensions math (every Qdrant build failed 400), `electron.remote`
+  (docs folder silently dead), confined BYOK downloads
+  (`byok-download-resource`: cookie only for gdevelop.io, project-folder
+  confinement, cap+timeout) + URL-filename traversal, MCP cancellation
+  forwarding + timing-safe token + pid-reuse verification + queue-slot
+  release, atomic chat/index writes, the rail's BYOK Rename (O6), and
+  attachment size caps. The corpus hash CHANGED — the owner's Task 17.2
+  upload must be a rebuilt v3 bundle. Gates: 229 suites / 2527 tests
+  (2526 passed + 1 pre-existing skip + the documented one-suite flake,
+  third family member), lint 0/0, Flow 0, prettier clean (app +
+  electron-app). Owner follow-ups: usertasks Task 18.
+
+*Last updated: 2026-10-01.*

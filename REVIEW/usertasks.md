@@ -1074,3 +1074,35 @@ No ML experience needed; the notebook is self-contained.
    consent; download and run your own holdout queries against stock vs
    tuned; sanity-check that the recorded gate decision matches what you
    see.
+
+## Task 18 — audit011026 follow-ups (owner actions from the 2026-10-01 audit + fix session)
+
+Full record: `REVIEW/audit011026.md` (Part 1 BYOK, Part 2 upstream).
+Recommended dispositions, one line each:
+
+1. **Commit the session.** The tree carries the audit fixes (55 findings,
+   prompt byok-v11) AND the staged `MinifiedDocs.generated.js` — the
+   artifact MUST be in the commit or fresh clones fail every gate
+   (`[B-ARTIFACT-1]`).
+2. **Task 17.2 becomes a v3 bundle.** The corpus hash changed on
+   2026-10-01 (tags folded into the hash with delimiters, map-chunk tag
+   split, two EventScript example fixes, fence-aware chunking) — the
+   built v2 (`571d1b30`) is stale and the import will (correctly) refuse
+   it; rebuild via `scripts/byok-embedder/build-byok-rag-bundle.js`
+   before uploading.
+3. **Report the Part-2 upstream findings** (UP-1..UP-8, each with a
+   proposed fix + test) to upstream when you open that channel; UP-1
+   (cookie sent to arbitrary hosts + unvalidated download path in
+   `local-file-download`) is the one worth reporting first — BYOK no
+   longer uses that handler for model-chosen URLs, but every other caller
+   keeps the exposure.
+4. **Desktop QA additions for the fixed behaviors** (fold into Tasks
+   13/16/17.5 as convenient): provider "Test" uses the provider's own
+   model; providers-only config turns the toggle green and starts chats;
+   the rail's BYOK Rename works; delete of a working chat stops the loop;
+   restore is refused while a chat works; a restarted app recovers the
+   persisted RAG index (semantic mode without a rebuild); the Qdrant
+   setup survives a restart on the same port; MCP client cancellation
+   actually cancels; `read_doc_page` answers the docs-min drill-down
+   offline (the Task 17.5.2 text assumed it existed — it did not until
+   now).

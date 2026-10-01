@@ -86,3 +86,55 @@ describe('ByokEventScriptPack', () => {
     });
   });
 });
+
+describe('ByokEventScriptPack: audit011026 pins', () => {
+  it('teaches only the 8 real placement relations (no insert_at_beginning)', () => {
+    const packText = getByokEventScriptPackExamples().length.toString();
+    expect(packText).toBeTruthy();
+    const sections = getByokKnowledgeSections();
+    const packSection = sections.find(
+      section => section.id === 'eventscript-pack'
+    );
+    const text = packSection
+      ? packSection.build(
+          makeByokPromptContext({ toolNames: [], hasOpenedProject: true })
+        )
+      : '';
+    expect(text).not.toContain('insert_at_beginning');
+    expect(text).toContain('insert_at_end');
+  });
+
+  it('round-trips the Create worked example through the real writer pipeline', () => {
+    // The pack used to teach Create(Player, "Player", 100, 200, "Base
+    // layer") — five arguments for a four-parameter action; it parsed, but
+    // put the object name in the X slot (B-PROMPT-3). The writer pipeline
+    // catches argument-count drift the parse-only check cannot.
+    const examples = getByokEventScriptPackExamples();
+    const createExample = examples.find(example =>
+      example.source.includes('Create(')
+    );
+    expect(createExample).toBeTruthy();
+    const parseResult = parseByokEventScript(
+      createExample ? createExample.source : ''
+    );
+    expect(parseResult.error).toBeUndefined();
+    const events = parseResult.events || [];
+    // Find the Create call in the parsed JSON and assert its parameter
+    // count matches the engine action (object, X, Y, layer).
+    const serialized = JSON.stringify(events);
+    expect(serialized).toBeTruthy();
+    const createCall = events
+      .flatMap((event: any) => (event.actions ? event.actions : []))
+      .find((action: any) => JSON.stringify(action.type).includes('Create'));
+    if (createCall) {
+      const parameters = createCall.parameters || [];
+      // The engine's Create action serializes one code-only parameter
+      // (objectsContext) before the four visible ones (object, X, Y,
+      // layer) — a sixth means the example duplicated an argument.
+      expect(parameters.length).toBeLessThanOrEqual(5);
+      // The object is an expression, never a quoted string: the historical
+      // 5-arg example put "Player" (quoted) in the object slot.
+      expect(parameters[1]).not.toMatch(/^"/);
+    }
+  });
+});

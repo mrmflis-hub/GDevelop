@@ -157,3 +157,22 @@ describe('response helpers', () => {
     expect(core.shouldRelayResponseBody(null, '{}')).toBe(false);
   });
 });
+
+describe('ByokMcpStdioAdapterCore: audit011026 fixes', () => {
+  const core = require('./ByokMcpStdioAdapterCore');
+
+  it('B-MCP-11: synthesizes an error for a request answered 413 with no relayable body', () => {
+    const text = core.buildHttpFailureText({ jsonrpc: '2.0', id: 7 }, 413);
+    expect(text).toContain('"id":7');
+    expect(text).toContain('413');
+  });
+
+  it('B-MCP-11: stays silent for notifications and batch arrays', () => {
+    expect(
+      core.buildHttpFailureText({ jsonrpc: '2.0', method: 'x' }, 400)
+    ).toBe(null);
+    expect(core.buildHttpFailureText([{ jsonrpc: '2.0', id: 1 }], 400)).toBe(
+      null
+    );
+  });
+});

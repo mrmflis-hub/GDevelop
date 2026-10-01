@@ -56,7 +56,6 @@ export type ByokPromptContext = {|
   // engine cheat-sheet section then points to search_reference.
   engineReferenceAvailable: boolean,
   // True when the curated docs subset is available offline.
-  docsAvailable: boolean,
   // The project's persisted notes (null when the project has none yet).
   projectNotes: ?ByokProjectNotes,
   // The user's global custom instructions (verbatim, may be empty).
@@ -169,7 +168,7 @@ const HYBRID_GROUNDING_SECTION_TEXT = `- Every screenshot comes with a textual s
 // Phase 11 authoring reach: the surfaces beyond scenes the agent can now
 // read/write, and how they combine. Phase 12 added the discovery stores
 // and the runtime steering.
-const AUTHORING_REACH_SECTION_TEXT = `- External events (read_external_events_source/add_external_events) are reusable event sheets: author them once, then include them from scenes (the "Include external events" event, written as EventScript).
+const AUTHORING_REACH_SECTION_TEXT = `- External events (read_external_events_source/add_external_events) are reusable event sheets: author them once, then include them from scenes — ask the user to add the "Include external events" event by hand (EventScript cannot express an include, and no tool creates one yet).
 - External layouts (describe/put_external_layout_instances) hold reusable sets of instances — the spawn-point mechanic. Fill one, then spawn it at runtime with "Create objects from external layout".
 - Effects: list_effects gives the exact effect_type strings and defaults — never guess an effect type; pick it there and pass its defaults through changed_properties.
 - Sprites: describe_sprite_frames first, then change_sprite_frames with typed operations (frames, points, collision masks).
@@ -701,7 +700,6 @@ export const makeByokPromptContext = (options: {|
   hasOpenedProject: boolean,
   skills?: Array<ByokSkillMetadata>,
   engineReferenceAvailable?: boolean,
-  docsAvailable?: boolean,
   projectNotes?: ?ByokProjectNotes,
   customInstructions?: string,
 |}): ByokPromptContext => ({
@@ -709,7 +707,6 @@ export const makeByokPromptContext = (options: {|
   hasOpenedProject: options.hasOpenedProject,
   skills: options.skills || [],
   engineReferenceAvailable: options.engineReferenceAvailable || false,
-  docsAvailable: options.docsAvailable || false,
   projectNotes: options.projectNotes || null,
   customInstructions: options.customInstructions || '',
 });

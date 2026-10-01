@@ -139,6 +139,10 @@ describe('BYOK_TOOL_NAMES (the v4 whitelist)', () => {
     expect(BYOK_NO_PROJECT_TOOL_NAMES).toEqual([
       'initialize_project',
       'get_game_starter_summary',
+      // audit011026 B-PROMPT-1: the docs-min drill-down of the whole
+      // minified wiki — useful with and without a project, advertised
+      // without one (search_knowledge tags find it otherwise).
+      'read_doc_page',
     ]);
   });
 

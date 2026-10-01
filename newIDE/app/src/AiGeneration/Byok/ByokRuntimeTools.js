@@ -346,12 +346,15 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
         sinceIndex: typeof args.since_index === 'number' ? args.since_index : 0,
         level: typeof args.level === 'string' ? args.level : undefined,
       });
+      const logStats = session.getLogStats();
       return {
         output: {
           success: true,
           logs,
+          log_count: logs.length,
+          dropped_log_count: logStats.droppedCount,
           note:
-            'console.log output of the running game. Pair with capture_preview_screenshot to see the frame.',
+            'console.log output of the running game. The buffer keeps the latest 200 entries; when dropped_log_count grows, old indexes shift — re-read from 0. Pair with capture_preview_screenshot to see the frame.',
         },
         didModifyProject: false,
       };

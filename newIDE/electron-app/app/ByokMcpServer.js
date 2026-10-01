@@ -56,6 +56,12 @@ let serverState = null;
 // on purpose: readiness outlives an enable/disable cycle, as the Ask AI
 // panel does not re-announce when the endpoint is toggled.
 const readySenders = new Set();
+// Monotonic across server cycles (audit011026 B-MCP-8): a counter reset
+// per cycle let a late renderer response from the previous cycle answer
+// the new cycle's same-numbered request.
+let forwardCounter = 0;
+// Senders that already carry the destroyed hook (audit011026 B-MCP-7).
+const sendersWithDestroyedHook = new WeakSet();
 
 const getDiscoveryFilePath = app =>
   path.join(app.getPath('userData'), DISCOVERY_FILE_NAME);
@@ -79,8 +85,17 @@ const respondEmpty = (res, statusCode) => {
 
 const isAuthorizedRequest = (req, state) => {
   if (req.headers.host !== `127.0.0.1:${state.port}`) return false;
-  if (req.headers.authorization !== `Bearer ${state.token}`) return false;
-  return true;
+  // Timing-safe compare (audit011026 B-MCP-5): a plain !== leaks length
+  // and early-exit timing of the token.
+  const header =
+    typeof req.headers.authorization === 'string'
+      ? req.headers.authorization
+      : '';
+  const expected = `Bearer ${state.token}`;
+  const headerBuffer = Buffer.from(header, 'utf8');
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  if (headerBuffer.length !== expectedBuffer.length) return false;
+  return crypto.timingSafeEqual(headerBuffer, expectedBuffer);
 };
 
 const pruneDestroyedSenders = () => {
@@ -133,8 +148,8 @@ const forwardToRenderer = (state, parsedMessage, rawMessage, res) => {
     );
     return;
   }
-  state.forwardCounter += 1;
-  const internalId = state.forwardCounter;
+  forwardCounter += 1;
+  const internalId = forwardCounter;
   const timer = setTimeout(() => {
     respondForwardTimeout(state, internalId);
   }, FORWARD_TIMEOUT_MS);
@@ -171,7 +186,17 @@ const handlePostMessage = (state, rawBody, res) => {
     return;
   }
   if (parsedMessage.id === null || parsedMessage.id === undefined) {
-    // A notification: nothing is expected back, so nothing is forwarded.
+    // A notification: no response is expected. The side-effecting ones
+    // still reach the renderer — `notifications/cancelled` is the client's
+    // cancellation of an in-flight call, and the protocol core implements
+    // a real handler for it; swallowing it here left tool calls running
+    // and the serialized queue blocked (audit011026 B-MCP-1). Fire and
+    // forget: requestId -1 can never collide with the monotonic forward
+    // ids, and the renderer never responds to a notification anyway.
+    const sender = pickReadySender();
+    if (sender) {
+      sender.send('byok-mcp-request', { requestId: -1, rawMessage });
+    }
     respondEmpty(res, 202);
     return;
   }
@@ -187,8 +212,27 @@ const readBodyWithCap = (req, res, onBodyRead) => {
     totalBytes += chunk.length;
     if (totalBytes > MAX_BODY_BYTES) {
       rejected = true;
-      respondEmpty(res, 413);
-      req.destroy();
+      // The 413 must actually reach the client: destroying the request
+      // synchronously right after res.end() almost always cut the response
+      // before it left the socket, and the adapter reported the endpoint
+      // as unreachable instead of "too large" (audit011026 B-MCP-10).
+      res.statusCode = 413;
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Connection', 'close');
+      res.end(
+        JSON.stringify(
+          buildErrorBody(
+            null,
+            INVALID_REQUEST_CODE,
+            'The request body exceeds the 1 MB cap.'
+          )
+        )
+      );
+      req.removeAllListeners('data');
+      req.on('data', () => {
+        // Drain the rest of the oversized body; the connection closes with
+        // the response above.
+      });
       return;
     }
     chunks.push(chunk);
@@ -205,12 +249,10 @@ const readBodyWithCap = (req, res, onBodyRead) => {
 const handleHttpRequest = (req, res) => {
   const state = serverState;
   if (!state) {
-    // A keep-alive connection from before the endpoint was disabled.
-    respondJson(
-      res,
-      503,
-      buildErrorBody(null, NO_TOOL_HOST_CODE, HOST_UNAVAILABLE_MESSAGE)
-    );
+    // A keep-alive connection from before the endpoint was disabled. The
+    // same 403 as a wrong token (audit011026 B-MCP-5): an unauthenticated
+    // local process must not learn whether the endpoint is enabled.
+    respondEmpty(res, 403);
     return;
   }
   if (!isAuthorizedRequest(req, state)) {
@@ -250,11 +292,35 @@ const listenOnLoopback = server =>
   });
 
 /**
+ * Verify that the discovery file's endpoint really answers as this app's
+ * MCP server (with its token). Windows aggressively reuses pids: after a
+ * crash, the file's dead pid can belong to an unrelated long-lived
+ * process, which must not block the endpoint forever (audit011026
+ * B-MCP-4).
+ */
+const isDiscoveryEndpointAlive = (port, token) =>
+  new Promise(resolve => {
+    const request = http.get(
+      `http://127.0.0.1:${port}/health`,
+      { headers: { Authorization: `Bearer ${token}` } },
+      response => {
+        response.resume();
+        resolve(response.statusCode === 200);
+      }
+    );
+    request.on('error', () => resolve(false));
+    request.setTimeout(2000, () => {
+      request.destroy();
+      resolve(false);
+    });
+  });
+
+/**
  * The pid of another, still-running GDevelop that owns the endpoint, or
  * null when there is no discovery file, it is unreadable, or its owner is
  * gone (a stale file this instance may take over).
  */
-const findForeignOwnerPid = discoveryFilePath => {
+const findForeignOwnerPid = async discoveryFilePath => {
   let discovery = null;
   try {
     discovery = JSON.parse(fs.readFileSync(discoveryFilePath, 'utf8'));
@@ -266,6 +332,15 @@ const findForeignOwnerPid = discoveryFilePath => {
   try {
     process.kill(pid, 0); // Signal 0: a liveness probe, nothing is sent.
   } catch (error) {
+    return null;
+  }
+  const port = discovery ? discovery.port : null;
+  const token = discovery ? discovery.token : null;
+  if (typeof port !== 'number' || typeof token !== 'string') return null;
+  const endpointAlive = await isDiscoveryEndpointAlive(port, token);
+  if (!endpointAlive) {
+    // The pid is alive but the endpoint is not ours/an endpoint: pid
+    // reuse — the file is stale, this instance takes over.
     return null;
   }
   return pid;
@@ -288,11 +363,13 @@ const startServer = async (app, discoveryFilePath) => {
     startedAt: new Date().toISOString(),
   };
   try {
-    fs.writeFileSync(
-      discoveryFilePath,
-      JSON.stringify(discovery, null, 2),
-      'utf8'
-    );
+    // 0600 (audit011026 B-MCP-6): the file carries the bearer token — on
+    // multi-user POSIX hosts the default mode made it readable by every
+    // local user.
+    fs.writeFileSync(discoveryFilePath, JSON.stringify(discovery, null, 2), {
+      mode: 0o600,
+    });
+    fs.chmodSync(discoveryFilePath, 0o600);
   } catch (error) {
     server.close();
     return { ok: false, error: String(error) };
@@ -306,7 +383,6 @@ const startServer = async (app, discoveryFilePath) => {
     port,
     token,
     pending: new Map(),
-    forwardCounter: 0,
   };
   return { ok: true, port };
 };
@@ -340,7 +416,7 @@ const ensureStopped = app => {
 const ensureStarted = async app => {
   if (serverState) return { ok: true, running: true, port: serverState.port };
   const discoveryFilePath = getDiscoveryFilePath(app);
-  const foreignOwnerPid = findForeignOwnerPid(discoveryFilePath);
+  const foreignOwnerPid = await findForeignOwnerPid(discoveryFilePath);
   if (foreignOwnerPid !== null) {
     return { ok: false, error: FOREIGN_OWNER_MESSAGE };
   }
@@ -371,9 +447,15 @@ const registerByokMcpServer = (ipcMain, app) => {
     }
     if (sender.isDestroyed()) return;
     readySenders.add(sender);
-    sender.once('destroyed', () => {
-      readySenders.delete(sender);
-    });
+    // The destroyed hook is attached ONCE per sender (audit011026
+    // B-MCP-7): the announcement fires on every Ask AI panel toggle, and
+    // piling 'destroyed' listeners past 11 triggered MaxListeners warnings.
+    if (!sendersWithDestroyedHook.has(sender)) {
+      sendersWithDestroyedHook.add(sender);
+      sender.once('destroyed', () => {
+        readySenders.delete(sender);
+      });
+    }
   });
   ipcMain.on('byok-mcp-response', (event, payload) => {
     const state = serverState;

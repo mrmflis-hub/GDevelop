@@ -1,5 +1,5 @@
 /**
- * The BYOK dev-only eval harness (Phase 9.8): ~30 real game-building tasks
+ * The BYOK dev-only eval harness (Phase 9.8): 41 real game-building tasks
  * scored mechanically, runnable on demand against any configured endpoint.
  * The instrument that tells whether a prompt/skill/tool change actually
  * helped — eval-driven tool development.
@@ -208,6 +208,17 @@ const scoreGridPlacement = (result, expected, spacingTolerance = 0.01) => {
       }.`
     );
   }
+  // audit011026 B-SCRIPT-10: NaN coordinates sort arbitrarily and make
+  // every spacing comparison silently pass — reject them up front.
+  if (
+    instances.some(
+      instance =>
+        !Number.isFinite(Number(instance.x)) ||
+        !Number.isFinite(Number(instance.y))
+    )
+  ) {
+    return fail('An instance has a non-numeric position.');
+  }
   const sortedX = instances
     .map(instance => Number(instance.x))
     .sort((a, b) => a - b);
@@ -399,8 +410,26 @@ const scoreHudRepair = (result, target) => {
   if (!serialized.includes(target.objectName)) {
     return fail(`The ${target.objectName} was not moved.`);
   }
-  const x = Number(args.x);
-  const y = Number(args.y);
+  // put_2d_instances carries the coordinates inside args.instances, not at
+  // the top level (audit011026 B-SCRIPT-3: every correct repair through it
+  // used to score "No numeric target position").
+  let x = Number(args.x);
+  let y = Number(args.y);
+  if (
+    (!Number.isFinite(x) || !Number.isFinite(y)) &&
+    Array.isArray(args.instances)
+  ) {
+    const targetInstance = args.instances.find(
+      instance =>
+        instance &&
+        typeof instance === 'object' &&
+        JSON.stringify(instance).includes(target.objectName)
+    );
+    if (targetInstance) {
+      x = Number(targetInstance.x);
+      y = Number(targetInstance.y);
+    }
+  }
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     return fail('No numeric target position.');
   }
@@ -706,6 +735,8 @@ async function runJudgePass({ results, judgeModel, sendJudgeCompletion }) {
   const judged = [];
   for (const result of results) {
     if (result.passed) continue;
+    // Infrastructure failures are not outcomes to judge (B-SCRIPT-2).
+    if (result.error) continue;
     try {
       const response = await sendJudgeCompletion({
         model: judgeModel,
@@ -720,12 +751,21 @@ async function runJudgePass({ results, judgeModel, sendJudgeCompletion }) {
           {
             role: 'user',
             content:
-              `Task ${result.taskId} (${result.category}) failed: ${
+              `Task ${result.taskId} (${result.category}) failed the mechanical scorer: ${
                 result.reason
               }. ` +
               `Rounds used: ${result.rounds}, tool calls: ${
                 result.toolCalls
               }. ` +
+              // audit011026 B-SCRIPT-2: without the answer text and the
+              // tool calls the judge could only parrot the scorer's own
+              // reason string.
+              `The assistant's final answer was: ${String(
+                result.answerText || ''
+              ).slice(0, 2000)}. ` +
+              `Its tool calls were: ${JSON.stringify(
+                (result.toolCallDetails || []).slice(0, 20)
+              ).slice(0, 4000)}. ` +
               'Was the outcome nonetheless acceptable for the user?',
           },
         ],
@@ -793,6 +833,10 @@ async function runEvalTask(task, sendCompletion) {
     reason: score.reason,
     rounds: 1,
     toolCalls: parsed.toolCalls.length,
+    // audit011026 B-SCRIPT-2: the judge pass needs the evidence (the count
+    // above stays the compact report field).
+    answerText: parsed.answerText,
+    toolCallDetails: parsed.toolCalls,
     tokens,
   };
 }
@@ -867,7 +911,11 @@ function formatReport(modelName, results, options) {
           result.reason
         } (rounds: ${result.rounds}, tool calls: ${result.toolCalls}, tokens: ${
           result.tokens
-        })`
+        })${
+          // audit011026 B-SCRIPT-4: an infrastructure failure (401, quota,
+          // network) is not a model failure — the cause was console-only.
+          result.error ? ` — error: ${result.error}` : ''
+        }`
       );
     }
   }
@@ -919,7 +967,9 @@ async function main() {
   const axios = require('axios');
 
   const sendCompletion = async ({ messages }) => {
-    const body = { model, messages };
+    // audit011026 B-SCRIPT-8: an uncapped completion is the same failure
+    // class the QA round-1 benchmark fix addressed.
+    const body = { model, messages, max_tokens: 4096 };
     const response = await axios.post(
       `${endpoint.replace(/\/+$/, '')}/chat/completions`,
       body,
@@ -957,6 +1007,18 @@ async function main() {
         `ERROR ${task.id}: ${String((error && error.message) || error)}`
       );
     }
+    // audit011026 B-SCRIPT-4: a partial-results checkpoint after every
+    // task — a killed run (Ctrl+C, OOM, sleep) used to lose everything.
+    fs.mkdirSync(outDir, { recursive: true });
+    const checkpointPath = path.join(
+      outDir,
+      `eval-${model.replace(/[^a-zA-Z0-9._-]+/g, '_')}-partial.json`
+    );
+    fs.writeFileSync(
+      checkpointPath,
+      JSON.stringify({ modelName: model, results, writtenAt: new Date().toISOString() }, null, 2),
+      'utf8'
+    );
   }
 
   let judgeResults = null;
@@ -965,7 +1027,7 @@ async function main() {
     const sendJudgeCompletion = async ({ messages }) => {
       const response = await axios.post(
         `${endpoint.replace(/\/+$/, '')}/chat/completions`,
-        { model: judgeModel, messages },
+        { model: judgeModel, messages, max_tokens: 512 },
         {
           headers: key ? { Authorization: `Bearer ${key}` } : {},
           timeout: 120000,

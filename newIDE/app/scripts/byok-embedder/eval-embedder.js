@@ -155,6 +155,21 @@ const main = async () => {
   if (!Array.isArray(queries) || queries.length === 0) {
     throw new Error('The query set is empty or malformed.');
   }
+  // audit011026 B-SCRIPT-7: every holdout entry is shape-checked — a
+  // typo'd field used to score as a silent MISS or crash opaquely.
+  for (const [index, entry] of queries.entries()) {
+    if (
+      !entry ||
+      typeof entry.query !== 'string' ||
+      !entry.query.trim() ||
+      typeof entry.expectedSource !== 'string' ||
+      !entry.expectedSource
+    ) {
+      throw new Error(
+        `Query #${index} is malformed: every entry needs "query" and "expectedSource" strings.`
+      );
+    }
+  }
 
   let embedder;
   if (args.embedderId === 'hashing') {

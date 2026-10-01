@@ -82,23 +82,37 @@ export const rebuildByokRagIndex = async (options: {|
     };
   }
 
-  const index = await buildByokRagIndex({
-    embedderId: settings.embedderId,
-    embed: embedder.embed,
-    docsFolderPath: settings.docsFolderPath || undefined,
-    docsFolderReader: settings.docsFolderPath
-      ? await makeDocsFolderReader()
-      : undefined,
-    backend: settings.backend,
-    onProgress: (progress: ByokRagIndexProgress) => {
-      if (options.onProgress) {
-        options.onProgress({
-          stage: 'embedding',
-          progress: progress.progress,
-        });
-      }
-    },
-  });
+  let index = null;
+  try {
+    index = await buildByokRagIndex({
+      embedderId: settings.embedderId,
+      embed: embedder.embed,
+      docsFolderPath: settings.docsFolderPath || undefined,
+      docsFolderReader: settings.docsFolderPath
+        ? await makeDocsFolderReader()
+        : undefined,
+      backend: settings.backend,
+      onProgress: (progress: ByokRagIndexProgress) => {
+        if (options.onProgress) {
+          options.onProgress({
+            stage: 'embedding',
+            progress: progress.progress,
+          });
+        }
+      },
+    });
+  } catch (error) {
+    // "A failure is a clean outcome, never a throw" is this function's
+    // contract — a mid-corpus embedder abort (WASM OOM at batch N) must not
+    // propagate and leave the settings tab stuck on "Building…"
+    // (audit011026 B-RAG-6).
+    return {
+      ok: false,
+      error: `Building the index failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
 
   if (options.onProgress) {
     options.onProgress({ stage: 'uploading', progress: 1 });
@@ -127,7 +141,10 @@ export const rebuildByokRagIndex = async (options: {|
 
 /**
  * Load a persisted in-process index (if any, and up to date) into the live
- * runtime — the app-start path when RAG is enabled. Returns null when
+ * runtime — the recovery path when the app restarted and the in-memory
+ * runtime is gone (audit011026 B-RAG-1: the built index sits on disk in
+ * `<userData>/byok-rag/index.json`; without this call every restart
+ * silently degraded `search_knowledge` to lexical mode). Returns null when
  * there is nothing to load (the tab offers a build).
  */
 export const loadPersistedByokRagIndex = async (
@@ -138,8 +155,25 @@ export const loadPersistedByokRagIndex = async (
   if (!store) return null;
   const stored = await store.loadIndex();
   if (!stored) return null;
-  if (!isByokRagIndexUpToDate(stored, settings.embedderId)) {
-    // A different embedder was used: the vectors are meaningless — rebuild.
+  // The freshness check compares against the CURRENT corpus (an app update
+  // that changed the bundled docs must not serve stale vectors — the same
+  // rule the prebuilt-bundle import enforces).
+  const { buildByokRagCorpus } = require('./ByokRagCorpus');
+  const currentChunks = await buildByokRagCorpus({
+    docsFolderPath: settings.docsFolderPath || undefined,
+    docsFolderReader: settings.docsFolderPath
+      ? await makeDocsFolderReader()
+      : undefined,
+  });
+  if (
+    !isByokRagIndexUpToDate(
+      stored,
+      settings.embedderId,
+      computeByokRagCorpusHash(currentChunks)
+    )
+  ) {
+    // A different embedder or a different corpus: the vectors are
+    // meaningless — rebuild.
     return null;
   }
   const embedderResult = await loadByokRagEmbedder(settings.embedderId);
@@ -157,9 +191,11 @@ const makeDocsFolderReader = async (): Promise<any> => {
   const optionalRequire = require('../../../Utils/OptionalRequire').default;
   const fs = optionalRequire('fs');
   const path = optionalRequire('path');
-  const electron = optionalRequire('electron');
-  const remote = electron ? electron.remote : null;
-  if (!fs || !path || !remote) {
+  // fs/path are available in the desktop renderer (nodeIntegration). The
+  // historical `electron.remote` requirement could never be satisfied —
+  // it was removed in Electron 14 — which silently turned the reader into
+  // a no-op and indexed zero user files (audit011026 B-RAG-3).
+  if (!fs || !path) {
     return {
       listMarkdownFiles: async () => [],
       readFile: async () => '',

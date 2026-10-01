@@ -56,9 +56,11 @@ const { readByokUserSkills } = require('./ByokUserSkills');
 const { registerByokChatFileHandlers } = require('./ByokChatFiles');
 const { registerByokMcpServer } = require('./ByokMcpServer');
 const { registerByokRagFileHandlers } = require('./ByokRagFiles');
+const { registerByokResourceDownload } = require('./ByokResourceDownload');
 const {
   ensureStarted: ensureByokQdrantStarted,
   registerByokQdrant,
+  stopByokQdrantForExit,
 } = require('./ByokQdrant');
 const {
   setWindowFileIdentifier,
@@ -468,6 +470,9 @@ app.on('ready', function() {
   }
 
   ipcMain.on('app-exit', (_event, exitCode) => {
+    // app.exit() skips 'before-quit': run the BYOK cleanup hooks explicitly
+    // or the managed Qdrant child is orphaned (audit011026 B-ELEC-8).
+    stopByokQdrantForExit();
     app.exit(typeof exitCode === 'number' ? exitCode : 0);
   });
 
@@ -513,10 +518,16 @@ app.on('ready', function() {
   registerByokMcpServer(ipcMain, app);
   registerByokRagFileHandlers(ipcMain, app);
   registerByokQdrant(ipcMain, app);
+  // The confined BYOK resource downloads (import_project_resources):
+  // http(s) only, the cloud cookie only for gdevelop.io hosts, byte cap +
+  // timeout, target confined to the project folder.
+  registerByokResourceDownload(ipcMain);
   // The managed Qdrant (BYOK RAG) starts with the app once installed.
-  app.on('ready', () => {
-    ensureByokQdrantStarted(app);
-  });
+  // Called directly (not via app.on('ready')): this code already runs
+  // inside the one 'ready' emission, and a listener registered during an
+  // emission is never called (audit011026 B-ELEC-3 — the autostart used to
+  // silently never run).
+  ensureByokQdrantStarted(app);
 
   // BYOK perception: capture a screenshot of an open preview window (the
   // last one when no id is given) as base64 PNG — works while the window is

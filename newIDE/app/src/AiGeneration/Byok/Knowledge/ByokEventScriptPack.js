@@ -36,7 +36,7 @@ const GRAMMAR_REFERENCE = `## Structure
 - Prefix any header with \`disabled \`: \`disabled if Cond():\` — the event stays but never runs.
 
 ## Actions
-- One call per indented line: \`Delete(Enemy)\`, \`Create(Player, "Player", 100, 200, "Base layer")\`, \`ResetTimer("SpawnTimer")\`.
+- One call per indented line: \`Delete(Enemy)\`, \`Create(Player, 100, 200, "Base layer")\`, \`ResetTimer("SpawnTimer")\`.
 - Prefix with \`await \` to wait for its completion before the next line: \`await Wait(1)\`.
 - Variables: \`SetNumberVariable(Score, =, +1)\` (operators: =, +, -, *, /), \`SetSceneNumberVariable(...)\`, \`SetGlobalNumberVariable(...)\`.
 
@@ -48,7 +48,7 @@ const GRAMMAR_REFERENCE = `## Structure
 
 ## Placement (how add_scene_events targets the scene)
 - One batch = one object with: event_script, placement_relation, placement_target_event_id, expected_event_source.
-- placement_relation: insert_at_end | insert_at_beginning | insert_before_event | insert_after_event | insert_as_sub_event | insert_and_replace_event | replace_entire_event_and_sub_events | delete_event.
+- placement_relation: insert_at_end | insert_before_event | insert_after_event | insert_as_sub_event | insert_and_replace_event | replace_entire_event_and_sub_events | delete_event.
 - For the replace relations, echo the target's current source (from read_events_source) in expected_event_source: the edit is refused when the target changed since you read it.
 - Sub-events deeper than what read_events_source shows are collapsed as \`# ...\` markers: to edit them, target their nearest visible parent.
 
@@ -77,7 +77,7 @@ if Collision(Player, Spike):
   },
   {
     name: 'Else chains over the scene state',
-    source: `always:
+    source: `if not DepartScene():
   SetNumberVariable(Score, =, Score + 1)
 else if DepartScene():
   SetNumberVariable(Score, =, Score + 50)
@@ -93,7 +93,7 @@ else if DepartScene():
   {
     name: 'Iterating the children of a structure variable',
     source: `for each child in SaveData value Items:
-  SetStringVariable(ItemName, =, child)`,
+  SetStringVariable(ItemName, =, Items)`,
   },
   {
     name: 'Loops, sub-events and a group',

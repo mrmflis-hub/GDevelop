@@ -83,6 +83,11 @@ const ByokRagSettingsTab = (): React.Node => {
   const [isImportingBundle, setIsImportingBundle] = React.useState<boolean>(
     false
   );
+  // The synchronous busy guard of the heavy operations (audit011026
+  // B-RAG-7): the state flags above are set only AFTER the consent dialog
+  // resolves, and they do not gate each other's button — a rebuild and a
+  // bundle import racing the same index store was last-writer-wins.
+  const ragHeavyOperationRef = React.useRef<boolean>(false);
   const [bundleMessage, setBundleMessage] = React.useState<React.Node | null>(
     null
   );
@@ -146,11 +151,26 @@ const ByokRagSettingsTab = (): React.Node => {
 
   /** Download + import the prebuilt index (one consent, D14-7(a)). */
   const onDownloadBundle = async () => {
-    const indexAsset =
+    if (ragHeavyOperationRef.current) return;
+    const consentIndexAsset =
       bundleRelease && bundleRelease.indexAsset
         ? bundleRelease.indexAsset
         : null;
-    if (!indexAsset) return;
+    if (consentIndexAsset) {
+      // Same as onRebuild: the consent runs before the guard engages.
+      const accepted = await askBundleConsent(consentIndexAsset);
+      if (!accepted) return;
+    }
+    if (ragHeavyOperationRef.current) return;
+    ragHeavyOperationRef.current = true;
+    try {
+      await runBundleDownloadAfterConsent();
+    } finally {
+      ragHeavyOperationRef.current = false;
+    }
+  };
+
+  const askBundleConsent = async (indexAsset: any): Promise<boolean> => {
     const embedder = BYOK_RAG_EMBEDDERS.find(
       candidate => candidate.id === ragSettings.embedderId
     );
@@ -161,13 +181,20 @@ const ByokRagSettingsTab = (): React.Node => {
     const embedderMegabytes = embedder
       ? embedder.approximateDownloadMegabytes
       : 25;
-    const accepted = await showConfirmation({
+    return await showConfirmation({
       title: t`Download the prebuilt index?`,
       message: t`This downloads the ready-made search index (~${indexMegabytes} MB) instead of building it locally (~30 minutes). The query-side embedding model (~${embedderMegabytes} MB) downloads with it — both stay on your machine.`,
       confirmButtonLabel: t`Download and install`,
       dismissButtonLabel: t`Cancel`,
     });
-    if (!accepted) return;
+  };
+
+  const runBundleDownloadAfterConsent = async () => {
+    const indexAsset =
+      bundleRelease && bundleRelease.indexAsset
+        ? bundleRelease.indexAsset
+        : null;
+    if (!indexAsset) return;
 
     setIsImportingBundle(true);
     setBundleMessage(null);
@@ -226,20 +253,37 @@ const ByokRagSettingsTab = (): React.Node => {
    * (D13-9: explicit size, nothing downloads behind the user's back).
    */
   const onRebuild = async () => {
+    if (ragHeavyOperationRef.current) return;
+    // The consent runs BEFORE the guard engages: a declined dialog leaves
+    // the guard untouched, so an immediate retry is never dropped, while a
+    // second concurrent accepted click still loses the race.
+    const accepted = await askRebuildConsent();
+    if (!accepted) return;
+    if (ragHeavyOperationRef.current) return;
+    ragHeavyOperationRef.current = true;
+    try {
+      await runRebuildAfterConsent();
+    } finally {
+      ragHeavyOperationRef.current = false;
+    }
+  };
+
+  const askRebuildConsent = async (): Promise<boolean> => {
     const embedder = BYOK_RAG_EMBEDDERS.find(
       candidate => candidate.id === ragSettings.embedderId
     );
     const downloadMegabytes = embedder
       ? embedder.approximateDownloadMegabytes
       : 25;
-    const accepted = await showConfirmation({
+    return await showConfirmation({
       title: t`Download the local embedding model?`,
       message: t`The semantic index needs a small local model (~${downloadMegabytes} MB), downloaded once and cached. Everything stays on your machine: no text ever leaves it.`,
       confirmButtonLabel: t`Download and build`,
       dismissButtonLabel: t`Cancel`,
     });
-    if (!accepted) return;
+  };
 
+  const runRebuildAfterConsent = async () => {
     setIsBuilding(true);
     setBuildError(null);
     setBuildProgress({ stage: 'embedding', progress: 0 });
@@ -461,7 +505,7 @@ const ByokRagSettingsTab = (): React.Node => {
             isBuilding ? <Trans>Building…</Trans> : <Trans>Rebuild index</Trans>
           }
           onClick={onRebuild}
-          disabled={isBuilding}
+          disabled={isBuilding || isImportingBundle}
         />
       </Line>
       {buildError && (
@@ -512,7 +556,10 @@ const ByokRagSettingsTab = (): React.Node => {
           }
           onClick={onDownloadBundle}
           disabled={
-            isImportingBundle || !bundleRelease || !bundleRelease.indexAsset
+            isBuilding ||
+            isImportingBundle ||
+            !bundleRelease ||
+            !bundleRelease.indexAsset
           }
         />
         <FlatButton

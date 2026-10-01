@@ -86,10 +86,14 @@ export const loadByokRagEmbedder = async (
       throw new Error('The embedder loader is not available.');
     }
     const transformers = await loader();
+    // dtype pinned explicitly (audit011026 B-RAG-15): `quantized` is the
+    // removed v2 option — v4 loads q8 only via the wasm device default, so
+    // any default change would silently diverge the query-side vectors
+    // from the pinned-q8 prebuilt bundles.
     const extractor = await transformers.pipeline(
       'feature-extraction',
       embedderId,
-      { quantized: true }
+      { dtype: 'q8' }
     );
     return {
       id: embedderId,

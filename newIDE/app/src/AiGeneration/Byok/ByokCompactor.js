@@ -34,7 +34,32 @@ export const BYOK_COMPACTION_SUMMARY_MAX_CHARS = 2400;
 const TOOL_SUMMARY_PREVIEW_CHARS = 120;
 
 const isUserTurnStart = (message: AiRequestMessage): boolean =>
-  message.type === 'message' && message.role === 'user';
+  message.type === 'message' &&
+  message.role === 'user' &&
+  !(message: any).byokCompactionSynthetic;
+
+/**
+ * The two user-role messages a compaction prepends carry this BYOK-local
+ * flag: they must not count as conversation turns (turn counting that
+ * includes them makes every later compaction re-summarize the summary —
+ * the churn of a compaction that cannot create headroom).
+ */
+export const makeByokCompactionSyntheticMessage = (
+  text: string
+): AiRequestMessage =>
+  (({
+    type: 'message',
+    status: 'completed',
+    role: 'user',
+    content: [
+      {
+        type: 'user_request',
+        status: 'completed',
+        text,
+      },
+    ],
+    byokCompactionSynthetic: true,
+  }: any): AiRequestMessage);
 
 /**
  * The transcript index where the last `keepCount` turns begin (a turn
@@ -268,32 +293,18 @@ export const compactByokTranscript = async ({
 
   const compactedTranscript: Array<AiRequestMessage> = [];
   if (summaryText) {
-    compactedTranscript.push({
-      type: 'message',
-      status: 'completed',
-      role: 'user',
-      content: [
-        {
-          type: 'user_request',
-          status: 'completed',
-          text: `[Earlier conversation summarized to save context — the summary below replaces the original messages]\n${summaryText}`,
-        },
-      ],
-    });
+    compactedTranscript.push(
+      makeByokCompactionSyntheticMessage(
+        `[Earlier conversation summarized to save context — the summary below replaces the original messages]\n${summaryText}`
+      )
+    );
   }
   if (preservedBlockText) {
-    compactedTranscript.push({
-      type: 'message',
-      status: 'completed',
-      role: 'user',
-      content: [
-        {
-          type: 'user_request',
-          status: 'completed',
-          text: `[Preserved context — keep following it]\n${preservedBlockText}`,
-        },
-      ],
-    });
+    compactedTranscript.push(
+      makeByokCompactionSyntheticMessage(
+        `[Preserved context — keep following it]\n${preservedBlockText}`
+      )
+    );
   }
   compactedTranscript.push(...keptMessages);
 

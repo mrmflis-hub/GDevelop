@@ -19,8 +19,21 @@ const core = require('../../app/src/AiGeneration/Byok/Rag/ByokQdrantSetupCore');
 const BYOK_QDRANT_FOLDER = 'qdrant';
 const DEFAULT_QDRANT_BASE_URL = 'http://127.0.0.1:6333';
 
-let qdrantChild = null;
+let qdrantChildren = new Set();
 let lastKnownBaseUrl = null;
+let shuttingDown = false;
+let setupInFlight = null;
+
+const killByokQdrantChildren = () => {
+  for (const child of qdrantChildren) {
+    try {
+      child.kill();
+    } catch (error) {
+      // Already gone.
+    }
+  }
+  qdrantChildren = new Set();
+};
 
 const getQdrantFolder = userDataPath =>
   path.join(userDataPath, BYOK_QDRANT_FOLDER);
@@ -38,55 +51,113 @@ const isHealthy = baseUrl =>
     });
   });
 
-const downloadArchive = (url, destinationPath) =>
+const BYOK_QDRANT_DOWNLOAD_MAX_BYTES = 300 * 1000 * 1000;
+const BYOK_QDRANT_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const BYOK_QDRANT_MAX_REDIRECTS = 5;
+
+const removeFileBestEffort = destinationPath => {
+  fs.unlink(destinationPath, () => {
+    // Best-effort cleanup of the partial archive.
+  });
+};
+
+// The final (2xx) hop only: the destination stream is opened here, never
+// on a redirect (the old shape leaked one open handle per hop and never
+// destroyed the 3xx responses — audit011026 B-RAG-19), with a byte cap and
+// a timeout (ELEC-5).
+const downloadArchiveToStream = (url, destinationPath, redirectsLeft) =>
   new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destinationPath);
-    https
-      .get(url, response => {
-        if (
-          response.statusCode >= 300 &&
-          response.statusCode < 400 &&
-          response.headers.location
-        ) {
-          // GitHub release downloads redirect.
-          downloadArchive(response.headers.location, destinationPath).then(
-            resolve,
-            reject
-          );
+    const transport = url.startsWith('http://') ? http : https;
+    const request = transport.get(url, response => {
+      if (
+        response.statusCode >= 300 &&
+        response.statusCode < 400 &&
+        response.headers.location
+      ) {
+        response.resume();
+        if (redirectsLeft <= 0) {
+          reject(new Error('Download failed: too many redirects.'));
           return;
         }
-        if (response.statusCode !== 200) {
-          file.close();
-          fs.unlinkSync(destinationPath);
-          reject(new Error(`Download failed: HTTP ${response.statusCode}`));
-          return;
+        const nextUrl = new URL(response.headers.location, url).href;
+        downloadArchiveToStream(
+          nextUrl,
+          destinationPath,
+          redirectsLeft - 1
+        ).then(resolve, reject);
+        return;
+      }
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`Download failed: HTTP ${response.statusCode}`));
+        return;
+      }
+      const file = fs.createWriteStream(destinationPath);
+      let receivedBytes = 0;
+      let settled = false;
+      const fail = error => {
+        if (settled) return;
+        settled = true;
+        try {
+          file.destroy();
+        } catch (closeError) {
+          // The destroy itself is best-effort.
         }
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close(() => resolve());
-        });
-        file.on('error', reject);
-      })
-      .on('error', error => {
-        file.close();
+        removeFileBestEffort(destinationPath);
         reject(error);
+      };
+      response.on('data', chunk => {
+        receivedBytes += chunk.length;
+        if (receivedBytes > BYOK_QDRANT_DOWNLOAD_MAX_BYTES) {
+          request.destroy();
+          fail(
+            new Error(
+              `Download failed: exceeds ${BYOK_QDRANT_DOWNLOAD_MAX_BYTES} bytes.`
+            )
+          );
+        }
       });
+      file.on('error', fail);
+      response.on('error', fail);
+      file.on('finish', () => {
+        if (settled) return;
+        settled = true;
+        file.close(() => resolve());
+      });
+      response.pipe(file);
+    });
+    request.setTimeout(BYOK_QDRANT_DOWNLOAD_TIMEOUT_MS, () => {
+      request.destroy();
+      reject(new Error('Download failed: timed out.'));
+    });
+    request.on('error', error => {
+      removeFileBestEffort(destinationPath);
+      reject(error);
+    });
   });
 
+const downloadArchive = (url, destinationPath) =>
+  downloadArchiveToStream(url, destinationPath, BYOK_QDRANT_MAX_REDIRECTS);
+
 // Windows 10+ ships bsdtar (handles zip); macOS bsdtar handles zip too;
-// Linux GNU tar handles the .tar.gz release directly.
+// Linux GNU tar handles the .tar.gz release directly. execFile with array
+// args — no shell interpolation of the paths (audit011026 B-ELEC-13).
 const extractArchive = (archivePath, destinationFolder, kind) =>
   new Promise((resolve, reject) => {
-    const command =
+    const args =
       kind === 'zip'
-        ? `tar -xf "${archivePath}" -C "${destinationFolder}"`
-        : `tar -xzf "${archivePath}" -C "${destinationFolder}"`;
-    childProcess.exec(
-      command,
-      { cwd: destinationFolder },
+        ? ['-xf', archivePath, '-C', destinationFolder]
+        : ['-xzf', archivePath, '-C', destinationFolder];
+    childProcess.execFile(
+      'tar',
+      args,
+      { cwd: destinationFolder, timeout: 120000 },
       (error, stdout, stderr) => {
-        if (error) reject(new Error(`${command} failed: ${stderr || error}`));
-        else resolve();
+        if (error) {
+          reject(new Error(`tar ${args.join(' ')} failed: ${stderr || error}`));
+        } else {
+          resolve();
+        }
       }
     );
   });
@@ -136,10 +207,40 @@ const makeSetupDeps = () => ({
       }
     );
     child.on('error', () => {});
-    qdrantChild = child;
+    // Every child is tracked and killed on quit: overwriting a single
+    // reference orphaned earlier spawns (audit011026 B-RAG-5).
+    qdrantChildren.add(child);
+    child.on('exit', () => {
+      qdrantChildren.delete(child);
+    });
+    if (shuttingDown) {
+      // A setup racing the quit path must not leave a child behind.
+      try {
+        child.kill();
+      } catch (error) {
+        // Already gone.
+      }
+    }
     return child.pid;
   },
   getAvailablePort,
+  isPortAvailable: port =>
+    new Promise(resolve => {
+      const probe = net.createServer();
+      probe.once('error', () => resolve(false));
+      probe.listen(port, '127.0.0.1', () => {
+        probe.close(() => resolve(true));
+      });
+    }),
+  killProcessByPid: pid =>
+    new Promise(resolve => {
+      try {
+        process.kill(pid);
+        resolve();
+      } catch (error) {
+        resolve();
+      }
+    }),
   deleteFile: async filePath => {
     try {
       fs.unlinkSync(filePath);
@@ -150,28 +251,49 @@ const makeSetupDeps = () => ({
 });
 
 const runSetup = async app => {
-  const userDataPath = app.getPath('userData');
-  const platform = core.getByokQdrantPlatform(process.platform, process.arch);
-  if (!platform) {
-    return {
-      ok: false,
-      stage: 'downloading',
-      error: `Qdrant is not available for this platform (${process.platform}/${
+  // Serialized (audit011026 B-ELEC-9): two concurrent setup invokes raced
+  // two downloads onto the same archive path and orphaned the first child.
+  if (setupInFlight) return setupInFlight;
+  setupInFlight = (async () => {
+    try {
+      const userDataPath = app.getPath('userData');
+      const platform = core.getByokQdrantPlatform(
+        process.platform,
         process.arch
-      }).`,
-    };
-  }
-  const paths = core.makeByokQdrantPaths(
-    getQdrantFolder(userDataPath),
-    core.getByokQdrantPlatform(process.platform, process.arch)
-  );
-  fs.mkdirSync(paths.installFolder, { recursive: true });
-  return core.runByokQdrantSetup({
-    platform,
-    paths,
-    deps: makeSetupDeps(),
-    defaultBaseUrl: DEFAULT_QDRANT_BASE_URL,
-  });
+      );
+      if (!platform) {
+        return {
+          ok: false,
+          stage: 'downloading',
+          error: `Qdrant is not available for this platform (${
+            process.platform
+          }/${process.arch}).`,
+        };
+      }
+      const paths = core.makeByokQdrantPaths(
+        getQdrantFolder(userDataPath),
+        core.getByokQdrantPlatform(process.platform, process.arch)
+      );
+      try {
+        fs.mkdirSync(paths.installFolder, { recursive: true });
+      } catch (error) {
+        return {
+          ok: false,
+          stage: 'downloading',
+          error: `The install folder could not be created: ${error.message}`,
+        };
+      }
+      return await core.runByokQdrantSetup({
+        platform,
+        paths,
+        deps: makeSetupDeps(),
+        defaultBaseUrl: DEFAULT_QDRANT_BASE_URL,
+      });
+    } finally {
+      setupInFlight = null;
+    }
+  })();
+  return setupInFlight;
 };
 
 /**
@@ -204,6 +326,8 @@ const ensureStarted = async app => {
 };
 
 /** One JSON request over the loopback Qdrant REST API (the restore deps). */
+const BYOK_QDRANT_REQUEST_TIMEOUT_MS = 30000;
+
 const requestJson = (baseUrl, method, requestPath, body) =>
   new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
@@ -241,6 +365,12 @@ const requestJson = (baseUrl, method, requestPath, body) =>
         });
       }
     );
+    // A wedged Qdrant must settle the IPC, not hang it forever
+    // (audit011026 B-RAG-16).
+    request.setTimeout(BYOK_QDRANT_REQUEST_TIMEOUT_MS, () => {
+      request.destroy();
+      reject(new Error(`Qdrant ${method} ${requestPath}: timed out.`));
+    });
     request.on('error', reject);
     if (payload) request.write(payload);
     request.end();
@@ -292,17 +422,11 @@ const registerByokQdrant = (ipcMain, app) => {
       baseUrl: null,
     };
   });
-  // Stop the managed child on quit (the app-start autostart is a status
+  // Stop every managed child on quit (the app-start autostart is a status
   // check + spawn by this same module when the RAG tab enables it).
   app.on('before-quit', () => {
-    if (qdrantChild) {
-      try {
-        qdrantChild.kill();
-      } catch (error) {
-        // Already gone.
-      }
-      qdrantChild = null;
-    }
+    shuttingDown = true;
+    killByokQdrantChildren();
   });
 };
 
@@ -311,4 +435,8 @@ module.exports = {
   DEFAULT_QDRANT_BASE_URL,
   ensureStarted,
   registerByokQdrant,
+  // The app-exit path skips 'before-quit' (app.exit terminates
+  // immediately) — the CLI --run-command runner uses it, so the BYOK
+  // children need an explicit stop there too (audit011026 B-ELEC-8).
+  stopByokQdrantForExit: killByokQdrantChildren,
 };

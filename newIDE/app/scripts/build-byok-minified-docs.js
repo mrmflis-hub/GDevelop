@@ -22,7 +22,7 @@
  *             object each, NN = the page's index in the batch listing),
  *             validate every entry (shape, expected paths, compression
  *             band, tag whitelist, engine-token sanity pass), and emit the
- *             generated module + a build report. `--dry-run` validates only.
+ *             generated module. `--dry-run` validates only.
  *
  * ENGINE-TOKEN SANITY PASS (deterministic, no LLM): every backtick-quoted
  * span of a minified body that looks like a single engine call —
@@ -224,8 +224,14 @@ const deterministicTagsOf = (wikiPath, suggestedTags, whitelist) => {
   const content = `${wikiPath}`.toLowerCase();
   // The 3d heuristic: any `3d` in the path (scene3d, jump3d, physics3d…)
   // marks a 3D page — the folder taxonomy spells it into the names.
+  // audit011026 B-SCRIPT-11: symmetric heuristics — a 2d-named page gets
+  // the 2d facet the same way a 3d-named one gets 3d (the LLM-suggested
+  // route was the only 2d source before, and it rarely suggested it).
   if (content.includes('3d')) {
     tags.add('3d');
+  }
+  if (content.includes('2d')) {
+    tags.add('2d');
   }
   for (const tag of suggestedTags) {
     const normalized = String(tag)
@@ -477,7 +483,6 @@ const runAssemble = async options => {
   const allEntries = [];
   const warnings = [];
   const errors = [];
-  const skips = [];
   let missingPages = 0;
   for (const batch of plan.batches) {
     const batchDir = path.join(options.workDir, 'batches', batch.id);
@@ -525,7 +530,10 @@ const runAssemble = async options => {
     errors.push(`Unknown engine token \`${token}(\` in ${pagePath}`);
   }
 
-  allEntries.sort((a, b) => a.path.localeCompare(b.path));
+  // audit011026 B-SCRIPT-6: a plain codepoint compare — localeCompare is
+  // ICU-dependent and a different ICU build could reorder the entries,
+  // turning a regeneration into a huge spurious diff.
+  allEntries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const totalSource = plan.batches.reduce(
     (sum, batch) =>
       sum +
@@ -559,7 +567,6 @@ const runAssemble = async options => {
     `Warnings: ${warnings.length}${warnings.length ? '' : ' (clean)'}`
   );
   for (const warning of warnings.slice(0, 40)) console.log(`  warn ${warning}`);
-  if (skips.length) console.log(`Skips: ${skips.join(', ')}`);
   if (errors.length > 0) {
     console.error(`\n${errors.length} error(s):`);
     for (const error of errors.slice(0, 60)) console.error(`  ${error}`);

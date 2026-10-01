@@ -35,6 +35,18 @@ const writeOut = text => {
   process.stdout.write(`${text}\n`);
 };
 
+// Backpressure (audit011026 B-MCP-12): a client that stops reading stdout
+// must not grow the adapter without bound — track the pending drain.
+let stdoutDrainWaiter = null;
+
+const writeOutWithBackpressure = text => {
+  const more = process.stdout.write(`${text}\n`);
+  if (more || process.stdout.destroyed) return;
+  stdoutDrainWaiter = new Promise(resolve => {
+    process.stdout.once('drain', () => resolve());
+  });
+};
+
 const writeErr = text => {
   process.stderr.write(`${text}\n`);
 };
@@ -90,10 +102,23 @@ const resolveEndpoint = (cliArgs, forceReload) => {
 };
 
 /**
- * POST one raw JSON-RPC line. Answers { ok: true, body } for any HTTP
- * response worth relaying (the JSON-RPC errors travel in the body), and
- * { ok: false } for a transport failure or a rejected token.
+ * POST one raw JSON-RPC line. Answers { ok: true, body, status } for any
+ * HTTP response (the JSON-RPC errors travel in the body), and
+ * { ok: false, retryable } for a transport failure or a rejected token.
+ *
+ * `retryable` means the message was provably NOT executed: the connection
+ * never opened (ECONNREFUSED & friends), or the token was rejected before
+ * any processing. Retrying anything else re-sends a message the server may
+ * already have executed — at-least-once execution of a MUTATING tool call
+ * (audit011026 B-MCP-2).
  */
+const CONNECT_PHASE_ERROR_CODES = [
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNABORTED',
+];
+
 const postJsonRpcLine = async (endpoint, rawLine) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -108,12 +133,17 @@ const postJsonRpcLine = async (endpoint, rawLine) => {
       signal: controller.signal,
     });
     if (response.status === 401 || response.status === 403) {
-      return { ok: false };
+      // Rejected before execution: a re-read token may fix it.
+      return { ok: false, retryable: true };
     }
     const body = await response.text();
-    return { ok: true, body };
+    return { ok: true, body, status: response.status };
   } catch (error) {
-    return { ok: false };
+    const errorCode =
+      error && error.cause && error.cause.code ? error.cause.code : null;
+    const retryable =
+      !!errorCode && CONNECT_PHASE_ERROR_CODES.indexOf(errorCode) !== -1;
+    return { ok: false, retryable };
   } finally {
     clearTimeout(timeout);
   }
@@ -142,9 +172,27 @@ const respondEndpointUnavailable = parsedMessage => {
   );
 };
 
+const relayResultBody = (parsedMessage, result) => {
+  if (core.shouldRelayResponseBody(parsedMessage, result.body)) {
+    writeOutWithBackpressure(result.body);
+    return;
+  }
+  // A ≥400 answer whose body has no top-level id (batch arrays, empty
+  // error bodies) would otherwise be swallowed and the client would hang
+  // on its request (audit011026 B-MCP-11).
+  if (result.status >= 400) {
+    const failureText = core.buildHttpFailureText(parsedMessage, result.status);
+    if (failureText) writeOutWithBackpressure(failureText);
+  }
+};
+
 const handleMessageLine = async (cliArgs, rawLine) => {
   const line = rawLine.trim();
   if (!line) return;
+  if (stdoutDrainWaiter) {
+    await stdoutDrainWaiter;
+    stdoutDrainWaiter = null;
+  }
   let parsedMessage = null;
   try {
     parsedMessage = JSON.parse(line);
@@ -162,9 +210,13 @@ const handleMessageLine = async (cliArgs, rawLine) => {
   }
   let result = await postJsonRpcLine(endpoint, line);
   if (result.ok) {
-    if (core.shouldRelayResponseBody(parsedMessage, result.body)) {
-      writeOut(result.body);
-    }
+    relayResultBody(parsedMessage, result);
+    return;
+  }
+  if (!result.retryable) {
+    // Mid-flight failure after the request was sent: the server may have
+    // executed it — re-sending would execute it twice (B-MCP-2).
+    respondEndpointUnavailable(parsedMessage);
     return;
   }
   // The IDE may be starting up or restarting (rotated token): give it a
@@ -181,9 +233,7 @@ const handleMessageLine = async (cliArgs, rawLine) => {
     respondEndpointUnavailable(parsedMessage);
     return;
   }
-  if (core.shouldRelayResponseBody(parsedMessage, result.body)) {
-    writeOut(result.body);
-  }
+  relayResultBody(parsedMessage, result);
 };
 
 const main = () => {
@@ -203,10 +253,17 @@ const main = () => {
     input: process.stdin,
     terminal: false,
   });
+  // A small serial pump (audit011026 B-MCP-12): every stdin line used to
+  // fire an independent concurrent fetch — a burst multiplied the retry
+  // hazard and answered out of order. Chained responses stay legal for
+  // JSON-RPC (ids match) and memory stays bounded.
+  let lineQueueTail = Promise.resolve();
   lineReader.on('line', rawLine => {
-    handleMessageLine(cliArgs, rawLine).catch(error => {
-      writeErr(`Unexpected failure while proxying a message: ${String(error)}`);
-    });
+    lineQueueTail = lineQueueTail
+      .then(() => handleMessageLine(cliArgs, rawLine))
+      .catch(error => {
+        writeErr(`Unexpected failure while proxying a message: ${String(error)}`);
+      });
   });
   lineReader.on('close', () => {
     process.exit(0);

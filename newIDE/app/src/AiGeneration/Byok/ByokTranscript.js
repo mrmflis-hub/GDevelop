@@ -145,6 +145,24 @@ export const getByokSurvivingImageIds = (
 };
 
 /**
+ * The monotonic survival rule of the append-only replay (Phase 14.1): every
+ * image survives EXCEPT the ids an explicit eviction dropped. Unlike the
+ * latest-N window above, new images never retroactively evict older ones —
+ * a mid-transcript message must never change between requests, or the
+ * provider prefix cache is re-busted on every capture.
+ */
+export const getByokSurvivingImageIdsExcluding = (
+  messages: Array<AiRequestMessage>,
+  evictedImageIds: Set<string>
+): Set<string> => {
+  const surviving: Set<string> = new Set();
+  for (const imageId of getByokTranscriptImageIds(messages)) {
+    if (!evictedImageIds.has(imageId)) surviving.add(imageId);
+  }
+  return surviving;
+};
+
+/**
  * The images of one output item that the replay should materialize, with a
  * placeholder note for the evicted ones.
  */
@@ -275,6 +293,9 @@ export const byokMessagesForTranscriptItem = (
   // A user message with attached images (the "+" button, Phase 13.3) is
   // replayed as a multi-part content: the typed text plus the surviving
   // image parts — the same OpenAI vision format the tool outputs use.
+  // Evicted attachments leave a placeholder note (mirroring the tool-output
+  // branch) so the model knows an image it references is gone instead of
+  // silently seeing text-only.
   if (aiRequestMessage.type === 'message' && aiRequestMessage.role === 'user') {
     const images = (aiRequestMessage: any).images;
     if (Array.isArray(images) && images.length > 0 && imagesEnabled) {
@@ -287,10 +308,17 @@ export const byokMessagesForTranscriptItem = (
         survivingImageIds,
         getImage,
       });
+      const noteLines: Array<string> = [text];
+      for (const imageId of images) {
+        if (survivingImageIds.has(imageId)) continue;
+        noteLines.push(
+          `[attachment ${imageId} removed to save context — attach it again if needed]`
+        );
+      }
       return [
         {
           role: 'user',
-          content: [{ type: 'text', text }, ...parts],
+          content: [{ type: 'text', text: noteLines.join('\n') }, ...parts],
         },
       ];
     }

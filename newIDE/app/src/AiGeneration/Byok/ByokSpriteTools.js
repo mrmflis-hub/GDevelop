@@ -277,6 +277,19 @@ const buildPolygonFromDefinition = (definition: Object): any | null => {
   if (!definition || typeof definition !== 'object') return null;
   if (definition.rectangle) {
     const rectangle = definition.rectangle;
+    // Every numeric reaches embind unvalidated otherwise — a string or a
+    // missing width is a type error or a NaN polygon accepted as valid
+    // (audit011026 B-TOOL-6).
+    const isFiniteNumber = (value: any): boolean =>
+      typeof value === 'number' && Number.isFinite(value);
+    if (
+      !isFiniteNumber(rectangle.width) ||
+      !isFiniteNumber(rectangle.height) ||
+      !isFiniteNumber(rectangle.center_x || 0) ||
+      !isFiniteNumber(rectangle.center_y || 0)
+    ) {
+      return null;
+    }
     const polygon = gd.Polygon2d.createRectangle(
       rectangle.width,
       rectangle.height
@@ -373,6 +386,19 @@ const forEachFrame = (
       }
     }
   }
+};
+
+/** Point coordinates of an op: absent fields are 0, non-numbers are refused. */
+const readPointCoordinates = (op: Object): ?{| x: number, y: number |} => {
+  const readAxis = (value: any): number | null => {
+    if (value === undefined || value === null) return 0;
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    return value;
+  };
+  const x = readAxis(op.x);
+  const y = readAxis(op.y);
+  if (x === null || y === null) return null;
+  return { x, y };
 };
 
 const runSpriteFrameOp = (animations: any, op: Object): SpriteFrameOpResult => {
@@ -510,8 +536,14 @@ const runSpriteFrameOp = (animations: any, op: Object): SpriteFrameOpResult => {
       if (!frame || typeof op.name !== 'string' || !op.name) {
         return makeOpError(location.error || 'add_point needs a name.');
       }
+      const pointCoordinates = readPointCoordinates(op);
+      if (!pointCoordinates) {
+        return makeOpError(
+          'add_point needs numeric x/y (missing values default to 0).'
+        );
+      }
       const point = new gd.Point(op.name);
-      point.setXY(op.x || 0, op.y || 0);
+      point.setXY(pointCoordinates.x, pointCoordinates.y);
       frame.addPoint(point);
       point.delete();
       return { applied: `Added point "${op.name}".`, error: null };
@@ -525,7 +557,13 @@ const runSpriteFrameOp = (animations: any, op: Object): SpriteFrameOpResult => {
             `move_point: no point named "${String(op.name)}" on that frame.`
         );
       }
-      frame.getPoint(op.name).setXY(op.x || 0, op.y || 0);
+      const moveCoordinates = readPointCoordinates(op);
+      if (!moveCoordinates) {
+        return makeOpError(
+          'move_point needs numeric x/y (missing values default to 0).'
+        );
+      }
+      frame.getPoint(op.name).setXY(moveCoordinates.x, moveCoordinates.y);
       return { applied: `Moved point "${op.name}".`, error: null };
     }
     case 'remove_point': {
@@ -637,9 +675,20 @@ export const runByokSpriteFrameOps = (
       failures.push('An op entry is not an object.');
       continue;
     }
-    const result = runSpriteFrameOp(animations, op);
-    if (result.applied) applied.push(result.applied);
-    if (result.error) failures.push(result.error);
+    // Per-op containment (audit011026 B-TOOL-6): one embind throw used to
+    // unwind the whole tool call after a partial apply — the documented
+    // contract is "failed operations are reported and skipped".
+    try {
+      const result = runSpriteFrameOp(animations, op);
+      if (result.applied) applied.push(result.applied);
+      if (result.error) failures.push(result.error);
+    } catch (error) {
+      failures.push(
+        `The op "${String(op.op)}" failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
   }
   return { applied, failures };
 };

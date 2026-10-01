@@ -19,20 +19,33 @@ export type ByokRagIndex = {|
 |};
 
 /**
- * The corpus hash: stable over the chunk ids, sources and texts (not the
- * timestamps) — the determinism contract of the index build.
+ * The corpus hash: stable over the chunk ids, sources, titles, texts AND
+ * tags (not the timestamps) — the determinism contract of the index build.
+ * A delimiter between the parts prevents boundary collisions
+ * (`"ab"+"c" === "a"+"bc"`), and folding the tags in means a tag-only
+ * change cannot sail through a still-matching hash (audit011026 B-RAG-10).
  */
 export const computeByokRagCorpusHash = (
   chunks: Array<ByokRagChunk>
 ): string => {
   let hash = 0x811c9dc5;
-  for (const chunk of chunks) {
-    for (const part of [chunk.id, chunk.source, chunk.title, chunk.text]) {
-      for (let index = 0; index < part.length; index++) {
-        hash ^= part.charCodeAt(index);
-        hash = (hash * 0x01000193) | 0;
-      }
+  const feed = (part: string) => {
+    for (let index = 0; index < part.length; index++) {
+      hash ^= part.charCodeAt(index);
+      hash = (hash * 0x01000193) | 0;
     }
+  };
+  for (const chunk of chunks) {
+    feed(chunk.id);
+    feed('\u0000');
+    feed(chunk.source);
+    feed('\u0000');
+    feed(chunk.title);
+    feed('\u0000');
+    feed(chunk.text);
+    feed('\u0000');
+    feed(chunk.tags.join('\u0001'));
+    feed('\u0000');
   }
   return (hash >>> 0).toString(16);
 };
@@ -42,9 +55,11 @@ export const byokRagCosineSimilarity = (
   a: Float32Array,
   b: Float32Array
 ): number => {
-  const length = Math.min(a.length, b.length);
+  // A length mismatch is corruption, not a truncation opportunity: quietly
+  // dropping dimensions would fabricate plausible-looking scores.
+  if (a.length !== b.length) return -1;
   let dot = 0;
-  for (let index = 0; index < length; index++) {
+  for (let index = 0; index < a.length; index++) {
     dot += a[index] * b[index];
   }
   return dot;
@@ -115,11 +130,20 @@ export const buildByokRagIndex = async (options: {|
   };
 };
 
-/** True when the stored manifest matches the current corpus + embedder. */
+/**
+ * True when the stored manifest matches the current corpus + embedder. The
+ * current corpus hash is compared when given: an app update that changed
+ * the bundled docs must not silently serve stale vectors (audit011026
+ * B-RAG-10).
+ */
 export const isByokRagIndexUpToDate = (
   index: ByokRagIndex,
-  embedderId: string
-): boolean => index.manifest.embedderId === embedderId;
+  embedderId: string,
+  currentCorpusHash?: string
+): boolean =>
+  index.manifest.embedderId === embedderId &&
+  (currentCorpusHash === undefined ||
+    index.manifest.corpusHash === currentCorpusHash);
 
 export type ByokRagIndexHit = {|
   chunk: ByokRagChunk,
@@ -169,11 +193,24 @@ const encodeBase64 = (buffer: ArrayBuffer): string => {
 
 const decodeBase64 = (text: string): Float32Array => {
   const binary = atob(text);
+  // A byte count that is not a multiple of 4 would silently drop the
+  // trailing floats of the vector (audit011026 B-RAG-9).
+  if (binary.length % 4 !== 0) {
+    throw new Error('Truncated vector payload.');
+  }
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index++) {
     bytes[index] = binary.charCodeAt(index);
   }
   return new Float32Array(bytes.buffer);
+};
+
+/** True when every component is finite (NaN/Infinity poison cosine). */
+const isFiniteByokRagVector = (vector: Float32Array): boolean => {
+  for (let index = 0; index < vector.length; index++) {
+    if (!Number.isFinite(vector[index])) return false;
+  }
+  return true;
 };
 
 /** Serialize an index for storage (base64 vectors: half the JSON size). */
@@ -226,6 +263,19 @@ export const deserializeByokRagIndex = (raw: any): ?ByokRagIndex => {
     return null;
   }
   if (vectors.some((vector: ?Float32Array) => !vector)) return null;
+
+  // Uniform dimensions and finite components: a corrupt-but-sha-consistent
+  // payload must be refused, not silently scored (audit011026 B-RAG-9).
+  if (vectors.length === 0) return null;
+  const dimensions = vectors[0].length;
+  const hasUniformFiniteVectors = vectors.every(
+    (vector: ?Float32Array) =>
+      !!vector && vector.length === dimensions && isFiniteByokRagVector(vector)
+  );
+  if (dimensions === 0 || !hasUniformFiniteVectors) return null;
+  // The manifest's count is what the status card reports — the actual array
+  // is what search uses; they must agree.
+  if (raw.manifest.chunkCount !== chunks.length) return null;
 
   return {
     manifest: {

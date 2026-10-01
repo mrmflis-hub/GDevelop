@@ -65,7 +65,8 @@ import {
   byokMessagesForTranscriptItem,
   byokResponseToAssistantMessage,
   byokToolResultToFunctionCallOutput,
-  getByokSurvivingImageIds,
+  getByokSurvivingImageIdsExcluding,
+  getByokTranscriptImageIds,
   makeByokMessageId,
   makeByokNotice,
   type ByokNoticeKind,
@@ -302,6 +303,11 @@ export type ByokOrchestratorOptions = {|
   // changes and capability records written mid-chat apply from the next
   // round. Absent: the settings frozen at creation are used.
   getSettings?: () => ByokSettings,
+  // The live chat record (the store copy — audit011026 B-UI-1): the
+  // per-chat model/effort selection is written there by the bottom bar,
+  // and the orchestrator's own closure record diverges from it after the
+  // first message. Absent: the frozen `aiRequest` is used.
+  getLiveAiRequest?: () => AiRequest,
   // Resolves the API key of a provider key slot (ByokKeyStorage). Absent:
   // the injected `connection.apiKey` is used for every target.
   getApiKeyForProvider?: (keyRef: string) => Promise<string>,
@@ -389,10 +395,19 @@ export const createByokOrchestrator = (
   const sharedTurnBudget = options.sharedTurnBudget || {
     remaining: BYOK_GLOBAL_TURN_BUDGET,
   };
-  // The image state of the chat: how many recent images are re-sent (the
-  // budget guard decrements it under context pressure), and whether images
-  // are sent at all (settings, plus the one-way auto degrade).
+  // The image state of the chat: whether images are sent at all (settings,
+  // plus the one-way auto degrade), and which ids have been EVICTED from
+  // the replay. Survival is monotonic: once an image has been part of a
+  // sent request it keeps replaying byte-identically until an explicit
+  // context-pressure eviction — the old latest-N sliding window rewrote
+  // mid-request messages on every new capture, re-busting the provider
+  // prefix cache the append-only replay exists to protect.
   let imagesToKeep = BYOK_IMAGES_TO_KEEP;
+  const evictedImageIds: Set<string> = new Set();
+  const getReplaySurvivingImageIds = (
+    transcript: Array<AiRequestMessage>
+  ): Set<string> =>
+    getByokSurvivingImageIdsExcluding(transcript, evictedImageIds);
   let imagesDisabledForChat = false;
   let singleInternalCallCounter = 0;
   const storeImage = makeDefaultByokImageStore();
@@ -410,7 +425,12 @@ export const createByokOrchestrator = (
     if (settings.buildWorkflowAutoSuggest === false) return null;
     if (!isByokBuildIntent(firstUserRequestOfChat)) return null;
     const skill = await findByNameokSkill('build-workflow');
-    autoSuggestedSkillBody = skill ? skill.body : null;
+    // Capped (audit011026 B-PROMPT-8): this body rides INSIDE the frozen
+    // system prompt, and the skills' own 32 KB cap would allow ~8k tokens
+    // the budget spec never measured.
+    autoSuggestedSkillBody = skill
+      ? skill.body.slice(0, BYOK_AUTO_SUGGEST_SKILL_MAX_CHARS)
+      : null;
     return autoSuggestedSkillBody;
   };
 
@@ -496,6 +516,12 @@ export const createByokOrchestrator = (
   // The transcript length at the last compaction: a ratio still ≥ the
   // threshold right after a compaction must not re-summarize every round.
   let lastCompactedOutputLength = -1;
+  // The minimum transcript growth required between two compactions: when
+  // the kept window alone keeps usage at/above the ratio, re-compacting
+  // every round just summarizes the summary (one extra summarizer call +
+  // a full history rewrite per round — pure churn) until the chat
+  // dead-ends anyway.
+  const MIN_MESSAGES_BETWEEN_COMPACTIONS = 8;
   // Whether edits happened since the project snapshot was last refreshed
   // (the per-round snapshot refresh of Phase 9.7).
   let editsSinceSnapshotRefresh = false;
@@ -507,6 +533,14 @@ export const createByokOrchestrator = (
   const getCurrentSettings = (): ByokSettings =>
     options.getSettings ? options.getSettings() : settings;
 
+  // The per-chat model/effort selection, read live from the store copy
+  // (audit011026 B-UI-1): the bottom-bar dropdown writes it there while
+  // this closure's own record diverged after the first message.
+  const getCurrentChatSelection = () =>
+    getByokChatModelSelection(
+      options.getLiveAiRequest ? options.getLiveAiRequest() : aiRequest
+    );
+
   /**
    * Resolve where a call of this kind goes (per-chat override > profile
    * policy > global fallback) and the API key of its provider. Throws a
@@ -515,9 +549,15 @@ export const createByokOrchestrator = (
    */
   const resolveConnectionForCallKind = async (
     callKind: ByokCallKind
-  ): Promise<{| baseUrl: string, apiKey: string, modelName: string |}> => {
+  ): Promise<{|
+    baseUrl: string,
+    apiKey: string,
+    modelName: string,
+    temperature: ?number,
+    maxTokens: ?number,
+  |}> => {
     const currentSettings = getCurrentSettings();
-    const chatSelection = getByokChatModelSelection(aiRequest);
+    const chatSelection = getCurrentChatSelection();
     const target = resolveByokModelTarget({
       settings: currentSettings,
       chatSelection,
@@ -540,6 +580,8 @@ export const createByokOrchestrator = (
         baseUrl: target.endpointUrl,
         apiKey,
         modelName: target.modelName,
+        temperature: target.temperature,
+        maxTokens: target.maxTokens,
       };
     }
     // No provider resolver injected: only the global connection exists.
@@ -547,6 +589,8 @@ export const createByokOrchestrator = (
       baseUrl: connection.baseUrl,
       apiKey: connection.apiKey,
       modelName: target.modelName || settings.modelName,
+      temperature: target.temperature,
+      maxTokens: target.maxTokens,
     };
   };
 
@@ -559,7 +603,7 @@ export const createByokOrchestrator = (
    */
   const resolveChatContextWindowTokens = (): number => {
     const currentSettings = getCurrentSettings();
-    const chatSelection = getByokChatModelSelection(aiRequest);
+    const chatSelection = getCurrentChatSelection();
     const target = resolveByokModelTarget({
       settings: currentSettings,
       chatSelection,
@@ -624,23 +668,32 @@ export const createByokOrchestrator = (
    * Compaction keeps the same string (its history rewrite busts the cache
    * once regardless — rare by design).
    */
+  /** The auto-suggested build-workflow body's char cap inside the prompt. */
+  const BYOK_AUTO_SUGGEST_SKILL_MAX_CHARS = 6000;
+
   let systemPromptSnapshot: string | null = null;
   let systemPromptSnapshotHasProject = false;
+  let systemPromptSnapshotNotesIdentifier: string | null = null;
 
   const buildSystemPrompt = async (): Promise<string> => {
     // A sub-agent carries a fixed, scoped charter instead of the composed
     // knowledge prompt (its context is deliberately minimal).
     if (options.systemPrompt) return options.systemPrompt;
     const hasProject = hasOpenedProject();
-    if (
-      systemPromptSnapshot !== null &&
-      systemPromptSnapshotHasProject === hasProject
-    ) {
-      return systemPromptSnapshot;
-    }
     const notesIdentifier = options.getProjectNotesIdentifier
       ? options.getProjectNotesIdentifier()
       : null;
+    // The invalidation key carries the notes identifier, not just the
+    // has-a-project boolean: switching project A→B between messages (or a
+    // "Save as…" mid-chat) must move the notes — note WRITES still never
+    // bust the snapshot (same identifier, cached prompt).
+    if (
+      systemPromptSnapshot !== null &&
+      systemPromptSnapshotHasProject === hasProject &&
+      systemPromptSnapshotNotesIdentifier === notesIdentifier
+    ) {
+      return systemPromptSnapshot;
+    }
     const projectNotes = notesIdentifier
       ? await loadByokProjectNotes(notesIdentifier)
       : null;
@@ -653,7 +706,6 @@ export const createByokOrchestrator = (
         hasOpenedProject: hasProject,
         skills,
         engineReferenceAvailable: isByokEngineReferenceAvailable(),
-        docsAvailable: true,
         projectNotes,
         customInstructions: settings.customInstructions,
       }),
@@ -673,8 +725,9 @@ export const createByokOrchestrator = (
   /**
    * The system prompt + the transcript replayed as OpenAI messages. Tool
    * outputs referencing images emit a following user message with the
-   * surviving image parts (the latest `imagesToKeep` of the chat); the
-   * latest project snapshot rides its OWN synthetic user message at the
+   * surviving image parts (every image ever sent, minus the ones an
+   * explicit context-pressure eviction dropped — see
+   * getReplaySurvivingImageIds); the latest project snapshot rides its OWN synthetic user message at the
    * very tail of the request (kept out of the transcript itself, so the
    * UI never renders a JSON blob) — the same "fresh state with every
    * message" behavior as the server flow.
@@ -698,7 +751,7 @@ export const createByokOrchestrator = (
       transcriptMessages.push(
         ...byokMessagesForTranscriptItem(item, {
           imagesEnabled: areImagesEnabled(),
-          survivingImageIds: getByokSurvivingImageIds(transcript, imagesToKeep),
+          survivingImageIds: getReplaySurvivingImageIds(transcript),
           getImage: getByokImage,
         })
       );
@@ -734,15 +787,19 @@ export const createByokOrchestrator = (
 
   const callModel = async (): Promise<any> => {
     const currentSettings = getCurrentSettings();
-    const { baseUrl, apiKey, modelName } = await resolveConnectionForCallKind(
-      options.callKind || 'main'
-    );
+    const {
+      baseUrl,
+      apiKey,
+      modelName,
+      temperature,
+      maxTokens,
+    } = await resolveConnectionForCallKind(options.callKind || 'main');
     const capabilityRecord = getByokCapabilityRecord(
       currentSettings,
       baseUrl,
       modelName
     );
-    const chatSelection = getByokChatModelSelection(aiRequest);
+    const chatSelection = getCurrentChatSelection();
     const messages = await buildMessagesForModel();
     const chatOptions: any = {
       model: modelName,
@@ -751,6 +808,15 @@ export const createByokOrchestrator = (
         getByokToolSchemasForNames(getAdvertisedToolNames())
       ),
     };
+    // The per-model settings (Phase 13.4) and profile advanced fields: the
+    // router resolved them for THIS call; an omitted max_tokens makes small
+    // local models ramble until their context is exhausted.
+    if (typeof temperature === 'number') {
+      chatOptions.temperature = temperature;
+    }
+    if (typeof maxTokens === 'number') {
+      chatOptions.maxTokens = maxTokens;
+    }
     // The remembered degradation wins (no per-turn 400-dance): a model that
     // once rejected `reasoning_effort` never sees the parameter again.
     const reasoningEffort = resolveByokReasoningEffort({
@@ -1171,14 +1237,19 @@ export const createByokOrchestrator = (
   ): {|
     proceedingCalls: Array<AiRequestMessageAssistantFunctionCall>,
     correctedCalls: Array<AiRequestMessageAssistantFunctionCall>,
+    droppedAfterStopCalls: Array<AiRequestMessageAssistantFunctionCall>,
     stoppedAtCall: AiRequestMessageAssistantFunctionCall | null,
   |} => {
     const proceedingCalls: Array<AiRequestMessageAssistantFunctionCall> = [];
     const correctedCalls: Array<AiRequestMessageAssistantFunctionCall> = [];
+    const droppedAfterStopCalls: Array<AiRequestMessageAssistantFunctionCall> = [];
     let stoppedAtCall: AiRequestMessageAssistantFunctionCall | null = null;
 
     for (const functionCall of functionCalls) {
-      if (stoppedAtCall) continue;
+      if (stoppedAtCall) {
+        droppedAfterStopCalls.push(functionCall);
+        continue;
+      }
       const verdict = loopGuard.checkCall(
         functionCall.name,
         parseCallArguments(functionCall)
@@ -1193,7 +1264,12 @@ export const createByokOrchestrator = (
       }
       proceedingCalls.push(functionCall);
     }
-    return { proceedingCalls, correctedCalls, stoppedAtCall };
+    return {
+      proceedingCalls,
+      correctedCalls,
+      droppedAfterStopCalls,
+      stoppedAtCall,
+    };
   };
 
   /**
@@ -1251,12 +1327,22 @@ export const createByokOrchestrator = (
     const {
       proceedingCalls,
       correctedCalls,
+      droppedAfterStopCalls,
       stoppedAtCall,
     } = splitBatchByLoopGuard(whitelistedCalls);
     if (stoppedAtCall) {
       appendNotExecutedToolOutputs(
         [stoppedAtCall],
         BYOK_LOOP_GUARD_CORRECTIVE_MESSAGE
+      );
+      // Every other call of the batch needs its tool output too: an
+      // orphaned tool_call (no matching tool message) makes the transcript
+      // protocol-invalid, and strict endpoints then reject every later
+      // replay of this chat with a 400 — the same integrity rule the
+      // context-full path follows for a whole pending batch.
+      appendNotExecutedToolOutputs(
+        proceedingCalls.concat(correctedCalls).concat(droppedAfterStopCalls),
+        'The chat was stopped because the assistant repeated the same tool call. This call was not run — send a new message to continue with a different approach.'
       );
       markError(
         BYOK_REPEATED_TOOL_CALL_LOOP_ERROR_CODE,
@@ -1336,6 +1422,11 @@ export const createByokOrchestrator = (
 
     if (watchdog) watchdog.notifyActivity('tool-executing');
     for (const extraToolCall of extraToolCalls) {
+      // Per-call activity: one extra tool can legitimately run for minutes
+      // (a sub-agent's whole child loop, a resource download, a profiler
+      // wait) — a single batch-level ping would let the watchdog post
+      // false "no activity" stall notices while tools are working.
+      if (watchdog) watchdog.notifyActivity('tool-executing');
       const result = await runExtraToolCall(extraToolCall);
       if (result) executedResults.push(result);
     }
@@ -1364,6 +1455,9 @@ export const createByokOrchestrator = (
         );
       } else {
         try {
+          // Same per-call rationale as the extra-tool loop: one editor
+          // batch can wait on a preview, a test run or an approval.
+          if (watchdog) watchdog.notifyActivity('tool-executing');
           const execution = await executor(
             editorFunctionCalls.map(functionCall => ({
               name: functionCall.name,
@@ -1504,8 +1598,8 @@ export const createByokOrchestrator = (
       );
     }
 
-    // A fresh object/scene slice, capped: the full snapshot is folded into
-    // the last user message anyway.
+    // A fresh object/scene slice, capped: the full snapshot rides its own
+    // trailing request message anyway (see buildMessagesForModel).
     try {
       const freshSnapshot = await getProjectUserContent();
       if (freshSnapshot) {
@@ -1567,23 +1661,34 @@ export const createByokOrchestrator = (
   const buildCompactionSummarizer = (): ((
     digest: string
   ) => Promise<string>) => async (digest: string): Promise<string> => {
-    const { baseUrl, apiKey, modelName } = await resolveConnectionForCallKind(
-      'compaction'
-    );
+    const {
+      baseUrl,
+      apiKey,
+      modelName,
+      temperature,
+      maxTokens,
+    } = await resolveConnectionForCallKind('compaction');
+    const summarizerOptions: any = {
+      model: modelName,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You summarize the earlier part of a game-creation AI conversation. Keep every decision, name, path and unfinished task — drop pleasantries and repetition. Answer with the summary only.',
+        },
+        { role: 'user', content: digest },
+      ],
+    };
+    if (typeof temperature === 'number') {
+      summarizerOptions.temperature = temperature;
+    }
+    if (typeof maxTokens === 'number') {
+      summarizerOptions.maxTokens = maxTokens;
+    }
     const response = await sendByokChatCompletionWithRetries({
       baseUrl,
       apiKey,
-      options: {
-        model: modelName,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You summarize the earlier part of a game-creation AI conversation. Keep every decision, name, path and unfinished task — drop pleasantries and repetition. Answer with the summary only.',
-          },
-          { role: 'user', content: digest },
-        ],
-      },
+      options: summarizerOptions,
     });
     const choice = response.choices[0];
     const message = choice ? choice.message : null;
@@ -1605,6 +1710,12 @@ export const createByokOrchestrator = (
       : 0;
     if (usedPercentage < BYOK_COMPACTION_CONTEXT_RATIO) return;
     if (getOutput().length === lastCompactedOutputLength) return;
+    if (
+      lastCompactedOutputLength >= 0 &&
+      getOutput().length <
+        lastCompactedOutputLength + MIN_MESSAGES_BETWEEN_COMPACTIONS
+    )
+      return;
 
     const outcome = await compactByokTranscript({
       transcript: getOutput(),
@@ -1744,6 +1855,14 @@ export const createByokOrchestrator = (
       const isContextFull = usedPercentage >= MAX_BYOK_CONTEXT_RATIO;
       if (isContextFull && imagesToKeep > 0) {
         imagesToKeep--;
+        // The eviction bookkeeping of the monotonic survival rule: evict
+        // the oldest images down to the new budget, permanently (this is
+        // the one documented replay-rewriting event).
+        const imageIds = getByokTranscriptImageIds(getOutput());
+        const evictCount = imageIds.length - imagesToKeep;
+        for (let index = 0; index < evictCount; index++) {
+          evictedImageIds.add(imageIds[index]);
+        }
         console.info(
           `BYOK orchestrator: context is full — evicting older images (keeping the latest ${imagesToKeep}).`
         );
@@ -1813,7 +1932,15 @@ export const createByokOrchestrator = (
     images?: Array<string>
   ): Promise<void> => {
     if (isRunning) {
+      // Surfaced, not just logged (audit011026 B-UI-6): a second send that
+      // raced a live loop used to vanish into a console line — the user
+      // believed the message was answered.
       console.info('BYOK orchestrator: a message is already being processed.');
+      pushNotice(
+        'stall',
+        '[byok-notice] A message is already being processed — this new message was not sent. Wait for the current turn to finish, then send it again.'
+      );
+      persistUpdate();
       return;
     }
     isRunning = true;

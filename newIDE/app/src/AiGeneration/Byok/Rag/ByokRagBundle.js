@@ -172,7 +172,18 @@ export const parseByokRagBundleReleaseInfo = (
         release.tag_name.startsWith(BYOK_RAG_BUNDLE_TAG_PREFIX) &&
         !release.draft
     )
-    .sort((a, b) => String(b.tag_name).localeCompare(String(a.tag_name)));
+    // Numeric-aware tag ordering (audit011026 B-RAG-8): lexicographic
+    // order would rank "...-v9" above "...-v10" forever.
+    .sort((a, b) => {
+      const numericSuffix = (tag: string): number => {
+        const match = tag.match(/(\d+)$/);
+        return match ? parseInt(match[1], 10) : -1;
+      };
+      const numericDifference =
+        numericSuffix(String(b.tag_name)) - numericSuffix(String(a.tag_name));
+      if (numericDifference !== 0) return numericDifference;
+      return String(b.tag_name).localeCompare(String(a.tag_name));
+    });
   const newest = bundleReleases[0];
   if (!newest || !Array.isArray(newest.assets)) return null;
   const assets: Array<ByokRagBundleAsset> = newest.assets

@@ -120,10 +120,23 @@ const makeUnusedTargetPath = (
 const fileNameFromUrl = (deps: ByokResourceImportDeps, url: string): string => {
   try {
     const parsed = new URL(url);
-    const baseName = deps.pathLib.basename(parsed.pathname);
-    if (baseName) return decodeURIComponent(baseName);
+    // Decode FIRST, sanitize AFTER: basename leaves "%2F" and "%5C" intact,
+    // so decoding later would smuggle separators past the sanitizing
+    // basename — a traversal straight out of the project folder
+    // (audit011026 B-TOOL-2).
+    const decoded = decodeURIComponent(parsed.pathname);
+    const safeName = deps.pathLib.basename(decoded);
+    if (
+      safeName &&
+      safeName !== '.' &&
+      safeName !== '..' &&
+      safeName.indexOf('/') === -1 &&
+      safeName.indexOf('\\') === -1
+    ) {
+      return safeName;
+    }
   } catch (error) {
-    // Not a parsable URL: fall through to the whole string.
+    // Not a parsable/decodable URL: fall through to the fallback name.
   }
   return 'download';
 };
@@ -319,8 +332,21 @@ export const importByokProjectResources = async (options: {|
         continue;
       }
       // Retarget the existing resource in place: same resource object, so
-      // every reference in the project follows automatically.
+      // every reference in the project follows automatically. A kind
+      // mismatch is refused — silently pointing an image resource at a
+      // .wav breaks every renderer that follows the reference.
       const existing = resourcesManager.getResource(name);
+      const existingKind =
+        typeof existing.getKind === 'function' ? existing.getKind() : '';
+      if (existingKind && existingKind !== kind) {
+        results.push(
+          makeEntryFailure(
+            entry.source,
+            `Refused to replace: the existing resource "${name}" is of kind "${existingKind}", but the new file is of kind "${kind}". Delete the resource first or import under a different name.`
+          )
+        );
+        continue;
+      }
       existing.setFile(file);
       existing.setOrigin('byok-import', entry.source);
       results.push({
@@ -411,11 +437,16 @@ const makeImportProjectResourcesTool = (): ByokExtraTool => ({
       deps: {
         fs,
         pathLib,
+        // The confined BYOK download IPC (audit011026 B-ELEC-14): the
+        // upstream local-file-download attaches the GDevelop cloud session
+        // cookie to ANY host and validates nothing — never hand it a
+        // model-chosen URL.
         downloadFile: (url, targetPath) =>
           ipcRenderer.invoke(
-            'local-file-download',
+            'byok-download-resource',
             new URL(url).href,
-            targetPath
+            targetPath,
+            project.getProjectFile()
           ),
       },
     });

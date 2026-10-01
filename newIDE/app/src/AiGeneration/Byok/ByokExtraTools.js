@@ -25,6 +25,10 @@ import {
   listByokBundledDocPages,
 } from './ByokDocs';
 import {
+  listByokMinifiedDocCategories,
+  readByokMinifiedDocPage,
+} from './ByokMinifiedDocs';
+import {
   loadByokProjectNotes,
   mergeByokProjectNotes,
   saveByokProjectNotes,
@@ -639,6 +643,65 @@ const makeRestoreProjectPointTool = (): ByokExtraTool => ({
   },
 });
 
+/**
+ * read_doc_page (audit011026 B-PROMPT-1): the FULL page behind a docs-min
+ * chunk — the whole gdevelop5 wiki, minified, bundled OFFLINE with the app
+ * (Phase 14.2). Every docs-min chunk ends with
+ * `Full page: read_doc_page('<path>')`; until this tool existed that hint
+ * pointed at a tool that was never registered, and the wiki drill-down
+ * died in a refusal.
+ */
+const BYOK_DOC_PAGE_MAX_CHARS = 12000;
+
+const makeReadDocPageTool = (): ByokExtraTool => ({
+  name: 'read_doc_page',
+  modifiesProject: false,
+  run: async (args): Promise<ByokExtraToolResult> => {
+    const pagePath = typeof args.path === 'string' ? args.path.trim() : '';
+    if (!pagePath) {
+      return {
+        output: {
+          success: false,
+          message:
+            'The "path" is required — the path a docs-min chunk suggested, or find one with search_knowledge (tags: ["docs-min"]).',
+        },
+        didModifyProject: false,
+      };
+    }
+    const page = readByokMinifiedDocPage(pagePath);
+    if (!page) {
+      return {
+        output: {
+          success: false,
+          message: `No wiki page at "${pagePath}". Categories: ${listByokMinifiedDocCategories().join(
+            ', '
+          )}. Find the right path with search_knowledge (tags: ["docs-min"]).`,
+        },
+        didModifyProject: false,
+      };
+    }
+    const fullBody = `${page.summary}
+
+${page.body}`;
+    const truncated = fullBody.length > BYOK_DOC_PAGE_MAX_CHARS;
+    return {
+      output: {
+        success: true,
+        message: `Wiki page "${page.title}" (${page.category}).`,
+        path: page.path,
+        title: page.title,
+        category: page.category,
+        tags: page.tags,
+        truncated,
+        content: truncated
+          ? `${fullBody.slice(0, BYOK_DOC_PAGE_MAX_CHARS)}…`
+          : fullBody,
+      },
+      didModifyProject: false,
+    };
+  },
+});
+
 const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   makeLocalEventWritingTool('add_scene_events'),
   makeLocalEventWritingTool('generate_events'),
@@ -646,6 +709,7 @@ const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   makeLoadSkillTool(),
   makeSearchDocsTool(),
   makeReadDocTool(),
+  makeReadDocPageTool(),
   makeSearchToolsTool(),
   makeSearchKnowledgeTool(),
   makeUpdateProjectNotesTool(),

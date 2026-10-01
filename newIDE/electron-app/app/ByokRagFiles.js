@@ -31,7 +31,22 @@ const isSafeRagFileName = fileName => {
   if (fileName.includes('/') || fileName.includes(backslash)) return false;
   if (fileName.includes('..')) return false;
   if (fileName !== fileName.trim()) return false;
+  // A colon would create a Windows Alternate Data Stream (audit011026
+  // B-ELEC-12).
+  if (fileName.includes(':')) return false;
   return true;
+};
+
+// Atomic writes (audit011026 B-RAG-11): an interrupted in-place write of
+// the ~10-40 MB index left a truncated file the loader then treated as "no
+// index built yet" — the previous working index was silently destroyed.
+// temp + same-volume rename keeps the old file intact until the new one is
+// fully on disk.
+const writeByokRagFileAtomically = (folderPath, fileName, content) => {
+  const finalPath = path.join(folderPath, fileName);
+  const temporaryPath = path.join(folderPath, `${fileName}.tmp-${process.pid}`);
+  fs.writeFileSync(temporaryPath, content, 'utf8');
+  fs.renameSync(temporaryPath, finalPath);
 };
 
 const writeByokRagFile = (userDataPath, fileName, content) => {
@@ -41,7 +56,7 @@ const writeByokRagFile = (userDataPath, fileName, content) => {
     }
     const ragFolder = getByokRagFolder(userDataPath);
     fs.mkdirSync(ragFolder, { recursive: true });
-    fs.writeFileSync(path.join(ragFolder, fileName), content, 'utf8');
+    writeByokRagFileAtomically(ragFolder, fileName, content);
     return { ok: true, data: null };
   } catch (error) {
     return { ok: false, error: String(error) };
@@ -74,20 +89,32 @@ const deleteByokRagFile = (userDataPath, fileName) => {
   }
 };
 
-const fetchTextWithRedirects = (url, maxBytes, userAgent) =>
+const BYOK_RAG_FETCH_TIMEOUT_MS = 30000;
+const BYOK_RAG_MAX_REDIRECTS = 5;
+
+const fetchTextWithRedirects = (url, maxBytes, userAgent, redirectsLeft) =>
   new Promise((resolve, reject) => {
-    https
-      .get(url, { headers: { 'User-Agent': userAgent } }, response => {
+    const request = https.get(
+      url,
+      { headers: { 'User-Agent': userAgent } },
+      response => {
         if (
           response.statusCode >= 300 &&
           response.statusCode < 400 &&
           response.headers.location
         ) {
-          // GitHub API and release-asset URLs redirect.
+          // GitHub API and release-asset URLs redirect — bounded, so a loop
+          // cannot recurse forever (audit011026 B-ELEC-6).
+          response.resume();
+          if (redirectsLeft <= 0) {
+            reject(new Error('Too many redirects.'));
+            return;
+          }
           fetchTextWithRedirects(
-            response.headers.location,
+            new URL(response.headers.location, url).href,
             maxBytes,
-            userAgent
+            userAgent,
+            redirectsLeft - 1
           ).then(resolve, reject);
           return;
         }
@@ -111,8 +138,15 @@ const fetchTextWithRedirects = (url, maxBytes, userAgent) =>
           resolve(Buffer.concat(chunks).toString('utf8'))
         );
         response.on('error', reject);
-      })
-      .on('error', reject);
+      }
+    );
+    // A hung server must settle the IPC, not leave the consent dialog
+    // pending forever (audit011026 B-ELEC-6).
+    request.setTimeout(BYOK_RAG_FETCH_TIMEOUT_MS, () => {
+      request.destroy();
+      reject(new Error(`Timed out fetching ${url}`));
+    });
+    request.on('error', reject);
   });
 
 /** The newest GitHub releases (the renderer distills the bundle one). */
@@ -120,21 +154,30 @@ const fetchByokRagBundleReleases = async apiUrl => {
   const text = await fetchTextWithRedirects(
     apiUrl,
     5 * 1024 * 1024,
-    'GDevelop-BYOK-RAG'
+    'GDevelop-BYOK-RAG',
+    BYOK_RAG_MAX_REDIRECTS
   );
   return JSON.parse(text);
 };
 
+/** Where the verified bundle lands for the renderer to read back. */
+const BYOK_RAG_BUNDLE_DOWNLOAD_FILE = 'bundle-download.json';
+
 /**
  * Download a bundle asset and verify its integrity hash: the sha256 of
  * the canonical JSON of `bundle.index` (the exact re-stringification the
- * builder hashed — JSON.parse preserves key order).
+ * builder hashed — JSON.parse preserves key order). The verified JSON is
+ * kept under a fixed safe name which the renderer reads through the
+ * regular byok-rag-read channel (audit011026 B-ELEC-7: returning the
+ * parsed object over IPC structured-cloned the whole payload on top of
+ * the parse — the peak is now the parse only, and the clone is gone).
  */
-const downloadVerifiedByokRagBundle = async downloadUrl => {
+const downloadVerifiedByokRagBundle = async (userDataPath, downloadUrl) => {
   const text = await fetchTextWithRedirects(
     downloadUrl,
     BYOK_RAG_BUNDLE_MAX_BYTES,
-    'GDevelop-BYOK-RAG'
+    'GDevelop-BYOK-RAG',
+    BYOK_RAG_MAX_REDIRECTS
   );
   const parsed = JSON.parse(text);
   if (
@@ -154,7 +197,17 @@ const downloadVerifiedByokRagBundle = async downloadUrl => {
       'The bundle integrity check failed (sha256 mismatch) — the download was corrupted or tampered with.'
     );
   }
-  return parsed;
+  const ragFolder = getByokRagFolder(userDataPath);
+  fs.mkdirSync(ragFolder, { recursive: true });
+  writeByokRagFileAtomically(
+    ragFolder,
+    BYOK_RAG_BUNDLE_DOWNLOAD_FILE,
+    JSON.stringify(parsed)
+  );
+  return {
+    fileName: BYOK_RAG_BUNDLE_DOWNLOAD_FILE,
+    sizeBytes: Buffer.byteLength(text, 'utf8'),
+  };
 };
 
 const registerByokRagFileHandlers = (ipcMain, app) => {
@@ -181,10 +234,11 @@ const registerByokRagFileHandlers = (ipcMain, app) => {
   });
   ipcMain.handle('byok-rag-bundle-download', async (event, downloadUrl) => {
     try {
-      return {
-        ok: true,
-        bundle: await downloadVerifiedByokRagBundle(downloadUrl),
-      };
+      const downloaded = await downloadVerifiedByokRagBundle(
+        app.getPath('userData'),
+        downloadUrl
+      );
+      return { ok: true, ...downloaded };
     } catch (error) {
       return {
         ok: false,

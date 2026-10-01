@@ -983,3 +983,69 @@ describe('ByokSettingsTab image support selector (Phase 6)', () => {
     });
   });
 });
+
+// audit011026 B-TOOL-1: the benchmark snapshot must render EventScript text
+// (the scorer's format), never gd serialized JSON via a mistyped
+// Serializer.toJSON(eventsList) call (the WASM-crash site).
+jest.mock(
+  '../../EventsSheet/EventsTree/TextRenderer/EventScriptSourceView',
+  () => ({
+    buildEventScriptSourceView: ({ eventsList, maxChars }: any) => ({
+      text:
+        eventsList === 'fake-events'
+          ? 'if Always:\n  pass'.slice(0, maxChars)
+          : '',
+      selectedEventIds: [],
+      truncated: false,
+      notes: [],
+      renderingErrors: [],
+    }),
+  })
+);
+
+describe('ByokSettingsTab: benchmark snapshot (audit011026 B-TOOL-1)', () => {
+  // Lazy: a static import would load PreferencesContext before the
+  // matchMedia polyfill above has run.
+  const {
+    snapshotProjectForBenchmark,
+    describeByokBenchmarkCrash,
+  } = require('./ByokSettingsTab');
+  const makeFakeProject = () => ({
+    getLayoutsCount: () => 1,
+    getLayoutAt: () => ({
+      getName: () => 'Scene',
+      getEvents: () => 'fake-events',
+      getObjects: () => ({
+        getObjectsCount: () => 1,
+        getObjectAt: () => ({ getName: () => 'Player' }),
+      }),
+    }),
+  });
+
+  it('snapshots events as EventScript text (parseable by the scorer)', () => {
+    const snapshot = snapshotProjectForBenchmark(makeFakeProject());
+    expect(snapshot.scenes).toHaveLength(1);
+    expect(snapshot.scenes[0].eventsSource).toContain('if Always:');
+    expect(snapshot.firstSceneName).toBe('Scene');
+  });
+
+  it('maps an empty render to null (scores as "no events written")', () => {
+    const project: any = makeFakeProject();
+    project.getLayoutAt = () => ({
+      getName: () => 'Empty',
+      getEvents: () => 'other-events',
+      getObjects: () => ({ getObjectsCount: () => 0, getObjectAt: () => null }),
+    });
+    const snapshot = snapshotProjectForBenchmark(project);
+    expect(snapshot.scenes[0].eventsSource).toBe(null);
+  });
+
+  it('classifies WASM aborts as engine crashes, not endpoint errors', () => {
+    expect(
+      describeByokBenchmarkCrash(new Error('memory access out of bounds'))
+    ).toContain('Reload the IDE window');
+    expect(describeByokBenchmarkCrash(new Error('404 model not found'))).toBe(
+      null
+    );
+  });
+});

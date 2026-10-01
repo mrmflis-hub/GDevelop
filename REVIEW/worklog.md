@@ -3837,3 +3837,124 @@ on record.
          "trailing user message") + the ONE construction site (the tail push)
     grep -c "messages\[index\] = {" src/AiGeneration/Byok/ByokOrchestrator.js -> 0 (no in-place message rewrites remain in the request builder)
     npm test ByokOrchestrator -> 58 passed (incl. "append-only across EDITING rounds")
+
+## 2026-10-01 — Full-repository audit (audit011026) + BYOK fix session
+
+- **Date:** 2026-10-01
+- **Description of actions:**
+  - Ran the owner-ordered full audit: ten read-only audit subagents in two
+    waves (core loop, tool layer, RAG, MCP, UI/persistence; then
+    upstream-called files, electron handlers, prompt/knowledge, scripts,
+    docs-vs-reality), every critical/high claim re-verified against the
+    source by the orchestrating agent. The permanent record is
+    `REVIEW/audit011026.md` (Part 1 = 63 BYOK findings with stable B-IDs,
+    Part 2 = 8 upstream findings with proposed fixes + tests, Part 3 =
+    docs-vs-reality reconciliation, Part 4 = verified-sound summary).
+  - Implemented fixes for every Part-1 finding except the four triaged
+    items below; 55 findings fixed, each with spec coverage (new specs:
+    ByokResourceDownloader.spec.js, ByokPromptGuard.spec.js,
+    ByokRagSearch.spec.js; extended: orchestrator, transcript, compactor,
+    settings tab ×2, resource tools ×2, extension tools, external scene
+    tools, sprite tools, preview/runtime/debugger, tool schema, RAG
+    index/storage/corpus/bundle/search, Qdrant setup core, MCP tool host +
+    stdio adapter core, knowledge sections, packs ×2, prompts, budget,
+    eval harness).
+  - Headline fixes: the untracked 2.3 MB MinifiedDocs artifact staged for
+    the owner's commit (fresh clones failed every gate); the benchmark WASM
+    crash root-caused to a type-confused `gd.Serializer.toJSON(eventsList)`
+    and replaced with the EventScript source view (the outofscoped O1
+    entry); per-chat model selections no longer wiped (store preservation +
+    live reads); providers-only configurations can start chats and turn the
+    toggle green; durable chat files embed the chat id (same-name chats no
+    longer overwrite each other); the loop-guard stop no longer orphans
+    sibling tool calls (un-retryable transcripts); temperature/max_tokens
+    actually sent; monotonic image replay (no mid-transcript rewrites);
+    compaction churn guard; `read_doc_page` registered as a real tool
+    (prompt byok-v11) with a prompt→registry guard spec that would have
+    caught it; the Qdrant dimensions double-conversion (every Qdrant build
+    failed 400); the persisted RAG index now reloads after restarts
+    (lazy recovery + live settings provider through the seam); the
+    `electron.remote` dead-check that silently killed the docs folder;
+    confined BYOK downloads (`byok-download-resource`: http(s) only, cloud
+    cookie only for gdevelop.io, project-folder confinement, cap+timeout —
+    replacing the unvalidated upstream `local-file-download` for
+    model-chosen URLs) plus the URL-filename traversal fix; MCP
+    notification forwarding (client cancellation works end-to-end),
+    timing-safe token compare, pid-reuse health verification, queue-slot
+    release, stdio retry restricted to connect-phase failures; atomic
+    chat/index writes; colon (ADS) validators; Qdrant child-process and
+    setup-race hygiene; app-exit cleanup on the CLI path; attachment
+    raw-byte sniff + size caps; the Recents-rail BYOK Rename (O6); restore
+    refused while a chat is working; delete suspends the loop first.
+  - Upstream findings (Part 2) NOT fixed — proposed fixes + tests recorded
+    for later reporting: UP-1 (local-file-download validation + cookie
+    gating), UP-2 (preview-window-closed window discriminator), UP-3
+    (replace_event_but_keep_existing_sub_events silently dropping
+    sub-events), UP-4 (Serializer wrapper leaks on throw), UP-5 (preview
+    exporter leak), UP-6 (didModifyProject false→undefined squash), UP-7
+    (instance-id startsWith over-match), UP-8 (Polygon2d wrapper leaks in
+    the collision-mask editors). The BYOK-side mitigations that were
+    possible were implemented (B-TOOL-2/3, B-ELEC-14).
+  - Corpus consequences: the corpus-hash inputs now include tags with
+    delimiters, the map chunks carry `docs-min-map` instead of `docs-min`,
+    two EventScript examples and the pack's Create grammar line were
+    corrected, and `docs/eventscript-examples.json` was rewritten through a
+    JSON parse/serialize — the corpus hash changed, so the v2 prebuilt
+    bundle (`571d1b30`) is stale relative to the tree; the owner's Task
+    17.2 upload should be a REBUILT v3 (the import refuses hash mismatches
+    by design and offers a local rebuild).
+  - Gates after all fixes: Jest 229 suites / 2527 tests — 2526 passed, 1
+    pre-existing skip, with ONE suite-level flake per full run (documented
+    family, fourth distinct member: ChangeObjectPropertiesEffects in the
+    final full run (ByokQdrantSetupCore in the one before — both untouched
+    suites, both pass standalone; the seam family hit twice before).
+    End-of-session triage: new OOS entries yes (B-TOOL-11, B-MCP-13,
+    B-UI-13, B-ARTIFACT-1, flake-family update — see outofscoped.md);
+    no deferred (nothing new deliberately postponed — the deferred.md
+    endpoint-compat items were re-verified, unchanged); new UT entries yes
+    (usertasks Task 18). `npm run lint` 0/0,
+    `npm run flow` 0 errors, `npm run check-format` clean, and
+    electron-app's prettier check clean for all touched files.
+- **Bugs found:** every Part-1 item of `REVIEW/audit011026.md` (63
+  findings; 55 fixed this session, 4 triaged, 4 were documentation-only
+  claims corrected in the audit itself). Part 2 records the 8 upstream
+  findings for later reporting.
+- **Issues found:**
+  - The Phase 14 "committed artifact" claim was wrong —
+    `MinifiedDocs.generated.js` was never committed; staged now, the
+    commit is the owner's (B-ARTIFACT-1).
+  - The prebuilt-bundle staleness above (owner Task 17.2 → v3).
+  - AGENTS.md §2 status updated below for this session.
+  - Pre-existing repo wart surfaced while committing nothing: git's index
+    carries BOTH `AGENTS.md` and `agents.md` as separate entries pointing
+    at the same physical file (Windows case-insensitivity). Harmless, but
+    the owner's commit will show both as modified; `git rm --cached
+    agents.md` at commit time would clean the index.
+  - The flake family (O4) gained a third member — still one suite per
+    full run, passes standalone.
+- **Files worked on:** REVIEW/audit011026.md (new), REVIEW/worklog.md,
+  REVIEW/outofscoped.md, REVIEW/usertasks.md (triage updates);
+  newIDE/app/src/AiGeneration/: AskAiHistory.js, AskAiEditorContainer.js;
+  Byok/: ByokOrchestrator.js(+spec), ByokTranscript.js(+spec),
+  ByokCompactor.js(+spec), ByokTypes.js, ByokChatStore.js,
+  ByokChatPersistence.js(+spec), useByokChatSeam.js, ByokSettingsTab.js
+  (+spec), ByokBenchmark*.js untouched-but-covered, ByokAttachments.js,
+  ByokResourceTools.js(+spec), ByokResourceDownloader.js(+spec, new),
+  ByokExtraTools.js, ByokToolSchema.js(+spec), ByokPrompts.js(+spec),
+  ByokPromptBudget.spec.js, ByokPromptGuard.spec.js (new),
+  ByokLocalEventWriter.js, ByokExtensionTools.js, ByokExternalSceneTools.js
+  (+spec), ByokSpriteTools.js, ByokPreviewSession.js, ByokRuntimeTools.js,
+  ByokMinifiedDocs.js, ByokDocs.js untouched, ByokSkills.js untouched,
+  Knowledge/: ByokKnowledgeSections.js(+spec), ByokEventScriptPack.js
+  (+spec), ByokJsApiPack.js; Skills/: eventscript-authoring.md,
+  ByokBuiltinSkills.generated.js (regenerated); Mcp/: ByokMcpToolHost.js
+  (+spec), ByokMcpStdioAdapterCore.js(+spec), useByokMcpServer.js;
+  Rag/: ByokRagSearch.js(+spec, new spec), ByokRagIndex.js, ByokRagStorage
+  .js(+spec), ByokRagCorpus.js(+spec), ByokRagBundle.js(+spec),
+  ByokRagBuildService.js, ByokRagEmbedder.js, ByokRagFileBackends.js,
+  ByokRagSettingsTab.js, ByokQdrantSetupCore.js; docs/eventscript-examples
+  .json; evals/ untouched; scripts/: run-byok-evals.js,
+  build-byok-minified-docs.js, byok-embedder/eval-embedder.js,
+  gdevelop-mcp-stdio.js; newIDE/electron-app/app/: main.js,
+  ByokMcpServer.js, ByokQdrant.js, ByokRagFiles.js, ByokChatFiles.js,
+  ByokResourceDownload.js (new).

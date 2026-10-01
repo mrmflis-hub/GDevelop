@@ -148,19 +148,28 @@ export const searchByokRagKnowledge = async (options: {|
   const limit = options.limit || 5;
   const index = options.deps.index;
 
-  // The neighbor read needs no query at all.
+  // The neighbor read needs no query at all — and no vectors: with RAG off
+  // (or before the persisted index recovered) the lexical corpus carries
+  // the same chunks, so a chunk_id alone still works (audit011026 B-RAG-18).
   const nearChunkId = options.nearChunkId || null;
-  if (nearChunkId && index) {
-    const neighbors = getByokRagNeighborChunks(index.chunks, nearChunkId);
-    return {
-      success: true,
-      message:
-        neighbors.length > 0
-          ? `The chunks around "${nearChunkId}".`
-          : `No chunk "${nearChunkId}" in the index — search first, then read around a hit.`,
-      hits: neighbors.map(chunk => ({ chunk, score: 1, match: 'exact' })),
-      mode: 'hybrid',
-    };
+  if (nearChunkId) {
+    const neighborPool = index
+      ? index.chunks
+      : options.deps.lexicalChunks
+      ? options.deps.lexicalChunks
+      : null;
+    if (neighborPool) {
+      const neighbors = getByokRagNeighborChunks(neighborPool, nearChunkId);
+      return {
+        success: true,
+        message:
+          neighbors.length > 0
+            ? `The chunks around "${nearChunkId}".`
+            : `No chunk "${nearChunkId}" in the index — search first, then read around a hit.`,
+        hits: neighbors.map(chunk => ({ chunk, score: 1, match: 'exact' })),
+        mode: index ? 'hybrid' : 'lexical',
+      };
+    }
   }
 
   const query = (options.query || '').trim();
@@ -261,6 +270,19 @@ type ByokRagRuntime = {|
 
 let runtime: ?ByokRagRuntime = null;
 
+// The live RAG settings provider (registered by the chat seam, which holds
+// the preferences values): the lazy persisted-index load of
+// getByokRagSearchDepsAsync needs to know whether RAG is enabled and with
+// which embedder (audit011026 B-RAG-1).
+let ragSettingsProvider: ?() => ?ByokRagSettings = null;
+
+/** Register the live RAG settings provider (the chat seam, once). */
+export const setByokRagSettingsProvider = (
+  provider: ?() => ?ByokRagSettings
+): void => {
+  ragSettingsProvider = provider;
+};
+
 /** What the build service installs as the live search runtime. */
 export type ByokRagRuntimeInput = {|
   settings?: ByokRagSettings,
@@ -310,7 +332,31 @@ export const resetByokRagLexicalCorpusForTests = (): void => {
  * The deps of the search_knowledge tool: the built index when RAG is on,
  * the bare corpus otherwise (the tool always answers, on-device).
  */
+let persistedLoadAttempted = false;
+
+/** Forget the lazy-load state (tests). */
+export const resetByokRagPersistedLoadForTests = (): void => {
+  persistedLoadAttempted = false;
+};
+
 export const getByokRagSearchDepsAsync = async (): Promise<ByokRagSearchDeps> => {
+  // A restart wiped the in-memory runtime: when RAG is enabled, the
+  // persisted index on disk is loaded lazily HERE (once per session) so
+  // semantic search survives app restarts instead of silently degrading
+  // to lexical mode while the status card claims a built index
+  // (audit011026 B-RAG-1). The heavy modules load only on this path.
+  if (!persistedLoadAttempted && (!runtime || !runtime.index)) {
+    persistedLoadAttempted = true;
+    const settings = ragSettingsProvider ? ragSettingsProvider() : null;
+    if (settings && settings.enabled) {
+      const { loadPersistedByokRagIndex } = require('./ByokRagBuildService');
+      try {
+        await loadPersistedByokRagIndex(settings);
+      } catch (error) {
+        // A failed recovery degrades to lexical search — never to a crash.
+      }
+    }
+  }
   if (runtime && runtime.index) {
     return {
       index: runtime.index,

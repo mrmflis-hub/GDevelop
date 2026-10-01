@@ -107,19 +107,15 @@ export const createByokRagInProcessStore = (
  * (`gdevelop-byok`), over the loopback REST API. The transport is injected
  * (tests mock it; the real one is browser fetch to 127.0.0.1).
  *
- * Qdrant point ids must be unsigned integers: the chunk id is hashed to a
- * u32 and the original id travels in the payload.
+ * Qdrant point ids must be unsigned integers: the chunk's DETERMINISTIC
+ * POSITION in the corpus is used directly (a hash of the string id
+ * collides at ~0.2% birthday odds for 4k chunks, and a collision silently
+ * overwrites one chunk with another via upsert — audit011026 B-RAG-13);
+ * the original id travels in the payload.
  */
 export const BYOK_RAG_QDRANT_COLLECTION = 'gdevelop-byok';
 
-const chunkIdToPointId = (chunkId: string): number => {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < chunkId.length; index++) {
-    hash ^= chunkId.charCodeAt(index);
-    hash = (hash * 0x01000193) | 0;
-  }
-  return (hash >>> 0) % 4294967295;
-};
+const chunkIndexToPointId = (chunkIndex: number): number => chunkIndex + 1;
 
 export type ByokRagQdrantTransport = {|
   request: (method: string, path: string, body?: any) => Promise<any>,
@@ -137,13 +133,23 @@ export const createByokRagQdrantStore = (options: {|
       'GET',
       `/collections/${collection}`
     );
-    const exists =
+    const existingSize =
       response &&
       response.result &&
       response.result.config &&
       response.result.config.params &&
-      !!response.result.config.params.vectors;
-    if (exists) return;
+      response.result.config.params.vectors &&
+      typeof response.result.config.params.vectors.size === 'number'
+        ? response.result.config.params.vectors.size
+        : null;
+    if (existingSize === dimensions) return;
+    if (existingSize !== null) {
+      // A collection created with the wrong dimensionality (the historical
+      // double-converted base64 math, audit011026 B-RAG-2) rejects every
+      // upsert with 400 — forever, because "exists" skipped recreation.
+      // Drop it and recreate with the right size.
+      await transport.request('DELETE', `/collections/${collection}`);
+    }
     await transport.request('PUT', `/collections/${collection}`, {
       vectors: { size: dimensions, distance: 'Cosine' },
     });
@@ -152,13 +158,17 @@ export const createByokRagQdrantStore = (options: {|
   return {
     kind: 'qdrant',
     saveIndex: async index => {
+      // atob(...).length is ALREADY the decoded byte count (float32 = 4
+      // bytes per dimension) — the historical "* 3 / 4" applied the
+      // base64 conversion a second time and created 3/4-sized
+      // collections (audit011026 B-RAG-2).
       const dimensions =
         index.vectorsBase64.length > 0
-          ? Math.floor((atob(index.vectorsBase64[0]).length * 3) / 4 / 4)
+          ? Math.floor(atob(index.vectorsBase64[0]).length / 4)
           : 384;
       await ensureCollection(dimensions);
       const points = index.chunks.map((chunk, chunkIndex) => ({
-        id: chunkIdToPointId(chunk.id),
+        id: chunkIndexToPointId(chunkIndex),
         vector: decodeVectorBase64(index.vectorsBase64[chunkIndex]),
         payload: {
           id: chunk.id,

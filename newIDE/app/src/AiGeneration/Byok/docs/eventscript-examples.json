@@ -68,7 +68,7 @@
         "variable",
         "timer"
       ],
-      "source": "always:\n  SetNumberVariable(Score, =, Score + 1)\nelse if DepartScene():\n  SetNumberVariable(Score, =, Score + 50)\n  ResetTimer(\"RoundTimer\")"
+      "source": "if not DepartScene():\n  SetNumberVariable(Score, =, Score + 1)\nelse if DepartScene():\n  SetNumberVariable(Score, =, Score + 50)\n  ResetTimer(\"RoundTimer\")"
     },
     {
       "id": "for-each-enemy",
@@ -91,7 +91,7 @@
         "foreach",
         "save"
       ],
-      "source": "for each child in SaveData value Items:\n  SetStringVariable(ItemName, =, child)"
+      "source": "for each child in SaveData value Items:\n  SetStringVariable(ItemName, =, Items)"
     },
     {
       "id": "loops-groups-waves",

@@ -1,4 +1,5 @@
 // @flow
+import { createNewResource } from '../../ResourcesList/ResourceSource';
 import optionalRequire from '../../Utils/OptionalRequire';
 import {
   getByokResourceTools,
@@ -363,3 +364,84 @@ describe('ByokResourceTools', () => {
 // reaches the copies list through the deps object.
 const fs2Copies = (deps: ByokResourceImportDeps): Array<Object> =>
   (deps.fs: any).copies || [];
+
+describe('importByokProjectResources: URL filename safety (audit011026 B-TOOL-2)', () => {
+  const runOneImport = async (source: string) => {
+    const { deps, downloads } = makeDeps(makeFakeFs());
+    const project = makeProject();
+    await importByokProjectResources({
+      project,
+      entries: [{ kind: 'image', source, name: 'safe' }],
+      replaceExisting: false,
+      deps,
+    });
+    return { deps, downloads };
+  };
+
+  it('rejects an encoded-separator traversal in the URL filename', async () => {
+    const { deps, downloads } = await runOneImport(
+      'https://host.example/a/..%2F..%2Fevil.png'
+    );
+    // Decoding happens BEFORE basename, so the traversal segments are
+    // sanitized away: the target file lands directly in the project
+    // folder, never in a parent of it.
+    expect(downloads).toHaveLength(1);
+    expect(deps.pathLib.basename(downloads[0].to)).toBe('evil.png');
+    expect(deps.pathLib.dirname(downloads[0].to)).toBe(
+      deps.pathLib.resolve(PROJECT_FOLDER)
+    );
+  });
+
+  it('rejects an encoded-backslash traversal (Windows form)', async () => {
+    const { deps, downloads } = await runOneImport(
+      'https://host.example/img%5C..%5C..%5Cevil.png'
+    );
+    expect(downloads).toHaveLength(1);
+    expect(deps.pathLib.basename(downloads[0].to)).toBe('evil.png');
+    expect(deps.pathLib.dirname(downloads[0].to).endsWith('..')).toBe(false);
+  });
+
+  it('keeps a plain URL filename untouched', async () => {
+    const { deps, downloads } = await runOneImport(
+      'https://host.example/sprites/player%20idle.png'
+    );
+    expect(deps.pathLib.basename(downloads[0].to)).toBe('player idle.png');
+  });
+});
+
+describe('importByokProjectResources: replace kind check (audit011026 B-TOOL-9)', () => {
+  it('refuses replacing a resource with a different kind', async () => {
+    const project = makeProject();
+    try {
+      const manager = project.getResourcesManager();
+      const image = createNewResource('image');
+      if (!image) throw new Error('the image resource could not be created');
+      image.setName('hero');
+      image.setFile('hero.png');
+      manager.addResource(image);
+      image.delete();
+      const { deps } = makeDeps(
+        makeFakeFs([path.join(PROJECT_FOLDER, 'hero.wav')])
+      );
+
+      const results = await importByokProjectResources({
+        project,
+        entries: [
+          {
+            kind: 'audio',
+            source: path.join(PROJECT_FOLDER, 'hero.wav'),
+            name: 'hero',
+          },
+        ],
+        replaceExisting: true,
+        deps,
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe('failed');
+      expect(results[0].error || '').toContain('kind');
+    } finally {
+      project.delete();
+    }
+  });
+});

@@ -158,10 +158,26 @@ let queueTail: Promise<void> = Promise.resolve();
 let callCounter = 0;
 const cancelledCallIds: Map<string, number> = new Map();
 
+// One slot holds the queue at most this long (audit011026 B-MCP-3): a
+// never-settling tool call (a hung preview wait) used to block every later
+// call until reload — the caller's timeout already resolved, the queue must
+// let the next call start too. Comfortably above the 120 s tool timeout.
+const QUEUE_SLOT_RELEASE_MS = BYOK_MCP_TOOL_TIMEOUT_MS + 10000;
+
 function enqueue<T>(task: () => Promise<T>): Promise<T> {
   const queued = queueTail.then(task);
-  // The next task runs after this one settles, whatever its outcome.
-  queueTail = queued.then(() => {}, () => {});
+  // The next task runs after this one settles, whatever its outcome — or
+  // after the slot-release window, whichever comes first (the timer is
+  // cleared as soon as the race is decided, so a settled call leaves no
+  // dangling timer behind).
+  let releaseTimer = null;
+  const release = new Promise(resolve => {
+    releaseTimer = setTimeout(resolve, QUEUE_SLOT_RELEASE_MS);
+  });
+  const settled = queued.then(() => {}, () => {});
+  queueTail = Promise.race([settled, release]).then(() => {
+    clearTimeout(releaseTimer);
+  });
   return queued;
 }
 

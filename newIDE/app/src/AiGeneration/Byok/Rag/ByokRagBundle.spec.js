@@ -219,3 +219,25 @@ describe('parseByokRagBundleReleaseInfo', () => {
     );
   });
 });
+
+describe('parseByokRagBundleReleaseInfo: numeric tag ordering (audit011026 B-RAG-8)', () => {
+  const makeReleaseWithIndexAsset = (tag: string) => ({
+    tag_name: tag,
+    draft: false,
+    assets: [
+      {
+        name: `byok-rag-bundle-f1-x-${tag}.json`,
+        browser_download_url: `https://example.com/${tag}.json`,
+        size: 1000,
+      },
+    ],
+  });
+
+  it('picks v10 over v9 (lexicographic order would not)', () => {
+    const info = parseByokRagBundleReleaseInfo([
+      makeReleaseWithIndexAsset('byok-rag-bundle-v9'),
+      makeReleaseWithIndexAsset('byok-rag-bundle-v10'),
+    ]);
+    expect(info && info.indexAsset && info.indexAsset.name).toContain('-v10');
+  });
+});

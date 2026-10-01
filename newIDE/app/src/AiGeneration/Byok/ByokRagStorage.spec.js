@@ -318,3 +318,56 @@ describe('importByokRagBundleIntoStore (Phase 14.4)', () => {
     expect(backend.files.size).toBe(0);
   });
 });
+
+describe('createByokRagQdrantStore: audit011026 fixes', () => {
+  it('B-RAG-2: computes the true float32 dimensions (no double base64 conversion)', async () => {
+    const { transport, requests } = makeRecordingTransport();
+    const store = createByokRagQdrantStore({ transport });
+    // 2 chunks of 16 dims: 64 bytes each decoded → 16 floats.
+    await store.saveIndex(await makeTestIndex());
+    const putCollection: any = requests.find(
+      request =>
+        request.method === 'PUT' &&
+        request.path === `/collections/${BYOK_RAG_QDRANT_COLLECTION}`
+    );
+    expect(putCollection.body.vectors.size).toBe(16);
+  });
+
+  it('B-RAG-2: drops and recreates an existing collection of the wrong size', async () => {
+    const { transport, requests, respondWith } = makeRecordingTransport();
+    respondWith(() => ({
+      result: {
+        config: { params: { vectors: { size: 288, distance: 'Cosine' } } },
+      },
+    }));
+    const store = createByokRagQdrantStore({ transport });
+    await store.saveIndex(await makeTestIndex());
+    expect(
+      requests.some(
+        request =>
+          request.method === 'DELETE' &&
+          request.path === `/collections/${BYOK_RAG_QDRANT_COLLECTION}`
+      )
+    ).toBe(true);
+    const putCollection: any = requests.find(
+      request =>
+        request.method === 'PUT' &&
+        request.path === `/collections/${BYOK_RAG_QDRANT_COLLECTION}`
+    );
+    expect(putCollection.body.vectors.size).toBe(16);
+  });
+
+  it('B-RAG-13: point ids are the deterministic chunk positions (collision-free)', async () => {
+    const { transport, requests } = makeRecordingTransport();
+    const store = createByokRagQdrantStore({ transport });
+    await store.saveIndex(await makeTestIndex());
+    const upsert: any = requests.find(
+      request =>
+        request.method === 'PUT' &&
+        request.path.startsWith(
+          `/collections/${BYOK_RAG_QDRANT_COLLECTION}/points`
+        )
+    );
+    expect(upsert.body.points.map((point: any) => point.id)).toEqual([1, 2]);
+  });
+});

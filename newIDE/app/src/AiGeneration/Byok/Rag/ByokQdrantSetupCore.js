@@ -183,7 +183,21 @@ const runByokQdrantSetup = async options => {
   // 3. Configure, start, health-check.
   try {
     report('configuring');
-    const port = await deps.getAvailablePort();
+    // Prefer the PREVIOUS endpoint's port when it is free (audit011026
+    // B-RAG-4): the renderer persists qdrantBaseUrl only on explicit setup
+    // or restore clicks, so drawing a fresh random port on every launch
+    // left the preferences pointing at a dead port after each restart.
+    let port = null;
+    if (
+      endpoint &&
+      typeof endpoint.port === 'number' &&
+      deps.isPortAvailable &&
+      (await deps.isPortAvailable(endpoint.port))
+    ) {
+      port = endpoint.port;
+    } else {
+      port = await deps.getAvailablePort();
+    }
     await deps.writeTextFile(paths.configPath, buildByokQdrantConfigYaml(port));
     report('starting');
     const pid = await deps.spawnQdrant(paths.binaryPath, paths.configPath);
@@ -203,6 +217,17 @@ const runByokQdrantSetup = async options => {
       healthCheckTimeoutMs
     );
     if (!isUp) {
+      // A failed health check must not leak the just-spawned child holding
+      // the port and the storage dir (audit011026 B-RAG-5) — kill it and
+      // remove the stale endpoint file.
+      if (deps.killProcessByPid) {
+        try {
+          await deps.killProcessByPid(pid);
+        } catch (error) {
+          // Best-effort: an already-dead child is fine.
+        }
+      }
+      await deps.deleteFile(paths.endpointFilePath);
       return {
         ok: false,
         stage: 'health-check',
@@ -247,6 +272,18 @@ const runByokQdrantSnapshotRestore = async options => {
     };
   }
 
+  // A leftover half-restored collection poisons later rebuilds (upserts
+  // fail against its config) — every failure path below drops it
+  // (audit011026 B-RAG-17).
+  const dropCollectionBestEffort = async () => {
+    try {
+      await options.deps.requestJson('DELETE', `/collections/${collection}`);
+    } catch (error) {
+      // Nothing to drop, or Qdrant is unreachable — the next restore/setup
+      // recreates a clean collection either way.
+    }
+  };
+
   // A snapshot restore must land on a clean slate: an existing collection
   // with a different config makes the upload fail halfway.
   report('dropping-collection');
@@ -264,6 +301,7 @@ const runByokQdrantSnapshotRestore = async options => {
       { url: options.snapshotUrl }
     );
   } catch (error) {
+    await dropCollectionBestEffort();
     return {
       ok: false,
       stage: 'uploading',
@@ -295,6 +333,7 @@ const runByokQdrantSnapshotRestore = async options => {
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
   if (pointsCount === 0) {
+    await dropCollectionBestEffort();
     return {
       ok: false,
       stage: 'verifying',
@@ -302,6 +341,7 @@ const runByokQdrantSnapshotRestore = async options => {
     };
   }
   if (options.expectedDimensions && vectorSize !== options.expectedDimensions) {
+    await dropCollectionBestEffort();
     return {
       ok: false,
       stage: 'verifying',

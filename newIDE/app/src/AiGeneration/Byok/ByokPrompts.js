@@ -22,6 +22,9 @@ import './Knowledge/ByokJsApiPack';
  *
  * Bump BYOK_AGENT_PROMPT_VERSION whenever a change alters the prompt's
  * behavior, and note it in the worklog. byok-v10 (Phase 14): the retrieval
+ * map + the docs-min corpus grades. byok-v11 (audit011026): the
+ * read_doc_page tool (the docs-min drill-down), the corrected EventScript
+ * examples and the external-events wording.
  * map gained the minified-wiki drill-down line (category maps → page
  * chunks → read_doc_page, D14-2) and the system prompt became
  * snapshot-once per chat for provider prefix caching (14.1 — behavior
@@ -38,7 +41,7 @@ import './Knowledge/ByokJsApiPack';
  * completion rules, skill pointers). byok-v5 (Phase 7): section composer
  * with a token budget + the F2 progress discipline in the planning section.
  */
-export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v10';
+export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v11';
 
 /**
  * Build the system prompt of the BYOK agent loop. The signature keeps the

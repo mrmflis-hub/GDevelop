@@ -149,6 +149,26 @@ const shouldRelayResponseBody = (parsedMessage, responseBody) => {
   return true;
 };
 
+/**
+ * The error text to print when the server answered ≥400 with no relayable
+ * body (an empty 403/413, or a batch array the server rejects — its error
+ * body has no top-level id, so shouldRelayResponseBody skips it). Without
+ * this the client hung forever on its request (audit011026 B-MCP-11).
+ */
+const buildHttpFailureText = (parsedMessage, statusCode) => {
+  const carriesId =
+    parsedMessage &&
+    typeof parsedMessage === 'object' &&
+    parsedMessage.id !== null &&
+    parsedMessage.id !== undefined;
+  if (!carriesId) return null;
+  return buildErrorResponseText(
+    parsedMessage.id,
+    ENDPOINT_ERROR_CODE,
+    `The GDevelop MCP endpoint answered HTTP ${statusCode} for the request.`
+  );
+};
+
 module.exports = {
   DISCOVERY_FILE_NAME,
   DEFAULT_PROTOCOL_VERSION,
@@ -163,4 +183,5 @@ module.exports = {
   resolveEndpoint,
   buildErrorResponseText,
   shouldRelayResponseBody,
+  buildHttpFailureText,
 };

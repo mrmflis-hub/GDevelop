@@ -239,6 +239,7 @@ const effectChangeProperty = objectProperty('One effect change.', {
 export const BYOK_NO_PROJECT_TOOL_NAMES: Array<string> = [
   'initialize_project',
   'get_game_starter_summary',
+  'read_doc_page',
 ];
 
 /**
@@ -1198,6 +1199,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
           'condition',
           'expression',
           'effect',
+          'example',
         ]),
         owner: stringProperty(
           'Restrict the search to one extension (e.g. "Physics2", "Tween", "BuiltinAudio").'
@@ -1659,13 +1661,36 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
         ),
         event_batches: arrayProperty(
           'Anchored event changes, exactly like add_scene_events event_batches.',
-          objectProperty('One event batch.', {})
+          objectProperty('One event batch.', {
+            event_script: stringProperty(
+              'The events to write, as EventScript source (statements like `if Timer(2, "T") and once:` with indented actions). Not needed for delete_event.'
+            ),
+            placement_relation: enumProperty('How to place the batch.', [
+              'insert_at_end',
+              'insert_and_replace_event',
+              'replace_entire_event_and_sub_events',
+              'replace_event_but_keep_existing_sub_events',
+              'insert_before_event',
+              'insert_after_event',
+              'insert_as_sub_event',
+              'delete_event',
+            ]),
+            placement_target_event_id: stringProperty(
+              'Target of the placement: an event id from read_external_events_source (e.g. "event-2.1") or a group name. Not needed for insert_at_end.'
+            ),
+            placement_expected_parent_event_id: stringProperty(
+              'For insert_as_sub_event: the event that will own the new sub-events (defaults to the target).'
+            ),
+            expected_event_source: stringProperty(
+              'Safety anchor for replace operations: the current source of the target event (as read). The edit is refused when it no longer matches.'
+            ),
+          })
         ),
         event_script: stringProperty(
-          'The whole sheet content as EventScript source (alternative to event_batches).'
+          'The whole sheet content as EventScript source (alternative to event_batches — pass one of the two, not both).'
         ),
         mode: enumProperty(
-          'How event_script is applied: replace the sheet or insert at the end.',
+          'How event_script is applied: "replace" (the DEFAULT when omitted — it overwrites the whole sheet) or "insert" (appends at the end).',
           ['replace', 'insert']
         ),
       },
@@ -1710,11 +1735,32 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
           'none',
         ]),
         brush_position: stringProperty('Brush position as "x, y".'),
+        brush_end_position: stringProperty(
+          'End position, as "x,y" (required for the "line" and "grid" brushes).'
+        ),
+        brush_size: numberProperty(
+          'Radius in pixels (used by the "erase" and "random_in_circle" brushes).'
+        ),
         object_name: stringProperty('Object of the instances to place.'),
-        new_instances_count: numberProperty('How many instances to create.'),
+        new_instances_count: numberProperty(
+          'Instances to create (default 1; omit to only move/transform existing ones).'
+        ),
+        row_count: numberProperty('Rows of the grid ("grid" brush).'),
+        column_count: numberProperty('Columns of the grid ("grid" brush).'),
         existing_instance_ids: stringProperty(
           'Comma-separated ids from describe_external_layout to modify.'
         ),
+        instances_z_order: numberProperty('Z-order of the instances.'),
+        instances_size: stringProperty(
+          'Custom size of the instances, as "width,height" in pixels.'
+        ),
+        instances_rotation: numberProperty(
+          'Rotation angle of the instances, in degrees.'
+        ),
+        instances_opacity: numberProperty(
+          'Opacity of the instances, from 0 (transparent) to 255 (opaque).'
+        ),
+        instances_hidden: booleanProperty('Set to true to hide the instances.'),
       },
       required: ['external_layout_name', 'layer_name', 'brush_kind'],
     },
@@ -1762,8 +1808,55 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
         operations: arrayProperty(
           'The operations to apply in order; failed operations are reported and skipped.',
           objectProperty(
-            'One operation (see the op names in the description).',
-            {}
+            'One operation: set "op" to one of add_animation, remove_animation, move_animation, rename_animation, set_directions_count, add_frame, remove_frame, move_frame, set_frame_image, set_origin, set_center, set_default_center, add_point, move_point, remove_point, set_full_image_mask, set_polygon_mask, set_adapt_collision_masks — plus the fields that op reads.',
+            {
+              op: stringProperty('The operation name (see above).'),
+              animation_index: numberProperty(
+                'Target animation (indices as read from describe_sprite_frames).'
+              ),
+              direction_index: numberProperty('Target direction.'),
+              frame_index: numberProperty('Target frame.'),
+              to_index: numberProperty('Destination of a move op.'),
+              count: numberProperty('Count of set_directions_count.'),
+              name: stringProperty(
+                'Name for add/rename animation, add/move/remove point.'
+              ),
+              new_name: stringProperty('New name for rename_animation.'),
+              image_name: stringProperty('Image of add_frame/set_frame_image.'),
+              all_frames: booleanProperty(
+                'Apply to every frame (point and mask ops).'
+              ),
+              x: numberProperty(
+                'X of set_origin/set_center/add_point/move_point.'
+              ),
+              y: numberProperty(
+                'Y of set_origin/set_center/add_point/move_point.'
+              ),
+              enabled: booleanProperty('Set to false to disable a mask mode.'),
+              full_image: booleanProperty('set_full_image_mask value.'),
+              adapt: booleanProperty('set_adapt_collision_masks value.'),
+              polygons: arrayProperty(
+                'set_polygon_mask definitions (replaces the whole mask).',
+                objectProperty('One polygon: vertices or a moved rectangle.', {
+                  vertices: arrayProperty(
+                    'The polygon corners.',
+                    objectProperty('One corner.', {
+                      x: numberProperty('Corner x.'),
+                      y: numberProperty('Corner y.'),
+                    })
+                  ),
+                  rectangle: objectProperty(
+                    'A rectangle polygon (alternative to vertices).',
+                    {
+                      width: numberProperty('Rectangle width.'),
+                      height: numberProperty('Rectangle height.'),
+                      center_x: numberProperty('Rectangle center x.'),
+                      center_y: numberProperty('Rectangle center y.'),
+                    }
+                  ),
+                })
+              ),
+            }
           )
         ),
       },
@@ -1904,6 +1997,20 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
+    name: 'read_doc_page',
+    description:
+      'Read the FULL wiki page behind a docs-min chunk of the minified GDevelop wiki bundled offline with the app (the chunk text says `Full page: read_doc_page(...)` — this is that tool). Pass the exact path from the chunk.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: stringProperty(
+          'The wiki path from a docs-min chunk, e.g. "gdevelop5/objects/sprite.md".'
+        ),
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'search_tools',
     description:
       'Search the full tool catalog (the tools not listed in the system prompt are all usable — discover them here). Returns each matching tool with its complete parameter schema, so you can call it immediately.',
@@ -1940,7 +2047,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
         kind: {
           type: 'string',
           description:
-            'Optional corpus filter: engine-reference, docs, skill, example, user-docs.',
+            'Optional corpus filter: engine-reference, docs, docs-min (minified wiki pages), docs-min-map (per-category wiki maps), skill, example, user-docs. Read a docs-min hit fully with read_doc_page.',
         },
         chunk_id: {
           type: 'string',
@@ -2073,6 +2180,7 @@ const collectPropertyTypeProblems = (
  * actually intercepted (see ByokExtraTools.spec.js).
  */
 export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
+  'read_doc_page',
   'capture_scene_screenshot',
   'capture_preview_screenshot',
   'start_preview',

@@ -221,9 +221,18 @@ const handleMcpRequest = async (
         };
     if (outcome.kind === 'response') response = outcome.response;
   } catch (error) {
+    // JSON-RPC 2.0: the id is echoed when determinable (audit011026
+    // B-MCP-9) — a null id makes the failure unmatchable for the client.
+    const parsedId =
+      parsed.ok &&
+      parsed.message &&
+      typeof parsed.message === 'object' &&
+      !Array.isArray(parsed.message)
+        ? parsed.message.id
+        : null;
     response = {
       jsonrpc: '2.0',
-      id: null,
+      id: parsedId === undefined ? null : parsedId,
       error: {
         code: -32603,
         message: 'Internal error in the GDevelop MCP server.',

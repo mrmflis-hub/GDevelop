@@ -6,6 +6,7 @@ import {
   byokToolResultToFunctionCallOutput,
   createByokAiRequestShell,
   getByokSurvivingImageIds,
+  getByokSurvivingImageIdsExcluding,
   getByokTranscriptImageIds,
   isByokNoticeMessage,
   makeByokNotice,
@@ -634,5 +635,66 @@ describe('user message attached images (Phase 13.3)', () => {
       ],
     });
     expect(messages).toEqual([{ role: 'user', content: 'Plain message' }]);
+  });
+});
+
+describe('getByokSurvivingImageIdsExcluding (audit011026 B-CORE-4)', () => {
+  const makeImageTranscript = (ids: Array<string>): Array<any> =>
+    ids.map(id => ({
+      type: 'function_call_output',
+      call_id: `call-${id}`,
+      output: '{}',
+      images: [id],
+    }));
+
+  it('keeps every image until an explicit eviction names it (no sliding window)', () => {
+    const transcript = makeImageTranscript(['img-1', 'img-2', 'img-3']);
+    // The old latest-2 window would have dropped img-1 here; the monotonic
+    // rule keeps all three — a new capture must never rewrite old messages.
+    expect(getByokSurvivingImageIdsExcluding(transcript, new Set())).toEqual(
+      new Set(['img-1', 'img-2', 'img-3'])
+    );
+  });
+
+  it('drops exactly the evicted ids', () => {
+    const transcript = makeImageTranscript(['img-1', 'img-2', 'img-3']);
+    expect(
+      getByokSurvivingImageIdsExcluding(transcript, new Set(['img-1']))
+    ).toEqual(new Set(['img-2', 'img-3']));
+  });
+});
+
+describe('user-message image replay placeholders (audit011026 B-UI-12)', () => {
+  const makeUserMessageWithImages = (images: Array<string>): any => ({
+    type: 'message',
+    status: 'completed',
+    role: 'user',
+    content: [{ type: 'user_request', status: 'completed', text: 'See these' }],
+    images,
+  });
+
+  it('notes evicted attachments instead of silently dropping them', () => {
+    const messages: Array<any> = byokMessagesForTranscriptItem(
+      makeUserMessageWithImages(['img-a', 'img-b']),
+      {
+        imagesEnabled: true,
+        survivingImageIds: new Set(['img-b']),
+        getImage: (id: string) =>
+          ({
+            id,
+            dataUrl: `data:${id}`,
+            width: 1,
+            height: 1,
+            approxTokens: 1,
+          }: any),
+      }
+    );
+    const textPart = messages[0].content.find(
+      (part: any) => part.type === 'text'
+    );
+    expect(textPart.text).toContain(
+      '[attachment img-a removed to save context'
+    );
+    expect(textPart.text).not.toContain('img-b removed');
   });
 });

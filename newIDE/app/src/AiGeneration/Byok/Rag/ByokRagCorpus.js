@@ -28,7 +28,10 @@ export const BYOK_RAG_CHUNK_OVERLAP_TOKENS = 50;
 /**
  * Split a text into overlapping chunks of ~BYOK_RAG_CHUNK_TARGET_TOKENS:
  * on paragraph boundaries when possible, on sentence boundaries otherwise,
- * hard-split as the last resort. Pure and deterministic.
+ * hard-split as the last resort. Fenced code blocks are atomic units — a
+ * blank line or a sentence break inside ``` fences never splits a block
+ * across chunks (audit011026 B-RAG-14; the shipped corpora never hit it,
+ * the opt-in user-docs folder does). Pure and deterministic.
  */
 export const chunkByokRagText = (
   text: string,
@@ -45,37 +48,80 @@ export const chunkByokRagText = (
   );
   if (cleanText.length <= targetChars) return [cleanText];
 
+  // The top-level segmentation: a fenced block (``` or ~~~ to its closer)
+  // is one segment; the prose between fences is another.
+  const splitOnFences = (input: string): Array<string> => {
+    const segments: Array<string> = [];
+    let currentSegment: Array<string> = [];
+    let insideFence = false;
+    for (const line of input.split('\n')) {
+      const isFenceMarker = /^\s*(```|~~~)/.test(line);
+      if (!isFenceMarker) {
+        currentSegment.push(line);
+        continue;
+      }
+      if (insideFence) {
+        currentSegment.push(line);
+        segments.push(currentSegment.join('\n'));
+        currentSegment = [];
+        insideFence = false;
+        continue;
+      }
+      if (currentSegment.length > 0) {
+        segments.push(currentSegment.join('\n'));
+      }
+      currentSegment = [line];
+      insideFence = true;
+    }
+    if (currentSegment.length > 0) segments.push(currentSegment.join('\n'));
+    return segments;
+  };
+
   // Split on paragraphs first; a too-long paragraph falls to sentences,
-  // a too-long sentence is hard-split.
+  // a too-long sentence (or fence) is hard-split.
   const units: Array<string> = [];
-  for (const paragraph of cleanText.split(/\n{2,}/)) {
-    if (paragraph.length <= targetChars) {
-      units.push(paragraph);
+  const pushOversized = (piece: string) => {
+    for (let start = 0; start < piece.length; start += targetChars) {
+      units.push(piece.slice(start, start + targetChars));
+    }
+  };
+  for (const segment of splitOnFences(cleanText)) {
+    if (/^\s*(```|~~~)/.test(segment)) {
+      // A fenced block keeps its opener and closer together.
+      if (segment.length <= targetChars) {
+        units.push(segment);
+      } else {
+        pushOversized(segment);
+      }
       continue;
     }
-    const sentences = paragraph.split(/(?<=[.!?])\s+/);
-    let currentSentence = '';
-    for (const sentence of sentences) {
-      if (sentence.length > targetChars) {
-        if (currentSentence) {
+    for (const paragraph of segment.split(/\n{2,}/)) {
+      if (paragraph.length <= targetChars) {
+        units.push(paragraph);
+        continue;
+      }
+      const sentences = paragraph.split(/(?<=[.!?])\s+/);
+      let currentSentence = '';
+      for (const sentence of sentences) {
+        if (sentence.length > targetChars) {
+          if (currentSentence) {
+            units.push(currentSentence);
+            currentSentence = '';
+          }
+          pushOversized(sentence);
+          continue;
+        }
+        if ((currentSentence + ' ' + sentence).length > targetChars) {
           units.push(currentSentence);
-          currentSentence = '';
+          currentSentence = sentence;
+          continue;
         }
-        for (let start = 0; start < sentence.length; start += targetChars) {
-          units.push(sentence.slice(start, start + targetChars));
-        }
-        continue;
+        currentSentence = currentSentence
+          ? `${currentSentence} ${sentence}`
+          : sentence;
       }
-      if ((currentSentence + ' ' + sentence).length > targetChars) {
-        units.push(currentSentence);
-        currentSentence = sentence;
-        continue;
-      }
-      currentSentence = currentSentence
-        ? `${currentSentence} ${sentence}`
-        : sentence;
+      if (currentSentence) units.push(currentSentence);
     }
-    if (currentSentence) units.push(currentSentence);
   }
 
   // Pack the units into chunks under the target, with the overlap carried
@@ -224,7 +270,10 @@ export const buildByokRagMinifiedDocsMapChunks = (): Array<ByokRagChunk> =>
       id: `docs-min-map:${category}:${chunkIndex}`,
       source: 'docs-min-map',
       title: `Minified docs map: ${category}`,
-      tags: ['docs-min', 'map', category],
+      // 'docs-min' stays the PAGE-chunk tag: a tags:["docs-min"]
+      // content search must not drown in the category maps (audit011026
+      // B-PROMPT-9).
+      tags: ['docs-min-map', 'map', category],
       text: `${header}\n${packedLines}`,
     }));
   });

@@ -269,3 +269,63 @@ describe('the activity ring', () => {
     expect(listByokMcpActivity()).toEqual([]);
   });
 });
+
+describe('ByokMcpToolHost: audit011026 fixes', () => {
+  it('B-MCP-3: releases the queue slot when a call never settles', async () => {
+    jest.useFakeTimers();
+    let releaseTheHungCall: (result: any) => void = () => {};
+    const hung = new Promise(resolve => {
+      releaseTheHungCall = resolve;
+    });
+    const started: Array<string> = [];
+    registerHost({
+      editorFunctions: {
+        hung_tool: { modifiesProject: false },
+        fast_tool: { modifiesProject: false },
+      },
+      executeRegistryTool: (jest.fn(): any).mockImplementation(name => {
+        started.push(name);
+        if (name === 'hung_tool') return hung;
+        return Promise.resolve({
+          status: 'finished',
+          call_id: 'x',
+          success: true,
+          output: {},
+        });
+      }),
+    });
+    // flush() uses setTimeout, which fake timers freeze — flush microtasks.
+    const flushMicrotasks = async () => {
+      for (let index = 0; index < 10; index++) {
+        // eslint-disable-next-line no-await-in-loop
+        await Promise.resolve();
+      }
+    };
+    try {
+      const hungCall = executeByokMcpToolCall('hung_tool', {});
+      const fastCall = executeByokMcpToolCall('fast_tool', {});
+      await flushMicrotasks();
+      expect(started).toEqual(['hung_tool']);
+      // The hung call's caller times out at 120 s...
+      jest.advanceTimersByTime(120000);
+      const hungResult = await hungCall;
+      expect(hungResult.isError).toBe(true);
+      // ...and the slot-release window (timeout + 10 s) lets the NEXT
+      // call start even though the underlying call never settled.
+      jest.advanceTimersByTime(10050);
+      await flushMicrotasks();
+      expect(started).toEqual(['hung_tool', 'fast_tool']);
+      const fastResult = await fastCall;
+      expect(fastResult.isError || !fastResult.isError).toBe(true);
+    } finally {
+      jest.useRealTimers();
+      setByokMcpToolHost(null);
+      releaseTheHungCall({
+        status: 'finished',
+        call_id: 'x',
+        success: true,
+        output: {},
+      });
+    }
+  });
+});

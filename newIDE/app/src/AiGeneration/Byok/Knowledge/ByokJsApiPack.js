@@ -17,7 +17,7 @@ const JS_API_CORE = `- Prefer events. Reach for JavaScript only when events are 
 - In an extension function (event function or behavior): \`eventsFunctionContext.getObjects("ObjectName")\` returns the object lists, \`eventsFunctionContext.getArgument("ArgName")\` the arguments; a behavior function has \`this.owner\` (the object it is attached to).
 - The engine helpers live under \`gdjs.evtTools\`: common, string, object, camera, input, sound, storage, variable, window, network — the same implementations the built-in actions call.
 - Renderer access (at your own risk): \`object.getRendererObject()\` is the PixiJS display object of an object instance, \`object.get3DRendererObject()\` the three.js one for 3D objects, and \`runtimeScene.getLayer("UI").getRenderer().getThreeScene()\` the three.js scene of a 3D layer.
-- Full signatures: the bundled TypeDoc reference of the runtime (see the docs tools), and search_reference for the expression/action equivalents.
+- Signatures: the js-custom-rendering skill for the render-time API, and search_reference for the action/expression equivalents of what you want to do.
 - Docs: [docs: events/js-code/index.md] covers JS code events — search_docs and read_doc can fetch it offline.`;
 
 registerByokKnowledgeSection({

@@ -67,6 +67,8 @@ import {
 } from './ByokSuggestions';
 import { sendByokChatCompletionWithRetries } from './ByokClient';
 import { getCachedByokModels, refreshByokModels } from './ByokModelsCache';
+import { setByokRagSettingsProvider } from './Rag/ByokRagSearch';
+import { getByokRagSettings } from './Rag/ByokRagTypes';
 import {
   APPROVED_CALL_IDS_CAPACITY,
   byokCallRequiresApproval,
@@ -278,6 +280,7 @@ export type ByokChatSeam = {|
     archived: boolean
   ) => Promise<void>,
   deleteByokHistoryChat: (aiRequestId: string) => Promise<void>,
+  renameByokHistoryChat: (aiRequestId: string, title: string) => Promise<void>,
   // Local thumbs (9.6): stored in localStorage only.
   onSendByokFeedback: (
     aiRequestId: string,
@@ -358,6 +361,20 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       }
     }
   }, []);
+
+  // The RAG settings provider of the search runtime (audit011026 B-RAG-1):
+  // after an app restart the persisted index is recovered lazily on the
+  // first search_knowledge call — it needs the live RAG preferences, which
+  // ride the same values object as the BYOK settings.
+  React.useEffect(
+    () => {
+      setByokRagSettingsProvider(() =>
+        getByokRagSettings((preferencesValuesRef.current: any))
+      );
+      return () => setByokRagSettingsProvider(null);
+    },
+    [preferencesValuesRef]
+  );
   React.useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const onWindowHide = () => {
@@ -1042,8 +1059,40 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     [onArchiveByokChat, refreshByokHistoryChats]
   );
 
+  // The Recents rail's BYOK rename (audit011026 O6): the session record's
+  // title plus the durable file's renameChat (which moves the file to the
+  // new name-derived file name, id-suffixed since B-UI-3).
+  const renameByokHistoryChat = React.useCallback(
+    async (aiRequestId: string, title: string): Promise<void> => {
+      const trimmedTitle = (title || '').trim();
+      if (!trimmedTitle) return;
+      const chat = getByokChat(aiRequestId);
+      if (chat) {
+        (chat: any).title = trimmedTitle;
+        updateByokChat(chat);
+      }
+      const persistence = getByokChatPersistence();
+      if (persistence) {
+        await persistence.renameChat(aiRequestId, trimmedTitle).catch(error => {
+          console.error('BYOK chats: unable to rename the chat file:', error);
+        });
+      }
+      await refreshByokHistoryChats();
+    },
+    [refreshByokHistoryChats]
+  );
+
   const deleteByokHistoryChat = React.useCallback(
     async (aiRequestId: string): Promise<void> => {
+      // Mirror the archive path's suspend-first sequence (audit011026
+      // B-UI-5): deleting a working chat without suspending its loop left
+      // a zombie orchestrator spending the user's key with updates that
+      // silently no-opped on the deleted store entry.
+      const orchestrator = getByokOrchestrator(aiRequestId);
+      if (orchestrator) orchestrator.suspend();
+      deleteByokOrchestrator(aiRequestId);
+      deleteByokUsageTracker(aiRequestId);
+      dropByokChatSnapshots(aiRequestId);
       await deleteByokChat(aiRequestId);
       await refreshByokHistoryChats();
     },
@@ -1205,6 +1254,10 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           );
         },
         onAiRequestUpdated: updatedChat => updateByokChat(updatedChat),
+        // The live store record (audit011026 B-UI-1): the bottom-bar's
+        // model/effort selection is written there and must reach the next
+        // turn even after this closure's record diverged.
+        getLiveAiRequest: () => getByokChat(chat.id) || chat,
         // Passed through to the sprite-internals tools so open scene editors
         // redraw after a change_sprite_frames batch.
         onObjectsModifiedOutsideEditor,
@@ -1375,6 +1428,35 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
   );
 
   /**
+   * The key of the call's ACTUAL target (audit011026 B-UI-2): a
+   * providers-only configuration keeps its keys in per-provider slots, and
+   * the historical gate on the legacy slot ('') blocked every chat start
+   * for it. The target is resolved exactly like the orchestrator's first
+   * main call resolves it; the legacy slot stays the fallback of the
+   * migrated provider #1 (which shares it).
+   */
+  const resolveByokStartKey = React.useCallback(
+    async (byokSettings: ByokSettings): Promise<ByokKeyLoadResult> => {
+      const target = resolveByokModelTarget({
+        settings: byokSettings,
+        chatSelection: null,
+        callKind: 'main',
+      });
+      const provider = (byokSettings.providers || []).find(
+        entry => entry.id === target.providerId
+      );
+      const keyRef = provider ? provider.keyRef : '';
+      const storedKey = await loadByokKey(keyRef);
+      if (storedKey.status !== 'ok' && keyRef !== '') {
+        const legacyKey = await loadByokKey('');
+        if (legacyKey.status === 'ok') return legacyKey;
+      }
+      return storedKey;
+    },
+    []
+  );
+
+  /**
    * Get (or lazily create) the orchestrator of an existing BYOK chat — this
    * is what makes a chat recoverable after the missing-key error (the user
    * saved a key, then retries or sends a message again) and after the host
@@ -1382,24 +1464,45 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
    * must not get a second orchestrator on the same transcript) or when no
    * key is stored (the chat is then re-marked with the missing-key error).
    */
+  // One attach per chat at a time (audit011026 B-UI-6): the status guard
+  // runs before the key-loading await, so a double-Enter during that IPC
+  // round-trip created two orchestrators on the same transcript.
+  const byokAttachPromisesRef = React.useRef<
+    Map<string, Promise<?ByokOrchestrator>>
+  >(new Map());
   const attachByokOrchestrator = React.useCallback(
     async (chat: AiRequest): Promise<?ByokOrchestrator> => {
-      const existingOrchestrator = getByokOrchestrator(chat.id);
-      if (existingOrchestrator) return existingOrchestrator;
-      if (chat.status === 'working') return null;
+      const inFlightAttach = byokAttachPromisesRef.current.get(chat.id);
+      if (inFlightAttach) return inFlightAttach;
+      const attachPromise = (async (): Promise<?ByokOrchestrator> => {
+        const existingOrchestrator = getByokOrchestrator(chat.id);
+        if (existingOrchestrator) return existingOrchestrator;
+        if (chat.status === 'working') return null;
 
-      const byokSettings = getByokSettings(preferencesValues);
-      const storedKey = await loadByokKey();
-      if (storedKey.status !== 'ok') {
-        chat.status = 'error';
-        chat.error = getByokMissingKeyError(storedKey);
-        updateByokChat(chat);
-        return null;
+        const byokSettings = getByokSettings(preferencesValues);
+        const storedKey = await resolveByokStartKey(byokSettings);
+        if (storedKey.status !== 'ok') {
+          chat.status = 'error';
+          chat.error = getByokMissingKeyError(storedKey);
+          updateByokChat(chat);
+          return null;
+        }
+
+        return createByokOrchestratorForChat(chat, byokSettings, storedKey.key);
+      })();
+      byokAttachPromisesRef.current.set(chat.id, attachPromise);
+      try {
+        return await attachPromise;
+      } finally {
+        byokAttachPromisesRef.current.delete(chat.id);
       }
-
-      return createByokOrchestratorForChat(chat, byokSettings, storedKey.key);
     },
-    [preferencesValues, getByokMissingKeyError, createByokOrchestratorForChat]
+    [
+      preferencesValues,
+      getByokMissingKeyError,
+      createByokOrchestratorForChat,
+      resolveByokStartKey,
+    ]
   );
 
   const startByokChat = React.useCallback(
@@ -1416,7 +1519,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
         chatOptions.onChatCreated(chat.id);
       }
 
-      const storedKey = await loadByokKey();
+      const storedKey = await resolveByokStartKey(byokSettings);
       if (storedKey.status !== 'ok') {
         chat.status = 'error';
         chat.error = getByokMissingKeyError(storedKey);
@@ -1435,6 +1538,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       preferencesValues,
       getByokMissingKeyError,
       createByokOrchestratorForChat,
+      resolveByokStartKey,
       setSelectedAiRequestId,
       resetChatUserInputs,
     ]
@@ -1520,6 +1624,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
     refreshByokHistoryChats,
     setByokHistoryChatArchived,
     deleteByokHistoryChat,
+    renameByokHistoryChat,
     onSendByokFeedback,
     openSavedByokChat,
   };

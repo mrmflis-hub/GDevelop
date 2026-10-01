@@ -715,18 +715,30 @@ export const removeByokProviderModelSettings = (
 export const isByokFullyConfigured = (settings: ByokSettings): boolean => {
   if (!settings.enabled) return false;
 
+  // The legacy single-endpoint form: global endpoint + model.
   const endpointUrl = settings.endpointUrl.trim();
-  if (!endpointUrl) return false;
-  if (
-    !endpointUrl.startsWith('https://') &&
-    !endpointUrl.startsWith('http://')
-  ) {
-    return false;
-  }
+  const hasGlobalConnection =
+    !!endpointUrl &&
+    (endpointUrl.startsWith('https://') || endpointUrl.startsWith('http://')) &&
+    !!settings.modelName.trim();
+  if (hasGlobalConnection) return true;
 
-  if (!settings.modelName.trim()) return false;
-
-  return true;
+  // The Phase 13.4 provider form (audit011026 B-UI-2): the strong pair
+  // names a registered provider whose endpoint is set — the keys live in
+  // the per-provider slots, so requiring the global endpoint+model here
+  // kept a providers-only setup from ever turning the header toggle
+  // green.
+  const strongProfile = settings.strongProfile;
+  if (!strongProfile.modelName.trim()) return false;
+  const strongProvider = (settings.providers || []).find(
+    provider => provider.id === strongProfile.providerId
+  );
+  if (!strongProvider) return false;
+  const providerUrl = strongProvider.endpointUrl.trim();
+  return (
+    !!providerUrl &&
+    (providerUrl.startsWith('https://') || providerUrl.startsWith('http://'))
+  );
 };
 
 /**

@@ -44,6 +44,7 @@ export type ByokPreviewSession = {|
     sinceIndex?: number,
     level?: string,
   |}) => Array<ByokPreviewLogEntry>,
+  getLogStats: () => {| bufferedCount: number, droppedCount: number |},
   getNewErrors: () => Array<string>,
   inspectState: () => Promise<{|
     success: boolean,
@@ -227,6 +228,10 @@ export const createByokPreviewSession = (options: {|
   let logBuffer: Array<ByokPreviewLogEntry> = [];
   let newErrors: Array<string> = [];
   let crash: ?ByokPreviewCrash = null;
+  // How many entries the ring buffer dropped at its head: the model's
+  // `since_index` is positional, so a wrap silently shifts it — the stats
+  // let the reader resync (audit011026 B-TOOL-10).
+  let droppedLogCount: number = 0;
   // ---- The debugger channel state (Phase 12) ----
   let debuggerId: string | null = null;
   let nextMessageId = 1;
@@ -267,6 +272,14 @@ export const createByokPreviewSession = (options: {|
     }
   };
 
+  // A late push (arriving after its wait timed out or after stop) must not
+  // survive into the NEXT session — the buffer-first wait used to serve the
+  // previous run's profiler output as if it were current
+  // (audit011026 B-TOOL-7).
+  const clearPushedMessagesBuffer = (): void => {
+    pushedMessagesBuffer.length = 0;
+  };
+
   const handleParsedMessage = (parsedMessage: any): void => {
     if (!parsedMessage || typeof parsedMessage !== 'object') return;
     const command = parsedMessage.command;
@@ -301,6 +314,7 @@ export const createByokPreviewSession = (options: {|
       logBuffer.push(entry);
       if (entry.level === 'error') newErrors.push(entry.text);
       if (logBuffer.length > BYOK_PREVIEW_LOG_BUFFER_SIZE) {
+        droppedLogCount += logBuffer.length - BYOK_PREVIEW_LOG_BUFFER_SIZE;
         logBuffer = logBuffer.slice(-BYOK_PREVIEW_LOG_BUFFER_SIZE);
       }
       return;
@@ -359,6 +373,8 @@ export const createByokPreviewSession = (options: {|
       newErrors = [];
       crash = null;
       debuggerId = null;
+      droppedLogCount = 0;
+      clearPushedMessagesBuffer();
       // Subscribe before launching, so no early log, crash or connection
       // is missed. The connection id is captured the same way: whoever
       // connects right after the launch IS this session's preview.
@@ -438,6 +454,7 @@ export const createByokPreviewSession = (options: {|
       failPendingDebuggerWork('The preview was stopped.');
       isRunning = false;
       debuggerId = null;
+      clearPushedMessagesBuffer();
       return { success: true, message: 'Preview stopped.' };
     },
 
@@ -448,6 +465,11 @@ export const createByokPreviewSession = (options: {|
         .slice(fromIndex)
         .filter(entry => !level || entry.level === level);
     },
+
+    getLogStats: () => ({
+      bufferedCount: logBuffer.length,
+      droppedCount: droppedLogCount,
+    }),
 
     getNewErrors: () => {
       const errors = newErrors.slice();

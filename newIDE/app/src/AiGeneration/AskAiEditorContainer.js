@@ -1549,6 +1549,17 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
             });
             return;
           }
+          // Never restore under a live loop (audit011026 B-UI-7): the
+          // in-place unserializeFrom would rewrite the project under the
+          // running orchestrator's feet (stale wrappers, edits landing on
+          // the wrong state) — the same suspend-first rule as archiving.
+          if (aiRequest.status === 'working') {
+            await showAlert({
+              title: t`Chat is still working`,
+              message: t`Stop or wait for the current AI turn to finish before restoring an earlier save.`,
+            });
+            return;
+          }
           const messageId = ((message: any).messageId: ?string);
           const snapshot = messageId
             ? getByokProjectSnapshot(aiRequest.id, messageId)
@@ -1909,6 +1920,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                   onSetByokChatArchived:
                     byokChatSeam.setByokHistoryChatArchived,
                   onDeleteByokChat: byokChatSeam.deleteByokHistoryChat,
+                  onRenameByokChat: byokChatSeam.renameByokHistoryChat,
                 }
               : {})}
           />
