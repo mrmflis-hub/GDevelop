@@ -1,6 +1,7 @@
 // @flow
 import { editorFunctions, type EditorFunctionGenericOutput } from './index';
 import { makeFakeLaunchFunctionOptionsWithProject } from './TestHelpers';
+import { unserializeFromJSObject } from '../Utils/Serializer';
 
 const gd: libGDevelop = global.gd;
 
@@ -561,5 +562,119 @@ describe('add_or_edit_variable (instance scope)', () => {
 
     expect(result.success).toBe(true);
     expect(JSON.stringify(result.variables)).toContain('LevelNumber');
+  });
+
+  // Two instances whose uuids share their first 6 characters ("abcdef"): an
+  // id-prefix matching both must fail the call with the candidates instead of
+  // silently setting the variable on both instances.
+  const SHARED_PREFIX = 'abcdef';
+  const FIRST_UUID = 'abcdef-1111-4111-8111-111111111111';
+  const SECOND_UUID = 'abcdef-2222-4222-8222-222222222222';
+
+  // Unserialize instances with chosen persistent uuids (clearing the scene),
+  // so id-prefix matching can be exercised with controlled prefixes.
+  const makeDoorInstancesWithSharedUuidPrefix = () => {
+    unserializeFromJSObject(
+      testScene.getInitialInstances(),
+      [
+        { name: 'Door', x: 0, y: 0, layer: '', persistentUuid: FIRST_UUID },
+        {
+          name: 'Door',
+          x: 100,
+          y: 200,
+          layer: '',
+          persistentUuid: SECOND_UUID,
+        },
+      ],
+      'unserializeFrom',
+      project
+    );
+    const instances: Array<gdInitialInstance> = [];
+    const functor = new gd.InitialInstanceJSFunctor();
+    // $FlowFixMe[cannot-write]
+    functor.invoke = instancePtr => {
+      instances.push(
+        gd.wrapPointer(
+          // $FlowFixMe[incompatible-type]
+          instancePtr,
+          gd.InitialInstance
+        )
+      );
+    };
+    // $FlowFixMe[incompatible-type]
+    testScene.getInitialInstances().iterateOverInstances(functor);
+    functor.delete();
+    return instances;
+  };
+
+  it('fails with the candidates and changes nothing when the id matches several instances', async () => {
+    const [first, second] = makeDoorInstancesWithSharedUuidPrefix();
+
+    const result = await addOrEditVariable({
+      variable_scope: 'instance',
+      scene_name: 'TestScene',
+      instance_id: SHARED_PREFIX,
+      variable_name_or_path: 'LevelNumber',
+      value: '3',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('ambiguous');
+    expect(result.message).toContain(FIRST_UUID);
+    expect(result.message).toContain(SECOND_UUID);
+    expect(result.message).toContain('Nothing was changed');
+    // Neither instance (nor the object) got the variable.
+    expect(first.getVariables().has('LevelNumber')).toBe(false);
+    expect(second.getVariables().has('LevelNumber')).toBe(false);
+    expect(
+      testScene
+        .getObjects()
+        .getObject('Door')
+        .getVariables()
+        .has('LevelNumber')
+    ).toBe(false);
+  });
+
+  it('still resolves a full uuid and a unique id prefix to a single instance', async () => {
+    const [first, second] = makeDoorInstancesWithSharedUuidPrefix();
+
+    const byFullUuid = await addOrEditVariable({
+      variable_scope: 'instance',
+      scene_name: 'TestScene',
+      instance_id: FIRST_UUID,
+      variable_name_or_path: 'LevelNumber',
+      value: '3',
+    });
+    expect(byFullUuid.success).toBe(true);
+    expect(first.getVariables().has('LevelNumber')).toBe(true);
+    expect(second.getVariables().has('LevelNumber')).toBe(false);
+
+    const byUniquePrefix = await addOrEditVariable({
+      variable_scope: 'instance',
+      scene_name: 'TestScene',
+      instance_id: 'abcdef-2',
+      variable_name_or_path: 'LevelNumber',
+      value: '4',
+    });
+    expect(byUniquePrefix.success).toBe(true);
+    expect(second.getVariables().has('LevelNumber')).toBe(true);
+  });
+
+  it('inspect_variables also refuses an ambiguous instance id', async () => {
+    makeDoorInstancesWithSharedUuidPrefix();
+
+    const result = await editorFunctions.inspect_variables.launchFunction({
+      ...makeFakeLaunchFunctionOptionsWithProject(project),
+      args: {
+        variable_scope: 'instance',
+        scene_name: 'TestScene',
+        instance_id: SHARED_PREFIX,
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('ambiguous');
+    expect(result.message).toContain(FIRST_UUID);
+    expect(result.message).toContain(SECOND_UUID);
   });
 });

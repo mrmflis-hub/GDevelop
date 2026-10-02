@@ -234,6 +234,14 @@ export const createByokPreviewSession = (options: {|
   let droppedLogCount: number = 0;
   // ---- The debugger channel state (Phase 12) ----
   let debuggerId: string | null = null;
+  // The earliest time at which an incoming connection may be bound as this
+  // session's debugger: Infinity until the launch resolves — connections
+  // opened in that window belong to other previews (typically the user
+  // launching one while the export runs) — then the moment the launch
+  // resolved. stop() puts it back to Infinity so even a stale callback
+  // firing cannot rebind (audit011026 B-TOOL-11: the binding is
+  // first-connection-after-launch, not first-connection-overall).
+  let launchBoundAtMs: number = Number.POSITIVE_INFINITY;
   let nextMessageId = 1;
   const pendingResponses: Map<number, PendingResponse> = new Map();
   const pushedMessagesBuffer: Array<{|
@@ -373,11 +381,15 @@ export const createByokPreviewSession = (options: {|
       newErrors = [];
       crash = null;
       debuggerId = null;
+      launchBoundAtMs = Number.POSITIVE_INFINITY;
       droppedLogCount = 0;
       clearPushedMessagesBuffer();
-      // Subscribe before launching, so no early log, crash or connection
-      // is missed. The connection id is captured the same way: whoever
-      // connects right after the launch IS this session's preview.
+      // Subscribe before launching, so no early log, crash or pushed
+      // message is missed. The debugger BINDING is stricter than the
+      // subscription: connections opened while the launch is still in
+      // flight belong to other previews (typically the user launching one
+      // during the export window) and are ignored — the first connection
+      // opened after the launch resolves is this session's preview.
       unregisterCallbacks = debuggerServer.registerCallbacks({
         // The debugger server fan-out invokes every registered callback
         // (server state changes, server errors, connection errors), so each
@@ -386,6 +398,9 @@ export const createByokPreviewSession = (options: {|
         onErrorReceived: () => {},
         onConnectionErrored: () => {},
         onConnectionOpened: ({ id }: {| id: string |}) => {
+          // Early connections (arriving before the launch resolved) are
+          // other previews' — see launchBoundAtMs above.
+          if (Date.now() < launchBoundAtMs) return;
           if (debuggerId === null) debuggerId = id;
         },
         onConnectionClosed: ({ id }: {| id: string |}) => {
@@ -417,6 +432,9 @@ export const createByokPreviewSession = (options: {|
         };
       }
       previewLauncherAtStart = previewLauncher;
+      // The launch resolved: from this moment on, the first connection to
+      // arrive is this session's preview (see launchBoundAtMs).
+      launchBoundAtMs = Date.now();
       isRunning = true;
       return {
         success: true,
@@ -454,6 +472,7 @@ export const createByokPreviewSession = (options: {|
       failPendingDebuggerWork('The preview was stopped.');
       isRunning = false;
       debuggerId = null;
+      launchBoundAtMs = Number.POSITIVE_INFINITY;
       clearPushedMessagesBuffer();
       return { success: true, message: 'Preview stopped.' };
     },

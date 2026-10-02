@@ -1254,6 +1254,103 @@ describe('applyEventsChanges', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('should report an error when replace_event_but_keep_existing_sub_events cannot preserve sub-events', () => {
+    const setupTargetEventWithTwoSubEvents = () => {
+      sceneEventsList.clear();
+      const groupEvent = gd.asGroupEvent(
+        sceneEventsList.insertNewEvent(
+          project,
+          'BuiltinCommonInstructions::Group',
+          0
+        )
+      );
+      const subEvents = groupEvent.getSubEvents();
+      subEvents.insertNewEvent(
+        project,
+        'BuiltinCommonInstructions::Comment',
+        0
+      );
+      subEvents.insertNewEvent(
+        project,
+        'BuiltinCommonInstructions::Standard',
+        1
+      );
+    };
+
+    // Fixture sanity check: a comment event cannot host sub-events, while a
+    // standard event can.
+    const commentProbe = sceneEventsList.insertNewEvent(
+      project,
+      'BuiltinCommonInstructions::Comment',
+      0
+    );
+    expect(commentProbe.canHaveSubEvents()).toBe(false);
+    const standardProbe = sceneEventsList.insertNewEvent(
+      project,
+      'BuiltinCommonInstructions::Standard',
+      0
+    );
+    expect(standardProbe.canHaveSubEvents()).toBe(true);
+
+    // First new event is a comment: the existing sub-events cannot be
+    // preserved, so an error must be reported instead of a silent drop.
+    setupTargetEventWithTwoSubEvents();
+    const failingResult = applyEventsChanges(
+      project,
+      sceneEventsList,
+      [
+        makeChange({
+          operationName: 'replace_event_but_keep_existing_sub_events',
+          operationTargetEvent: 'event-0',
+          generatedEvents:
+            '[{"type":"BuiltinCommonInstructions::Comment"},{"type":"BuiltinCommonInstructions::Standard","conditions":[],"actions":[]}]',
+        }),
+      ],
+      fakeGeneratedEventId
+    );
+    expect(sceneEventsList.getEventsCount()).toBe(2);
+    expect(sceneEventsList.getEventAt(0).getType()).toBe(
+      'BuiltinCommonInstructions::Comment'
+    );
+    expect(
+      sceneEventsList
+        .getEventAt(0)
+        .getSubEvents()
+        .getEventsCount()
+    ).toBe(0);
+    expect(failingResult.applied).toBe(1);
+    expect(failingResult.errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          'Cannot preserve sub-events: the first replacement event at path [0] does not support sub-events.'
+        ),
+      ])
+    );
+
+    // Complementary success case: first new event is a standard event, so the
+    // sub-events are preserved without any error.
+    setupTargetEventWithTwoSubEvents();
+    const successResult = applyEventsChanges(
+      project,
+      sceneEventsList,
+      [
+        makeChange({
+          operationName: 'replace_event_but_keep_existing_sub_events',
+          operationTargetEvent: 'event-0',
+          generatedEvents:
+            '[{"type":"BuiltinCommonInstructions::Standard","conditions":[],"actions":[]}]',
+        }),
+      ],
+      fakeGeneratedEventId
+    );
+    expect(sceneEventsList.getEventsCount()).toBe(1);
+    const replacedEvent = sceneEventsList.getEventAt(0);
+    expect(replacedEvent.getType()).toBe('BuiltinCommonInstructions::Standard');
+    expect(replacedEvent.getSubEvents().getEventsCount()).toBe(2);
+    expect(successResult.applied).toBe(1);
+    expect(successResult.errors).toEqual([]);
+  });
+
   it('should insert events after target with insert_after_event', () => {
     setupInitialSceneEvents([
       'BuiltinCommonInstructions::Standard',

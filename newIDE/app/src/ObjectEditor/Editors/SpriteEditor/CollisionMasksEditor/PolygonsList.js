@@ -32,6 +32,25 @@ import Warning from '../../../../UI/CustomSvgIcons/Warning';
 
 const gd = global.gd;
 
+/**
+ * Create the default collision mask (a rectangle the size of the sprite,
+ * centered on it) and push it into the mask vector. Extracted from the
+ * component so the wrapper lifecycle is testable without rendering it.
+ */
+export const addRectangleCollisionMaskTo = (
+  polygons: gdVectorPolygon2d,
+  spriteWidth: number,
+  spriteHeight: number
+) => {
+  const newPolygon = gd.Polygon2d.createRectangle(spriteWidth, spriteHeight);
+  newPolygon.move(spriteWidth / 2, spriteHeight / 2);
+  // The mask vector takes ownership of the pushed polygon: the wrapper must
+  // NOT be delete()d afterwards — unlike Sprite/Point/Vector2f wrappers,
+  // deleting it corrupts the wasm heap (see ByokSpriteTools
+  // .applyPolygonMaskToFrame, which mirrors this lifecycle).
+  polygons.push_back(newPolygon);
+};
+
 type VerticesTableProps = {|
   vertices: gdVectorVector2f,
   hasWarning: boolean,
@@ -223,12 +242,7 @@ const PolygonsList = (props: PolygonsListProps): React.Node => {
   const [spriteWidth, spriteHeight] = spriteSize;
   const addCollisionMask = React.useCallback(
     () => {
-      const newPolygon = gd.Polygon2d.createRectangle(
-        spriteWidth,
-        spriteHeight
-      );
-      newPolygon.move(spriteWidth / 2, spriteHeight / 2);
-      polygons.push_back(newPolygon);
+      addRectangleCollisionMaskTo(polygons, spriteWidth, spriteHeight);
       onPolygonsUpdated();
     },
     [spriteHeight, spriteWidth, polygons, onPolygonsUpdated]

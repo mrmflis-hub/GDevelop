@@ -211,30 +211,62 @@ Status as of 2026-09-24 (update at the end of every session):
   221 suites / 2428 tests, all four gates green. `REVIEW/FTmodel.md` =
   the local fine-tuned generation track (LoRA/Unsloth, ternary
   Bonsai-class bases) — explicitly long-term, NOT scheduled.
-- **Phase 14 PLANNED 2026-09-26, NOT started** (`REVIEW/Phase14.md`; the
-  owner ordered docs-only first): prompt-cache stability (snapshot-once
-  system prompt, D14-1), a bundled minified-docs corpus layer with
-  per-category map chunks (D14-2, 40–60 % band, works with RAG off),
-  the prebuilt RAG index bundle on the fork's GitHub Releases + Qdrant
-  snapshot restore (D14-3, opt-in only), and gated embedder finetuning on
-  synthetic pairs + ~200 owner-written queries with a ship-if-better gate
-  (D14-6). Zero-shot classification, the triage→coding split, and
-  prefilling are REJECTED (D14-4/D14-5, `deferred.md`). Owner work queued
-  as `usertasks.md` Task 17 (17.1 query set is the long pole).
-  **Phase 14.4 (artifact half) IMPLEMENTED 2026-09-27, uncommitted** (the
-  owner ordered "build the index to be downloadable"):
-  `scripts/byok-embedder/build-byok-rag-bundle.js` builds the D14-3
-  artifact from the REAL corpus/index/serialization modules (Babel-register;
-  the `EditorFunctions` registry is stubbed to cut the browser subtree) with
-  transformers.js pinned to dtype `q8` (the app's WASM default — Node's
-  default is fp32, a silent-vector-mismatch trap); spec
-  `ByokRagBundleBuilder.spec.js`. **v1 artifact built + verified**:
-  `build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-7b8a6b0.json`
-  (2,052 chunks — engine-reference 1,962, docs 53, example 11, skill 26 —
-  4.6 MB, corpus `7b8a6b0`; reload + 8 spot-check queries all on-topic).
-  Owner hosts it via Task 17.2; the RAG-tab download/import UI, the Qdrant
-  snapshot variant and steps 14.1–14.3/14.5 are still pending the owner's
-  order.
+- **Phase 14 IMPLEMENTED 2026-09-27** (the owner ordered steps 14.1,
+  14.2, 14.4, 14.5 in chat and **deferred 14.3** — "move on without
+  finetuned model"). **14.1 (prompt-cache stability, D14-1):** the
+  orchestrator composes the system prompt ONCE per chat and reuses it
+  byte-identical (`systemPromptSnapshot` in `ByokOrchestrator.js`);
+  invalidation only on a `hasOpenedProject()` flip or a new chat —
+  spec-proven across note writes and settings churn. **Same-day owner
+  order (cache follow-up):** the project snapshot no longer folds into
+  the last user message (that rewrote a mid-request message on every
+  editing round); it rides its OWN synthetic trailing user message at
+  the request tail, making the transcript replay purely append-only — a
+  refresh only ever changes the final message, so in 50–100-round build
+  turns the cacheable prefix covers system + tools + the whole
+  transcript (spec-proven across editing rounds and a completion-gate
+  nudge; amendment recorded in Phase14.md step 14.1). **14.2 (minified
+  docs layer, D14-2):** the whole `gdevelop5` wiki (601/601 pages, 0.50
+  compression — dead center of the 40–60 % band) minified by 7 waves of
+  ≤ 5 parallel agents into the committed artifact
+  `Byok/docs/gdevelop-docs/MinifiedDocs.generated.js` (2.3 MB), assembled
+  + validated by `scripts/build-byok-minified-docs.js` (per-page JSON
+  batches, deterministic engine-token sanity pass with a 4-entry
+  documented allowlist, tag whitelist = folder facets + 2d/3d), exposed
+  by `ByokMinifiedDocs.js` and two new corpus grades in `ByokRagCorpus`
+  (`docs-min-map` per-category listings, line-packed;
+  `docs-min` page chunks, every chunk carrying
+  `Full page: read_doc_page('<path>')`); retrieval-map hint line added,
+  prompt bumped **byok-v10**; corpus 2,052 → 4,026 chunks. **The
+  ranking fix this forced:** the wiki's prose chunks crushed the 24-query
+  eval gate to 17 % (exact hits crowding + vector dilution), so
+  `ByokRagSearch` now scores lexical hits positionally (title > tags >
+  text) and re-ranks both halves by per-source weights
+  (`BYOK_RAG_SOURCE_WEIGHTS`, curated tiers above wiki prose) — hashing
+  79 % / stock MiniLM 83 % top-3, gate ≥ 70 % green. **14.4 (prebuilt
+  RAG bundle, D14-3/D14-7(a)):** pure validation in
+  `Rag/ByokRagBundle.js` (envelope shape, embedder-in-catalog +
+  dimensions, sha256 shape; corpus/embedder mismatch = refused with a
+  rebuild offer), `importByokRagBundleIntoStore` in `ByokRagStorage`,
+  `importPrebuiltByokRagIndex` in `ByokRagBuildService` (loads the
+  query-side embedder, honest lexical degrade on failure), Electron
+  `byok-rag-bundle-info`/`byok-rag-bundle-download` (sha256-verified in
+  main, node crypto) + `byok-qdrant-restore-snapshot` (Qdrant pulls the
+  release snapshot itself via the url-body upload API;
+  `runByokQdrantSnapshotRestore` pure core), and the RAG tab's
+  **Prebuilt index card** (release lookup on mount, up-to-date /
+  update-available / offline states, ONE consent naming index + embedder
+  sizes, "Build locally instead" always visible). **v2 artifact built +
+  verified:** `build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-571d1b30.json`
+  (4,026 chunks, corpus `571d1b30`, 8 spot-checks on-topic) — the v1
+  file (7b8a6b0) is superseded; owner uploads via Task 17.2.
+  **14.5:** `scripts/byok-embedder/eval-embedder.js` (the
+  embedder-agnostic runner from the 14.3 file list; hashing + real-model
+  + `--queries` holdout mode) over the shared 24-query set
+  (`Byok/evals/byok-rag-eval-queries.json`, now the spec's source too);
+  prompt budget re-measured 11,842 tokens worst-case (prompt 5,900 +
+  tools 5,942) — under the 15k cap, +60 vs Phase 13 for the hint line.
+  226 suites / 2,489 tests, all four gates green.
 
 - **Audits:** every 2026-09-21 audit B-finding is fixed. The remaining open
   findings are consolidated in `REVIEW/audit2209.md` (full detail) and triaged
@@ -441,8 +473,8 @@ The repository moves; the phase docs were written on 2026-09-13 (Phases 1–4)
 and 2026-09-21 (Phases 5–9). If a line number, function name, or structure has
 shifted upstream:
 
-- Re-locate the equivalent spot yourself (search, don't guess).
-  `file:line`.
+- Re-locate the equivalent spot yourself (search, don't guess), and cite
+  it as `file:line`.
 - Keep the *intent* of the step (the ACs), not the literal line numbers.
 
 This applies to this manual too: if AGENTS.md contradicts reality, fix the
@@ -450,4 +482,74 @@ manual in the same session and say so in the worklog.
 
 ---
 
-*Last updated: 2026-09-27.*
+- **Full-repository audit + fix session 2026-10-01** (`REVIEW/
+  audit011026.md` is the permanent record: 63 BYOK findings — 55 FIXED
+  this session with spec coverage, 4 triaged to `outofscoped.md`, 4
+  doc-claim corrections — plus 8 upstream findings with proposed fixes
+  awaiting reporting). Prompt bumped **byok-v11** (`read_doc_page` is now
+  a real no-project tool backed by the minified wiki, a prompt→registry
+  guard spec enforces taught-token resolution, the EventScript example
+  bugs are fixed, the map chunks carry `docs-min-map`). Headline fixes:
+  the benchmark WASM crash (outofscoped O1 — a type-confused
+  `gd.Serializer.toJSON(eventsList)`), the untracked MinifiedDocs artifact
+  (STAGED — the owner's commit must include it), per-chat model
+  selections no longer wiped, providers-only configs work end-to-end,
+  chat files embed the chat id, loop-guard stops no longer orphan tool
+  calls, temperature/max_tokens are sent, image replay is monotonic
+  (cache-safe), the persisted RAG index reloads after restarts, the
+  Qdrant dimensions math (every Qdrant build failed 400), `electron.remote`
+  (docs folder silently dead), confined BYOK downloads
+  (`byok-download-resource`: cookie only for gdevelop.io, project-folder
+  confinement, cap+timeout) + URL-filename traversal, MCP cancellation
+  forwarding + timing-safe token + pid-reuse verification + queue-slot
+  release, atomic chat/index writes, the rail's BYOK Rename (O6), and
+  attachment size caps. The corpus hash CHANGED — the owner's Task 17.2
+  upload must be a rebuilt v3 bundle. Gates: 229 suites / 2527 tests
+  (2526 passed + 1 pre-existing skip + the documented one-suite flake,
+  third family member), lint 0/0, Flow 0, prettier clean (app +
+  electron-app). Owner follow-ups: usertasks Task 18.
+
+- **audit011026 completion session 2026-10-02 (owner-ordered, all gates
+  green, uncommitted):** the owner ordered every remaining audit finding
+  implemented in-tree — "this includes fixes to upstream errors; nothing
+  deferred". Fixed with tests: B-TOOL-11 (the BYOK debugger binding now
+  only binds connections opened after the launch promise resolves — a
+  user preview in the launch window can no longer steal it), B-MCP-13
+  (MCP activity entries are mirrored to the Electron main over
+  `byok-mcp-activity` and aggregated in the `byok-mcp-status` response;
+  the Preferences card merges local + remote with a composite-key dedupe,
+  and Clear clears both), B-UI-13 (a versioned `index.json` chat index —
+  steady-state saves/rail actions read zero chat content; a reconcile
+  pass adopts legacy/unseen files and drops stale entries; the public
+  store API is unchanged), B-ARTIFACT-1 (verified: the artifact landed in
+  `943379bff0`), and all eight upstream findings UP-1…UP-8 applied as IDE
+  fixes: the confined `local-file-download`/`-save-from-arraybuffer`
+  handlers over the new pure core `Utils/LocalFileDownloadCore.js`
+  (http(s)-only, gdevelop.io-only cookie, caller-declared `basePath`
+  containment, 200 MB cap, 60 s timeout, and a per-hop-validated manual
+  redirect walk because axios 0.19 forwards headers cross-host; all nine
+  export callers + the mover pass their base), window-id
+  `preview-window-closed` routing through the pure `PreviewClosedTracker`
+  (+ `PreviewWindow.js` returns created ids), the
+  `replace_event_but_keep_existing_sub_events` preservation error,
+  try/finally wrapper deletion in all six `Utils/Serializer.js`
+  functions, exporter/previewExportOptions deletion on every
+  `launchPreview` path, `didModifyProject: false` preserved through
+  `EditorFunctionCallRunner`, the five-site instance-id resolver (exact
+  uuid wins, unique prefix resolves, ambiguous prefix fails listing
+  candidates — InstanceTools 2D ×2, put_3d ×2, instance-variables), and
+  the Polygon2d ownership-transfer documented at both collision-mask
+  editor sites with inverse regression pins (the audit's alternative —
+  deleting the pushed wrapper is disproven by the 2026-09-24 WASM-heap
+  repro). ~30 files touched (upstream IDE files by owner order; new
+  files: LocalFileDownloadCore.js(+spec), PreviewClosedTracker.js(+spec),
+  ByokMcpActivity.js(+spec), CollisionMasksEditor specs,
+  LocalPreviewLauncher index.spec). Gates: 235 suites / 2,628 tests + 1
+  pre-existing skip, 0 test failures (one standalone-passing suite flakes
+  per full run — the documented O4 family, now with five+ members), lint
+  0/0, Flow 0, prettier clean (app + electron-app). Permanent record:
+  `REVIEW/audit011026.md` (every token `[fixed]`). Owner follow-ups:
+  usertasks Task 18 (now including the completion session in the commit
+  review and four new desktop-QA additions).
+
+*Last updated: 2026-10-02.*

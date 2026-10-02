@@ -8,6 +8,7 @@ import {
   listByokMcpActivity,
   makeByokMcpToolHost,
   setByokMcpToolHost,
+  subscribeByokMcpActivity,
   subscribeByokMcpToolHost,
 } from './ByokMcpToolHost';
 import { NO_TOOL_HOST_MESSAGE } from './ByokMcpProtocol';
@@ -267,6 +268,75 @@ describe('the activity ring', () => {
     expect(listByokMcpActivity().length).toBe(1);
     clearByokMcpActivity();
     expect(listByokMcpActivity()).toEqual([]);
+  });
+});
+
+describe('the activity subscription (audit011026 B-MCP-13)', () => {
+  it('fires with the entry for a completed call', async () => {
+    registerHost({
+      editorFunctions: { read_scene_events: { modifiesProject: false } },
+      executeRegistryTool: (jest.fn(): any).mockResolvedValue({
+        status: 'finished',
+        call_id: 'x',
+        success: true,
+        output: {},
+      }),
+    });
+    const listener = (jest.fn(): any);
+    subscribeByokMcpActivity(listener);
+    await executeByokMcpToolCall('read_scene_events', { sceneName: 'Menu' });
+    expect(listener).toHaveBeenCalledTimes(1);
+    const entry = listener.mock.calls[0][0];
+    expect(entry.tool).toBe('read_scene_events');
+    expect(entry.outcome).toBe('completed');
+    expect(entry.argsPreview).toContain('Menu');
+  });
+
+  it('fires with the entry when a call times out', async () => {
+    registerHost({
+      editorFunctions: { slow_tool: { modifiesProject: false } },
+      executeRegistryTool: (jest.fn(): any).mockImplementation(
+        () =>
+          new Promise(resolve =>
+            setTimeout(
+              () =>
+                resolve({
+                  status: 'finished',
+                  call_id: 'x',
+                  success: true,
+                  output: {},
+                }),
+              50
+            )
+          )
+      ),
+    });
+    const listener = (jest.fn(): any);
+    subscribeByokMcpActivity(listener);
+    await executeByokMcpToolCall('slow_tool', {}, { timeoutMs: 10 });
+    const outcomes = listener.mock.calls.map(call => call[0].outcome);
+    expect(outcomes).toContain('timeout');
+    // Let the underlying call settle so no work dangles past the test.
+    await new Promise(resolve => setTimeout(resolve, 60));
+  });
+
+  it('stops delivering entries once unsubscribed', async () => {
+    registerHost({
+      editorFunctions: { a_tool: { modifiesProject: false } },
+      executeRegistryTool: (jest.fn(): any).mockResolvedValue({
+        status: 'finished',
+        call_id: 'x',
+        success: true,
+        output: {},
+      }),
+    });
+    const listener = (jest.fn(): any);
+    const unsubscribe = subscribeByokMcpActivity(listener);
+    await executeByokMcpToolCall('a_tool', {});
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    await executeByokMcpToolCall('a_tool', {});
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });
 

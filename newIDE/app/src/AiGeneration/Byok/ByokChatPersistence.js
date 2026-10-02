@@ -21,9 +21,26 @@ import { restoreByokImage } from './ByokImageContent';
  * the list) and the storage quota (image sidecars of the oldest chats are
  * evicted before any transcript text). The platform backends — Electron
  * files through IPC on desktop, IndexedDB on the web build — are injected.
+ *
+ * Since audit011026 B-UI-13 the store keeps an id→fileName index (a small
+ * reserved `index.json` written through the same backend): steady-state
+ * listings and per-chat operations resolve through it instead of
+ * re-reading and re-parsing every chat file — toward the 200 MB quota that
+ * made each save and each rail action O(total-bytes). The chat files stay
+ * the source of truth: a missing, stale or corrupt index is healed by
+ * reconciliation (parse the unindexed files once, drop the stale entries).
  */
 
 export const BYOK_CHAT_FILE_SCHEMA = 1;
+
+// The index of the saved chats (audit011026 B-UI-13), versioned like the
+// chat files themselves.
+export const BYOK_CHAT_INDEX_SCHEMA = 1;
+
+// Reserved name — naturally excluded from the chat listing (not a `.md`
+// file), from the quarantined files (no `corrupt-` prefix) and from the
+// image sidecars (not a `.images.json` file).
+export const BYOK_CHAT_INDEX_FILE_NAME = 'index.json';
 
 export type ByokChatFileMeta = {|
   id: string,
@@ -324,6 +341,84 @@ export const collectByokChatImageEntries = (
 };
 
 // ----------------------------------------------------------------------
+// The chat index (audit011026 B-UI-13).
+// ----------------------------------------------------------------------
+
+const isChatFileName = (fileName: string): boolean =>
+  fileName.endsWith(CHAT_FILE_EXTENSION) &&
+  !fileName.startsWith(QUARANTINE_PREFIX);
+
+/**
+ * The index entry of a chat: exactly the metas `listChatMetas` returns
+ * (computed once at save/reconciliation time instead of on every listing).
+ */
+export const makeByokChatIndexEntryFromChat = (
+  fileName: string,
+  chat: AiRequest
+): ByokChatFileMeta => ({
+  id: chat.id,
+  fileName,
+  name: chat.title || makeByokChatName(chat),
+  createdAt: chat.createdAt,
+  updatedAt: chat.updatedAt,
+  archivedAt: chat.archivedAt || null,
+  messageCount: chat.output ? chat.output.length : 0,
+});
+
+/** Newest-updated first — exactly the order the listing always had. */
+export const sortChatIndexEntries = (
+  entries: Array<ByokChatFileMeta>
+): Array<ByokChatFileMeta> =>
+  [...entries].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+
+const isByokChatIndexEntryShape = (value: mixed): boolean => {
+  if (!value || typeof value !== 'object') return false;
+  // Built through any: the values come from JSON.parse of the index file.
+  const record: any = value;
+  if (typeof record.id !== 'string' || !record.id) return false;
+  if (typeof record.fileName !== 'string' || !record.fileName) return false;
+  if (typeof record.name !== 'string') return false;
+  if (typeof record.createdAt !== 'string') return false;
+  if (typeof record.updatedAt !== 'string') return false;
+  if (record.archivedAt !== null && typeof record.archivedAt !== 'string') {
+    return false;
+  }
+  return typeof record.messageCount === 'number';
+};
+
+/**
+ * Parse the persisted index, or null when it is missing, unparseable or
+ * foreign-shaped — the caller then rebuilds it from the chat files (the
+ * index is a cache; the files stay the source of truth). One malformed
+ * entry invalidates the whole index: the rebuild is cheap and total.
+ */
+export const parseByokChatIndex = (
+  content: string | null
+): Array<ByokChatFileMeta> | null => {
+  if (!content) return null;
+  let parsed: mixed = null;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const record: any = parsed;
+  if (record.schema !== BYOK_CHAT_INDEX_SCHEMA) return null;
+  if (!Array.isArray(record.entries)) return null;
+  const entries: Array<ByokChatFileMeta> = [];
+  for (const entry of record.entries) {
+    if (!isByokChatIndexEntryShape(entry)) return null;
+    entries.push(entry);
+  }
+  return entries;
+};
+
+export const serializeByokChatIndex = (
+  entries: Array<ByokChatFileMeta>
+): string => JSON.stringify({ schema: BYOK_CHAT_INDEX_SCHEMA, entries });
+
+// ----------------------------------------------------------------------
 // The file store over a backend.
 // ----------------------------------------------------------------------
 
@@ -372,54 +467,200 @@ export const createByokChatFileStore = (
     ...
   }
 ): ByokChatFileStore => {
-  /** All chat files, parsed; unreadable ones are quarantined and skipped. */
-  const listChatFiles = async (): Promise<
-    Array<{| fileName: string, chat: AiRequest |}>
-  > => {
-    const files = await backend.listFiles();
-    const chatFiles: Array<{| fileName: string, chat: AiRequest |}> = [];
-    for (const file of files) {
-      if (!file.fileName.endsWith(CHAT_FILE_EXTENSION)) continue;
-      if (file.fileName.startsWith(QUARANTINE_PREFIX)) continue;
-      const content = await backend.readFile(file.fileName);
-      if (content === null) continue;
-      const chat = parseByokChatFromMarkdown(content);
-      if (!chat) {
-        // Quarantine: move aside, never block the list.
-        await backend
-          .moveFile(file.fileName, `${QUARANTINE_PREFIX}${file.fileName}`)
-          .catch(() => {});
-        continue;
-      }
-      chatFiles.push({ fileName: file.fileName, chat });
-    }
-    chatFiles.sort((a, b) => (a.chat.updatedAt < b.chat.updatedAt ? 1 : -1));
-    return chatFiles;
+  // The chat index (B-UI-13): loaded once per store, kept in memory as the
+  // working copy, persisted through the backend like any other file. The
+  // chat files stay the source of truth — a lost or stale index is healed
+  // by reconciliation, so a crash between a chat write and the index write
+  // never loses a chat (the file is simply re-parsed on the next pass).
+  let chatIndexEntries: Array<ByokChatFileMeta> | null = null;
+  let chatIndexExistsOnDisk = false;
+  let chatIndexLoadPromise: Promise<void> | null = null;
+
+  const writeChatIndexToDisk = async (): Promise<void> => {
+    if (!chatIndexEntries) return;
+    await backend.writeFile(
+      BYOK_CHAT_INDEX_FILE_NAME,
+      serializeByokChatIndex(chatIndexEntries)
+    );
+    chatIndexExistsOnDisk = true;
   };
 
-  const findChatFile = async (
+  /**
+   * Parse one chat file into an index entry; a file that fails shape
+   * validation is quarantined (moved aside, never blocking the list) —
+   * exactly the pre-index policy.
+   */
+  const parseChatFileForIndex = async (
+    fileName: string
+  ): Promise<ByokChatFileMeta | null> => {
+    const content = await backend.readFile(fileName);
+    if (content === null) return null;
+    const chat = parseByokChatFromMarkdown(content);
+    if (chat) return makeByokChatIndexEntryFromChat(fileName, chat);
+    // Quarantine: move aside, never block the list.
+    await backend
+      .moveFile(fileName, `${QUARANTINE_PREFIX}${fileName}`)
+      .catch(() => {});
+    return null;
+  };
+
+  /**
+   * Reconcile the in-memory index with the disk over a STAT-ONLY listing:
+   * entries whose chat file is gone are dropped, chat files the index
+   * never saw (first run after the upgrade, a crash between the chat write
+   * and the index write, legacy files whose names predate the id
+   * embedding) are parsed just once and adopted. Returns the listing for
+   * the callers that need the file sizes. The reconciled index is
+   * persisted only when reconciliation actually changed it — and only for
+   * the callers that pass persistChanges: quota enforcement adopts the
+   * entries in memory but never writes, so it cannot add bytes to the
+   * very storage it is trimming.
+   */
+  const reconcileChatIndex = async (
+    persistChanges: boolean
+  ): Promise<Array<ByokChatStorageFile>> => {
+    const files = await backend.listFiles();
+    const fileNamesOnDisk = new Set(files.map(file => file.fileName));
+    const previousEntries = chatIndexEntries || [];
+    const keptEntries = previousEntries.filter(entry =>
+      fileNamesOnDisk.has(entry.fileName)
+    );
+    const indexedFileNames = new Set(keptEntries.map(entry => entry.fileName));
+    const freshEntries: Array<ByokChatFileMeta> = [];
+    for (const file of files) {
+      if (!isChatFileName(file.fileName)) continue;
+      if (indexedFileNames.has(file.fileName)) continue;
+      const entry = await parseChatFileForIndex(file.fileName);
+      if (entry) freshEntries.push(entry);
+    }
+    const anythingChanged =
+      keptEntries.length !== previousEntries.length || freshEntries.length > 0;
+    if (anythingChanged) {
+      chatIndexEntries = sortChatIndexEntries([
+        ...keptEntries,
+        ...freshEntries,
+      ]);
+      if (persistChanges) await writeChatIndexToDisk().catch(() => {});
+    }
+    return files;
+  };
+
+  const loadChatIndexOnce = async (): Promise<void> => {
+    if (chatIndexEntries) return;
+    if (chatIndexLoadPromise) {
+      await chatIndexLoadPromise;
+      return;
+    }
+    const loadPromise = (async () => {
+      const content = await backend.readFile(BYOK_CHAT_INDEX_FILE_NAME);
+      chatIndexExistsOnDisk = content !== null;
+      const entries = parseByokChatIndex(content);
+      if (entries) {
+        chatIndexEntries = entries;
+        return;
+      }
+      // Missing or corrupt index: silent full rebuild from the chat files.
+      chatIndexEntries = [];
+      await reconcileChatIndex(true);
+    })();
+    chatIndexLoadPromise = loadPromise;
+    try {
+      await loadPromise;
+    } finally {
+      // Also on rejection: a failed load must not poison later calls.
+      chatIndexLoadPromise = null;
+    }
+  };
+
+  /**
+   * Resolve a chat id through the index. A miss triggers one stat-only
+   * reconciliation first — an id that exists on disk but not in the index
+   * (legacy file, crash window) is found and adopted that way, exactly as
+   * the old parse-everything lookup would have found it.
+   */
+  const findChatIndexEntry = async (
     chatId: string
+  ): Promise<ByokChatFileMeta | null> => {
+    await loadChatIndexOnce();
+    const directEntry =
+      (chatIndexEntries || []).find(entry => entry.id === chatId) || null;
+    if (directEntry) return directEntry;
+    await reconcileChatIndex(true);
+    return (chatIndexEntries || []).find(entry => entry.id === chatId) || null;
+  };
+
+  const removeChatIndexEntry = async (fileName: string): Promise<void> => {
+    // A local const: Flow invalidates the null-narrowing of the captured
+    // `chatIndexEntries` at the first call below.
+    const entries = chatIndexEntries;
+    if (!entries) return;
+    const remainingEntries = entries.filter(
+      entry => entry.fileName !== fileName
+    );
+    if (remainingEntries.length === entries.length) return;
+    chatIndexEntries = remainingEntries;
+    if (chatIndexExistsOnDisk) await writeChatIndexToDisk().catch(() => {});
+  };
+
+  /**
+   * Read one indexed chat file back. A file that no longer parses (or is
+   * gone) is quarantined/dropped from the index and reported as absent —
+   * the callers then behave exactly like the old code, whose listing
+   * quarantined the file before the lookup returned null.
+   */
+  const readIndexedChatFile = async (
+    entry: ByokChatFileMeta
   ): Promise<{| fileName: string, chat: AiRequest |} | null> => {
-    const chatFiles = await listChatFiles();
-    return chatFiles.find(entry => entry.chat.id === chatId) || null;
+    const content = await backend.readFile(entry.fileName);
+    if (content === null) {
+      await removeChatIndexEntry(entry.fileName);
+      return null;
+    }
+    const chat = parseByokChatFromMarkdown(content);
+    if (chat) return { fileName: entry.fileName, chat };
+    // Quarantine: move aside, never block the store.
+    await backend
+      .moveFile(entry.fileName, `${QUARANTINE_PREFIX}${entry.fileName}`)
+      .catch(() => {});
+    await removeChatIndexEntry(entry.fileName);
+    return null;
+  };
+
+  /**
+   * Record a chat's current metas in the index (replacing the first entry
+   * of the same id, appending when new). Mutations keep an EXISTING index
+   * file up to date but never create one — creation is reconciliation's
+   * job (a store that only saves never pays an index write, and a crash
+   * before a rewrite is healed by the next reconciliation).
+   */
+  const upsertChatIndexEntry = async (
+    entry: ByokChatFileMeta
+  ): Promise<void> => {
+    const entries = chatIndexEntries || [];
+    const existingPosition = entries.findIndex(
+      candidate => candidate.id === entry.id
+    );
+    const nextEntries =
+      existingPosition === -1
+        ? [...entries, entry]
+        : entries.map((candidate, position) =>
+            position === existingPosition ? entry : candidate
+          );
+    chatIndexEntries = sortChatIndexEntries(nextEntries);
+    if (chatIndexExistsOnDisk) await writeChatIndexToDisk().catch(() => {});
   };
 
   return {
     listChatMetas: async (): Promise<Array<ByokChatFileMeta>> => {
-      const chatFiles = await listChatFiles();
-      return chatFiles.map(({ fileName, chat }) => ({
-        id: chat.id,
-        fileName,
-        name: chat.title || makeByokChatName(chat),
-        createdAt: chat.createdAt,
-        updatedAt: chat.updatedAt,
-        archivedAt: chat.archivedAt || null,
-        messageCount: chat.output ? chat.output.length : 0,
-      }));
+      await loadChatIndexOnce();
+      await reconcileChatIndex(true);
+      return (chatIndexEntries || []).map(entry => ({ ...entry }));
     },
 
     loadChat: async (chatId: string): Promise<AiRequest | null> => {
-      const chatFile = await findChatFile(chatId);
+      const entry = await findChatIndexEntry(chatId);
+      if (!entry) return null;
+      const chatFile = await readIndexedChatFile(entry);
       if (!chatFile) return null;
 
       // The image sidecar (best-effort): restore the payloads under their
@@ -445,16 +686,14 @@ export const createByokChatFileStore = (
     },
 
     saveChat: async (chat: AiRequest): Promise<string> => {
-      const chatFile = await findChatFile(chat.id);
+      const entry = await findChatIndexEntry(chat.id);
       const chatName = makeByokChatName(chat);
       const desiredFileName = makeByokChatFileName(chatName, chat.id);
 
       // The name carries the last-interaction date: a saved chat whose
       // name changed is moved to the new file name.
-      if (chatFile && chatFile.fileName !== desiredFileName) {
-        await backend
-          .moveFile(chatFile.fileName, desiredFileName)
-          .catch(() => {});
+      if (entry && entry.fileName !== desiredFileName) {
+        await backend.moveFile(entry.fileName, desiredFileName).catch(() => {});
       }
 
       const content = serializeByokChatToMarkdown(chat);
@@ -466,6 +705,11 @@ export const createByokChatFileStore = (
           JSON.stringify({ images: imageEntries })
         );
       }
+      // The chat file is written FIRST, the index after — a crash in
+      // between is covered by reconciliation (B-UI-13).
+      await upsertChatIndexEntry(
+        makeByokChatIndexEntryFromChat(desiredFileName, chat)
+      );
       return desiredFileName;
     },
 
@@ -473,42 +717,51 @@ export const createByokChatFileStore = (
       chatId: string,
       archivedAt: string | null
     ): Promise<boolean> => {
-      const chatFile = await findChatFile(chatId);
+      const entry = await findChatIndexEntry(chatId);
+      if (!entry) return false;
+      const chatFile = await readIndexedChatFile(entry);
       if (!chatFile) return false;
       const chat = chatFile.chat;
       chat.archivedAt = archivedAt;
       await backend.writeFile(
-        chatFile.fileName,
+        entry.fileName,
         serializeByokChatToMarkdown(chat)
+      );
+      await upsertChatIndexEntry(
+        makeByokChatIndexEntryFromChat(entry.fileName, chat)
       );
       return true;
     },
 
     renameChat: async (chatId: string, title: string): Promise<boolean> => {
-      const chatFile = await findChatFile(chatId);
+      const entry = await findChatIndexEntry(chatId);
+      if (!entry) return false;
+      const chatFile = await readIndexedChatFile(entry);
       if (!chatFile) return false;
       const chat = chatFile.chat;
       chat.title = title;
       // The display name drives the file name: after retitling, the chat
       // moves (the first prompt is overridden by the explicit title).
       const desiredFileName = makeByokChatFileName(title, chatId);
-      if (chatFile.fileName !== desiredFileName) {
-        await backend
-          .moveFile(chatFile.fileName, desiredFileName)
-          .catch(() => {});
+      if (entry.fileName !== desiredFileName) {
+        await backend.moveFile(entry.fileName, desiredFileName).catch(() => {});
       }
       await backend.writeFile(
         desiredFileName,
         serializeByokChatToMarkdown(chat)
       );
+      await upsertChatIndexEntry(
+        makeByokChatIndexEntryFromChat(desiredFileName, chat)
+      );
       return true;
     },
 
     deleteChat: async (chatId: string): Promise<boolean> => {
-      const chatFile = await findChatFile(chatId);
-      if (!chatFile) return false;
-      await backend.deleteFile(chatFile.fileName);
+      const entry = await findChatIndexEntry(chatId);
+      if (!entry) return false;
+      await backend.deleteFile(entry.fileName);
       await backend.deleteFile(imagesFileNameForChatId(chatId)).catch(() => {});
+      await removeChatIndexEntry(entry.fileName);
       return true;
     },
 
@@ -533,12 +786,13 @@ export const createByokChatFileStore = (
       // sidecar whose .md is gone (a crash between the two deletes of
       // deleteChat, or a lost name collision) was never enumerated by the
       // chat-based loops below, yet counted against the quota forever.
-      const chatFiles = await listChatFiles();
-      const listedChatIds = new Set(
-        chatFiles.map(chatFile => chatFile.chat.id)
-      );
-      const allFiles = await backend.listFiles();
-      for (const file of allFiles) {
+      // The chat enumeration is index-driven (B-UI-13): no chat content
+      // is read here.
+      await loadChatIndexOnce();
+      const files = await reconcileChatIndex(false);
+      const chatEntries = chatIndexEntries || [];
+      const listedChatIds = new Set(chatEntries.map(entry => entry.id));
+      for (const file of files) {
         if (!file.fileName.endsWith(IMAGES_FILE_SUFFIX)) continue;
         const chatIdOfSidecar = file.fileName.slice(
           0,
@@ -554,13 +808,17 @@ export const createByokChatFileStore = (
         return { evictedImageChatCount, evictedChatCount };
       }
 
-      // Oldest chats first (listChatFiles is newest first).
-      for (const chatFile of chatFiles.slice().reverse()) {
+      // Oldest chats first (the index is newest first). Sidecar sizes come
+      // from the stat-only listing — no content read (B-UI-13).
+      const sizeByFileName = new Map(
+        files.map(file => [file.fileName, file.sizeBytes])
+      );
+      const oldestFirstEntries = [...chatEntries].reverse();
+      for (const entry of oldestFirstEntries) {
         if (totalBytes <= capBytes) break;
-        const imagesFile = imagesFileNameForChatId(chatFile.chat.id);
-        const imagesContent = await backend.readFile(imagesFile);
-        if (imagesContent === null) continue;
-        const imagesBytes = imagesContent.length;
+        const imagesFile = imagesFileNameForChatId(entry.id);
+        const imagesBytes = sizeByFileName.get(imagesFile);
+        if (imagesBytes === undefined) continue;
         await backend.deleteFile(imagesFile);
         totalBytes -= imagesBytes;
         evictedImageChatCount++;
@@ -568,12 +826,12 @@ export const createByokChatFileStore = (
 
       // Still over with no image left: the oldest whole chats go (the
       // last resort — transcript text is lost only here).
-      for (const chatFile of chatFiles.slice().reverse()) {
+      for (const entry of oldestFirstEntries) {
         totalBytes = await backend.getTotalBytes();
         if (totalBytes <= capBytes) break;
-        await backend.deleteFile(chatFile.fileName);
+        await backend.deleteFile(entry.fileName);
         await backend
-          .deleteFile(imagesFileNameForChatId(chatFile.chat.id))
+          .deleteFile(imagesFileNameForChatId(entry.id))
           .catch(() => {});
         evictedChatCount++;
       }

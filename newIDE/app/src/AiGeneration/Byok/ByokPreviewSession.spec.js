@@ -485,3 +485,115 @@ describe('createByokPreviewSession: the debugger channel (Phase 12)', () => {
     expect(session.getDebuggerState().connected).toBe(false);
   });
 });
+
+describe('createByokPreviewSession: the launch-window debugger binding (audit B-TOOL-11)', () => {
+  // A launcher whose launchPreview resolves only when the test calls
+  // resolveLaunch — that pending span IS the export window, during which
+  // another preview's debugger client may connect.
+  const makeControlledLauncher = (
+    debuggerServer: any
+  ): {| launcher: ByokPreviewLauncher, resolveLaunch: () => void |} => {
+    let resolveLaunch: () => void = () => {};
+    const launcher: ByokPreviewLauncher = {
+      launchPreview: (jest.fn(): any).mockImplementation(
+        () =>
+          new Promise<void>(resolve => {
+            resolveLaunch = resolve;
+          })
+      ),
+      closePreview: jest.fn(),
+      getPreviewDebuggerServer: () => debuggerServer,
+    };
+    return { launcher, resolveLaunch: () => resolveLaunch() };
+  };
+
+  const makeSession = (launcher: ByokPreviewLauncher) =>
+    createByokPreviewSession({
+      getPreviewLauncher: () => launcher,
+      getProject: () => ({ getFirstLayout: () => 'Scene 1' }),
+    });
+
+  it('does not bind a connection opened before the launch resolves', async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const { launcher, resolveLaunch } = makeControlledLauncher(debuggerServer);
+    const session = makeSession(launcher);
+
+    const startPromise = session.start({});
+    // Another preview (the user's) connects while the export is running.
+    emitConnectionOpened(debuggerServer, 'user-preview-ws');
+    resolveLaunch();
+    await startPromise;
+
+    // The early connection was never bound: no debugger id, and a
+    // debugger command has no connection to round-trip to.
+    expect(session.getDebuggerState()).toEqual({
+      connected: false,
+      debuggerId: null,
+    });
+    await expect(
+      session.sendDebuggerCommand({ command: 'pause', timeoutMs: 50 })
+    ).rejects.toThrow('not connected');
+  });
+
+  it('binds the first connection opened after the launch resolves', async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const { launcher, resolveLaunch } = makeControlledLauncher(debuggerServer);
+    const session = makeSession(launcher);
+
+    const startPromise = session.start({});
+    resolveLaunch();
+    await startPromise;
+    emitConnectionOpened(debuggerServer, 'own-preview-ws');
+
+    const response = await session.sendDebuggerCommand({ command: 'pause' });
+    expect(response.messageId).toBeDefined();
+    expect(debuggerServer.sentMessages).toHaveLength(1);
+    expect(debuggerServer.sentMessages[0].id).toBe('own-preview-ws');
+  });
+
+  it('is not stolen by a user preview connecting during the launch window', async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const { launcher, resolveLaunch } = makeControlledLauncher(debuggerServer);
+    const session = makeSession(launcher);
+
+    const startPromise = session.start({});
+    // The user's preview connects first (during the export window), then
+    // the session's own preview connects after the launch resolved.
+    emitConnectionOpened(debuggerServer, 'user-preview-ws');
+    resolveLaunch();
+    await startPromise;
+    emitConnectionOpened(debuggerServer, 'own-preview-ws');
+
+    const response = await session.sendDebuggerCommand({ command: 'pause' });
+    expect(response.messageId).toBeDefined();
+    expect(debuggerServer.sentMessages).toHaveLength(1);
+    // The command reaches the session's own connection, never the user's.
+    expect(debuggerServer.sentMessages[0].id).toBe('own-preview-ws');
+    expect(
+      debuggerServer.sentMessages.filter(sent => sent.id === 'user-preview-ws')
+    ).toHaveLength(0);
+  });
+
+  it('does not rebind on a late connection after stop() (launch gate reset)', async () => {
+    const debuggerServer = makeFakeDebuggerServer();
+    const { launcher, resolveLaunch } = makeControlledLauncher(debuggerServer);
+    const session = makeSession(launcher);
+
+    const startPromise = session.start({});
+    resolveLaunch();
+    await startPromise;
+    emitConnectionOpened(debuggerServer, 'own-preview-ws');
+    expect(session.getDebuggerState().connected).toBe(true);
+
+    // Grab the callbacks before stop() unregisters them, so the late
+    // connection reaches the session the way a server keeping a stale
+    // reference would (after stop() the server itself has none left).
+    const callbacks = debuggerServer.registeredCallbacks[0];
+    session.stop();
+    callbacks.onConnectionOpened({ id: 'late-preview-ws' });
+    expect(session.getDebuggerState()).toEqual({
+      connected: false,
+      debuggerId: null,
+    });
+  });
+});

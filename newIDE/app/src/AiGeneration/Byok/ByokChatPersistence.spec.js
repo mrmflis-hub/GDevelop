@@ -1,12 +1,17 @@
 // @flow
 import type { AiRequest } from '../../Utils/GDevelopServices/Generation';
 import {
+  BYOK_CHAT_INDEX_FILE_NAME,
   collectByokChatImageEntries,
   createByokChatFileStore,
   makeByokChatFileName,
+  makeByokChatIndexEntryFromChat,
   makeByokChatName,
   parseByokChatFromMarkdown,
+  parseByokChatIndex,
+  serializeByokChatIndex,
   serializeByokChatToMarkdown,
+  sortChatIndexEntries,
 } from './ByokChatPersistence';
 import { registerByokImage } from './ByokImageContent';
 
@@ -468,5 +473,339 @@ describe('ByokChatPersistence: the file store', () => {
     expect(remaining).toHaveLength(1);
     // The OLDEST chat was evicted.
     expect(remaining[0].id).toBe('byok-big-1');
+  });
+});
+
+describe('ByokChatPersistence: the chat index codec (B-UI-13)', () => {
+  const makeIndexEntry = (overrides?: Object = {}) => ({
+    id: 'byok-chat-1',
+    fileName: 'a-chat-byok-chat-1.md',
+    name: 'a chat_2026-09-24',
+    createdAt: '2026-09-24T10:00:00.000Z',
+    updatedAt: '2026-09-24T11:00:00.000Z',
+    archivedAt: null,
+    messageCount: 2,
+    ...overrides,
+  });
+
+  it('round-trips entries through serializeByokChatIndex/parseByokChatIndex', () => {
+    const entries = [
+      makeIndexEntry(),
+      makeIndexEntry({
+        id: 'byok-chat-2',
+        fileName: 'other-byok-chat-2.md',
+        archivedAt: '2026-09-25T00:00:00.000Z',
+      }),
+    ];
+    expect(parseByokChatIndex(serializeByokChatIndex(entries))).toEqual(
+      entries
+    );
+  });
+
+  it('treats missing, unparseable or foreign-shaped indexes as absent', () => {
+    expect(parseByokChatIndex(null)).toBe(null);
+    expect(parseByokChatIndex('')).toBe(null);
+    expect(parseByokChatIndex('{not valid json')).toBe(null);
+    expect(
+      parseByokChatIndex(JSON.stringify({ schema: 99, entries: [] }))
+    ).toBe(null);
+    expect(parseByokChatIndex(JSON.stringify({ schema: 1 }))).toBe(null);
+    // One malformed entry invalidates the whole index (full rebuild).
+    expect(
+      parseByokChatIndex(
+        JSON.stringify({ schema: 1, entries: [makeIndexEntry(), { id: 'x' }] })
+      )
+    ).toBe(null);
+  });
+
+  it('derives an entry from a chat exactly like the listing did', () => {
+    expect(makeByokChatIndexEntryFromChat('some-file.md', makeChat())).toEqual({
+      id: 'byok-test-chat',
+      fileName: 'some-file.md',
+      name: 'create a forest scene with_2026-09-24',
+      createdAt: '2026-09-24T10:00:00.000Z',
+      updatedAt: '2026-09-24T10:00:00.000Z',
+      archivedAt: null,
+      messageCount: 2,
+    });
+  });
+
+  it('sorts entries newest-updated first', () => {
+    const sorted = sortChatIndexEntries([
+      makeIndexEntry({ id: 'old', updatedAt: '2026-09-01T00:00:00.000Z' }),
+      makeIndexEntry({ id: 'new', updatedAt: '2026-09-30T00:00:00.000Z' }),
+    ]);
+    expect(sorted.map(entry => entry.id)).toEqual(['new', 'old']);
+  });
+});
+
+describe('ByokChatPersistence: the chat index in the store (B-UI-13)', () => {
+  /**
+   * A backend wrapper recording every readFile call, so the tests can
+   * assert that steady-state operations never touch chat file contents.
+   */
+  const makeRecordingBackend = (base: any): any => {
+    const readFileCalls: Array<string> = [];
+    return {
+      readFileCalls,
+      listFiles: base.listFiles,
+      readFile: async (fileName: string) => {
+        readFileCalls.push(fileName);
+        return base.readFile(fileName);
+      },
+      writeFile: base.writeFile,
+      deleteFile: base.deleteFile,
+      moveFile: base.moveFile,
+      getTotalBytes: base.getTotalBytes,
+    };
+  };
+
+  /** The chat file reads (`.md`, quarantined files excluded) so far. */
+  const chatFileReads = (backend: any): Array<string> =>
+    backend.readFileCalls.filter(
+      (fileName: string) =>
+        fileName.endsWith('.md') && !fileName.startsWith('corrupt-')
+    );
+
+  const seedThreeIndexedChats = async (): Promise<any> => {
+    const base = makeMemoryBackend();
+    const backend = makeRecordingBackend(base);
+    const store = createByokChatFileStore(backend, () => null);
+    for (let index = 0; index < 3; index++) {
+      await store.saveChat(
+        makeChat({
+          id: `byok-indexed-${index}`,
+          updatedAt: `2026-09-2${index}T10:00:00.000Z`,
+        })
+      );
+    }
+    return { base, backend, store };
+  };
+
+  const readPersistedIndex = (base: any): Array<any> =>
+    parseByokChatIndex(base.raw.get(BYOK_CHAT_INDEX_FILE_NAME) || null) || [];
+
+  it('steady-state listing is stat-only: no chat file is read again', async () => {
+    const { backend, store } = await seedThreeIndexedChats();
+    const metas = await store.listChatMetas();
+    expect(metas).toHaveLength(3);
+    backend.readFileCalls.length = 0;
+
+    const metasAgain = await store.listChatMetas();
+    expect(metasAgain).toHaveLength(3);
+    expect(chatFileReads(backend)).toEqual([]);
+  });
+
+  it('saving an existing chat reads no chat file but its own', async () => {
+    const { backend, store } = await seedThreeIndexedChats();
+    const metas = await store.listChatMetas();
+    const targetMeta = metas.find(meta => meta.id === 'byok-indexed-1');
+    backend.readFileCalls.length = 0;
+
+    await store.saveChat(
+      makeChat({ id: 'byok-indexed-1', updatedAt: '2026-10-01T10:00:00.000Z' })
+    );
+
+    const otherFileReads = chatFileReads(backend).filter(
+      fileName => !targetMeta || fileName !== targetMeta.fileName
+    );
+    expect(otherFileReads).toEqual([]);
+  });
+
+  it('loadChat resolves through the index: only the target chat file is read', async () => {
+    const { backend, store } = await seedThreeIndexedChats();
+    const metas = await store.listChatMetas();
+    const targetMeta = metas.find(meta => meta.id === 'byok-indexed-2');
+    backend.readFileCalls.length = 0;
+
+    const loaded = await store.loadChat('byok-indexed-2');
+    expect(loaded && loaded.id).toBe('byok-indexed-2');
+    expect(loaded && loaded.output).toEqual(makeChat().output);
+    expect(chatFileReads(backend)).toEqual(
+      targetMeta ? [targetMeta.fileName] : []
+    );
+  });
+
+  it('reconciles a chat file the index never saw (legacy/crash) and persists the index', async () => {
+    const base = makeMemoryBackend();
+    const backend = makeRecordingBackend(base);
+    const store = createByokChatFileStore(backend, () => null);
+    // A legacy file hand-placed on disk (no index entry, a file name that
+    // predates the id embedding) — first run after the upgrade or a crash
+    // between the chat write and the index write.
+    await base.writeFile(
+      'legacy-name.md',
+      serializeByokChatToMarkdown(makeChat({ id: 'byok-legacy' }))
+    );
+
+    const metas = await store.listChatMetas();
+    const legacyMeta = metas.find(meta => meta.id === 'byok-legacy');
+    expect(legacyMeta).toBeTruthy();
+    expect(legacyMeta && legacyMeta.fileName).toBe('legacy-name.md');
+    expect(legacyMeta && legacyMeta.messageCount).toBe(2);
+    expect(legacyMeta && legacyMeta.name).toBe(
+      'create a forest scene with_2026-09-24'
+    );
+    // The reconciled index is persisted…
+    expect(base.raw.has(BYOK_CHAT_INDEX_FILE_NAME)).toBe(true);
+
+    // …so a brand-new store (a restart) lists it reading no chat content.
+    const restartedBackend = makeRecordingBackend(base);
+    const restartedStore = createByokChatFileStore(
+      restartedBackend,
+      () => null
+    );
+    const restartedMetas = await restartedStore.listChatMetas();
+    expect(restartedMetas.map(meta => meta.id)).toEqual(['byok-legacy']);
+    expect(chatFileReads(restartedBackend)).toEqual([]);
+  });
+
+  it("drops a stale index entry whose file was deleted behind the store's back", async () => {
+    const base = makeMemoryBackend();
+    const backend = makeRecordingBackend(base);
+    const store = createByokChatFileStore(backend, () => null);
+    await store.saveChat(
+      makeChat({ id: 'byok-kept', updatedAt: '2026-09-20T10:00:00.000Z' })
+    );
+    await store.saveChat(
+      makeChat({ id: 'byok-gone', updatedAt: '2026-09-21T10:00:00.000Z' })
+    );
+    // A stray file forces the index onto disk (adoption path).
+    await base.writeFile(
+      'stray.md',
+      serializeByokChatToMarkdown(makeChat({ id: 'byok-stray' }))
+    );
+    const metasBefore = await store.listChatMetas();
+    expect(metasBefore).toHaveLength(3);
+    expect(base.raw.has(BYOK_CHAT_INDEX_FILE_NAME)).toBe(true);
+    const goneMeta = metasBefore.find(meta => meta.id === 'byok-gone');
+    if (!goneMeta) throw new Error('The gone chat meta is missing.');
+    await base.deleteFile(goneMeta.fileName);
+
+    const metasAfter = await store.listChatMetas();
+    expect(metasAfter.map(meta => meta.id).sort()).toEqual([
+      'byok-kept',
+      'byok-stray',
+    ]);
+    // The dropped chat no longer loads either.
+    expect(await store.loadChat('byok-gone')).toBe(null);
+  });
+
+  it('rebuilds silently from a corrupt index file', async () => {
+    const base = makeMemoryBackend();
+    const backend = makeRecordingBackend(base);
+    const store = createByokChatFileStore(backend, () => null);
+    await store.saveChat(
+      makeChat({ id: 'byok-a', updatedAt: '2026-09-20T10:00:00.000Z' })
+    );
+    await store.saveChat(
+      makeChat({ id: 'byok-b', updatedAt: '2026-09-21T10:00:00.000Z' })
+    );
+    await base.writeFile(
+      'stray.md',
+      serializeByokChatToMarkdown(makeChat({ id: 'byok-stray' }))
+    );
+    await store.listChatMetas();
+    // Corrupt the persisted index behind the store's back, then restart.
+    await base.writeFile(
+      BYOK_CHAT_INDEX_FILE_NAME,
+      '{"schema":1,"entries":[{ broken'
+    );
+
+    const restartedBackend = makeRecordingBackend(base);
+    const restartedStore = createByokChatFileStore(
+      restartedBackend,
+      () => null
+    );
+    const metas = await restartedStore.listChatMetas();
+    expect(metas.map(meta => meta.id).sort()).toEqual([
+      'byok-a',
+      'byok-b',
+      'byok-stray',
+    ]);
+    // The rebuilt index was persisted back, valid again.
+    expect(
+      readPersistedIndex(base)
+        .map(entry => entry.id)
+        .sort()
+    ).toEqual(['byok-a', 'byok-b', 'byok-stray']);
+  });
+
+  it('keeps the index consistent across rename, archive and delete', async () => {
+    const base = makeMemoryBackend();
+    const backend = makeRecordingBackend(base);
+    const store = createByokChatFileStore(backend, () => null);
+    await store.saveChat(
+      makeChat({ id: 'byok-mutated', updatedAt: '2026-09-20T10:00:00.000Z' })
+    );
+    // A stray file forces the index onto disk, so every mutation below
+    // rewrites it in place.
+    await base.writeFile(
+      'stray.md',
+      serializeByokChatToMarkdown(makeChat({ id: 'byok-stray' }))
+    );
+    await store.listChatMetas();
+
+    expect(await store.renameChat('byok-mutated', 'renamed chat title')).toBe(
+      true
+    );
+    let metas = await store.listChatMetas();
+    const renamedMeta = metas.find(meta => meta.id === 'byok-mutated');
+    expect(renamedMeta && renamedMeta.name).toBe('renamed chat title');
+    expect(renamedMeta && renamedMeta.fileName).toBe(
+      makeByokChatFileName('renamed chat title', 'byok-mutated')
+    );
+    const renamedIndexEntries = readPersistedIndex(base).filter(
+      entry => entry.id === 'byok-mutated'
+    );
+    expect(renamedIndexEntries).toHaveLength(1);
+    expect(renamedIndexEntries[0].fileName).toBe(
+      renamedMeta && renamedMeta.fileName
+    );
+
+    expect(
+      await store.setArchived('byok-mutated', '2026-09-26T00:00:00.000Z')
+    ).toBe(true);
+    metas = await store.listChatMetas();
+    const archivedMeta = metas.find(meta => meta.id === 'byok-mutated');
+    expect(archivedMeta && archivedMeta.archivedAt).toBe(
+      '2026-09-26T00:00:00.000Z'
+    );
+    const archivedIndexEntry = readPersistedIndex(base).find(
+      entry => entry.id === 'byok-mutated'
+    );
+    expect(archivedIndexEntry && archivedIndexEntry.archivedAt).toBe(
+      '2026-09-26T00:00:00.000Z'
+    );
+
+    expect(await store.deleteChat('byok-mutated')).toBe(true);
+    metas = await store.listChatMetas();
+    expect(metas.map(meta => meta.id)).toEqual(['byok-stray']);
+    expect(readPersistedIndex(base).map(entry => entry.id)).toEqual([
+      'byok-stray',
+    ]);
+  });
+
+  it('quarantines a corrupt chat file during reconciliation and keeps it out of the index', async () => {
+    const base = makeMemoryBackend();
+    const backend = makeRecordingBackend(base);
+    const store = createByokChatFileStore(backend, () => null);
+    await base.writeFile('broken-legacy.md', 'total garbage');
+    await base.writeFile(
+      'legacy.md',
+      serializeByokChatToMarkdown(makeChat({ id: 'byok-legacy' }))
+    );
+
+    const metas = await store.listChatMetas();
+    expect(metas.map(meta => meta.id)).toEqual(['byok-legacy']);
+    // Quarantined during the reconciliation pass, excluded from the index.
+    expect(
+      Array.from(base.raw.keys()).some(fileName =>
+        fileName.startsWith('corrupt-')
+      )
+    ).toBe(true);
+    expect(readPersistedIndex(base).map(entry => entry.id)).toEqual([
+      'byok-legacy',
+    ]);
   });
 });

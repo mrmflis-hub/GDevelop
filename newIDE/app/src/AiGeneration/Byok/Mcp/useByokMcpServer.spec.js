@@ -42,6 +42,8 @@ jest.mock('../../../Utils/OptionalRequire', () => ({
 
 const { ByokMcpServerHost, useByokMcpServer } = require('./useByokMcpServer');
 const {
+  clearByokMcpActivity,
+  executeByokMcpToolCall,
   makeByokMcpToolHost,
   setByokMcpToolHost,
   getByokMcpToolHost,
@@ -88,8 +90,32 @@ const renderHookAt = (enabled: boolean) => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  clearByokMcpActivity();
   setByokMcpToolHost(null);
 });
+
+// A host whose single tool resolves instantly, so a call records a
+// 'completed' activity entry without any timer games.
+const makeCompletingHost = () =>
+  makeByokMcpToolHost(
+    ({
+      executeRegistryTool: (jest.fn(): any).mockResolvedValue({
+        status: 'finished',
+        call_id: 'x',
+        success: true,
+        output: {},
+      }),
+      executeExtraTool: jest.fn(),
+      getExtraTool: () => null,
+      isExtraToolShadowedByRegistry: () => false,
+      editorFunctions: { read_scene_events: { modifiesProject: false } },
+      editorFunctionsWithoutProject: {},
+      getProject: () => null,
+      getSettings: () => ({
+        mcpServer: { enabled: false, accessMode: 'read-write' },
+      }),
+    }: any)
+  );
 
 describe('useByokMcpServer — web build', () => {
   it('is inert without Electron: no IPC, inert status', async () => {
@@ -108,6 +134,20 @@ describe('useByokMcpServer — web build', () => {
     expect(mockIpcInvoke).not.toHaveBeenCalled();
     expect(mockIpcSend).not.toHaveBeenCalled();
     expect(mockIpcOn).not.toHaveBeenCalled();
+  });
+
+  it('does not mirror activity entries without Electron', async () => {
+    mockElectronModule = null;
+    renderHookAt(true);
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      setByokMcpToolHost(makeCompletingHost());
+      await executeByokMcpToolCall('read_scene_events', {});
+      await flushMicrotasks();
+    });
+    expect(mockIpcSend).not.toHaveBeenCalled();
   });
 });
 
@@ -310,6 +350,30 @@ describe('useByokMcpServer — desktop', () => {
       'byok-mcp-request',
       expect.any(Function)
     );
+  });
+
+  it('mirrors recorded activity entries to main over IPC (B-MCP-13)', async () => {
+    mockElectronModule = { ipcRenderer: makeIpcRenderer() };
+    mockIpcInvoke.mockResolvedValue({ ok: true, running: false });
+    renderHookAt(false);
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    await act(async () => {
+      setByokMcpToolHost(makeCompletingHost());
+      await executeByokMcpToolCall('read_scene_events', {});
+      await flushMicrotasks();
+    });
+    const mirrored = mockIpcSend.mock.calls.filter(
+      call => call[0] === 'byok-mcp-activity'
+    );
+    if (mirrored.length === 0) {
+      throw new Error('The activity entry was not mirrored to main');
+    }
+    expect(mirrored[0][1].tool).toBe('read_scene_events');
+    expect(mirrored[0][1].outcome).toBe('completed');
+    expect(typeof mirrored[0][1].at).toBe('string');
   });
 });
 

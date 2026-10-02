@@ -10,8 +10,17 @@ on:` line pointing at the numbered decision in `usertasks.md`.
 Rules for agents: see `AGENTS.md` §5.2. If nothing new belongs here at the
 end of a session, the worklog entry says `no OOS`.
 
-**Status: open entries** (the Polygon2d lifecycle call, blocked on the
-owner; the environment/decision rows below). The benchmark WASM crash
+**Status: open entries** (the environment/decision rows below). The
+2026-10-02 completion session (owner-ordered) fixed and verified the last
+audit011026 triage items — B-TOOL-11 (post-launch-resolve debugger
+binding), B-MCP-13 (activity mirrored to main + aggregated in
+`byok-mcp-status`), B-UI-13 (versioned `index.json` chat index,
+stat-only steady state) and B-ARTIFACT-1 (landed in `943379bff0`) — and
+the Polygon2d lifecycle call was resolved by documenting the ownership
+transfer at the two editor sites with inverse regression pins (audit
+UP-8; the delete variant is disproven by the 2026-09-24 WASM-heap repro).
+All were removed; the permanent record is `audit011026.md` +
+`worklog.md`. The benchmark WASM crash
 filed 2026-09-24 was FIXED and verified on 2026-10-01 (root cause: a
 type-confused `gd.Serializer.toJSON(scene.getEvents())` in
 `ByokSettingsTab.js`'s snapshot reader — audit011026 B-TOOL-1; permanent
@@ -48,21 +57,16 @@ The permanent record for all of the above is in `worklog.md`
 
 ## Open entries
 
-- **Polygon2d wrapper leak + lifecycle asymmetry in the collision-mask
-  editors** (surfaced 2026-09-24 while porting sprite mask editing).
-  `ObjectEditor/Editors/SpriteEditor/CollisionMasksEditor/PolygonsList.js:224-235`
-  and `CollisionMaskHelper.js:148-156` `new`/`createRectangle` a
-  `gd.Polygon2d` and `push_back` it into the live mask vector but never
-  `delete()` the wrapper — unlike `gd.Sprite`/`gd.Point`/`gd.Vector2f`
-  wrappers, which the same editors DO delete after their `push_back`s.
-  Deleting the Polygon2d the same way corrupts the WASM heap (repro:
-  memory access out of bounds in later libGD calls — hit while testing
-  `ByokSpriteTools`), so the asymmetry looks deliberate-but-undocumented
-  and the price is a small wrapper leak per polygon edit. Blocked on: an
-  owner call whether to align the lifecycle (needs a libGD-side check of
-  `VectorPolygon2d::push_back` copy semantics) or document it where the
-  editor code lives. BYOK side already encodes the safe pattern
-  (`ByokSpriteTools.js` `applyPolygonMaskToFrame`).
+- **Two pre-existing preview-launcher robustness nits** (surfaced while
+  fixing audit UP-2/UP-5 on 2026-10-02, left to keep the fix diff
+  focused): `LocalPreviewLauncher/index.js` `closePreview` fires
+  `ipcRenderer.invoke('preview-close', …)` with no `.catch` (a
+  main-process error would surface as an unhandled rejection), and
+  `electron-app/app/PreviewWindow.js` `closePreviewWindow` reads
+  `entry.previewWindow.id` on entries that in a close race could hold a
+  destroyed window (practically benign behind the `closed` filter).
+  Small, upstream-reportable; fix alongside the next touch of either
+  file.
 
 ## Added 2026-09-25 (Phase 13 session)
 
@@ -121,30 +125,15 @@ The permanent record for all of the above is in `worklog.md`
 
 ## 2026-10-01 — audit011026 triage (see REVIEW/audit011026.md for detail)
 
-- `[B-TOOL-11]` `[open]` — The BYOK debugger binding is
-  first-connection-wins (`ByokPreviewSession.js` onConnectionOpened): a
-  preview the USER launches in the window between the BYOK launch and the
-  new preview's connection steals the binding (pause/profile then hit the
-  wrong preview). Fix = bind only connections opened after the launch
-  promise resolves. Blocked on: nothing structural; low priority (the
-  single-preview rule mostly masks it) and needs a desktop repro.
-- `[B-MCP-13]` `[open]` — The MCP activity ring is per-renderer module
-  state while main routes calls to the focused window: the Preferences
-  card misses every other window's calls (the consent/audit surface is
-  incomplete in multi-window setups). Fix = mirror completed activity to
-  main over IPC and aggregate in `byok-mcp-status`. Blocked on: a small
-  design pass (channel shape + ring merge), not a defect fix.
-- `[B-UI-13]` `[open]` — The durable-history rail re-reads and fully
-  parses every chat file per save and per rail action (O(total-bytes) per
-  interaction toward the 200 MB quota). Fix = an id→fileName index or
-  stat-only listing in the backends. Blocked on: a refactor with storage
-  churn; behavior is correct today.
-- `[B-ARTIFACT-1]` `[open]` — `MinifiedDocs.generated.js` (2.3 MB) was
-  never committed despite the Phase 14 docs saying so; it is STAGED as of
-  2026-10-01 — the owner's next commit must include it or fresh clones
-  fail every gate.
-- The O4 flake family gained a third member (2026-10-01 full run:
-  `ByokQdrantSetupCore.spec.js`, passes standalone; the seam family hit
-  twice on 2026-09-25/27). Still open below.
+- All four entries this section carried (B-TOOL-11, B-MCP-13, B-UI-13,
+  B-ARTIFACT-1) were FIXED and verified by the 2026-10-02 completion
+  session and removed — dispositions in `audit011026.md`.
+- The O4 flake family keeps growing: full runs on 2026-10-02 each failed
+  exactly one DIFFERENT untouched suite (`ByokExtraTools.spec.js`,
+  `ByokRagIndex.spec.js`, `LocalResourceMover.spec.js`,
+  `LocalResourceExternalEditors.spec.js` across the session's runs — the
+  last with a `useEnsureExtensionInstalled` mock-bleed TypeError while
+  all its tests pass); every one passes standalone. Fifth+ members of
+  the family documented below. Still open.
 - O3 (npm install prunes the libGD test alias), O5 (prompt budget accept
   or slim), O14-displacement and O14-prose-typos remain open unchanged.

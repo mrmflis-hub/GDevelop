@@ -70,7 +70,8 @@ const generateUnusedFilepathFromResourceName = (
 
 const downloadBlobToLocalFile = async (
   blobUrl: string,
-  filePath: string
+  filePath: string,
+  basePath: string
 ): Promise<void> => {
   if (!ipcRenderer) throw new Error('Not supported');
 
@@ -83,7 +84,8 @@ const downloadBlobToLocalFile = async (
   await ipcRenderer.invoke(
     'local-file-save-from-arraybuffer',
     arrayBuffer,
-    filePath
+    filePath,
+    basePath
   );
 };
 
@@ -147,7 +149,13 @@ export const moveUrlResourcesToLocalFiles = async ({
 
             await fs.ensureDir(baseAssetsPath);
             await fs.ensureDir(path.dirname(downloadedFilePath));
-            await downloadBlobToLocalFile(resourceFile, downloadedFilePath);
+            // The save must stay inside the project folder: a metadata
+            // localFilePath may point anywhere under it (not only assets/).
+            await downloadBlobToLocalFile(
+              resourceFile,
+              downloadedFilePath,
+              projectPath
+            );
             resource.setFile(
               path.relative(projectPath, downloadedFilePath).replace(/\\/g, '/')
             );
@@ -198,7 +206,8 @@ export const moveUrlResourcesToLocalFiles = async ({
               await ipcRenderer.invoke(
                 'local-file-download',
                 encodedUrl,
-                downloadedFilePath
+                downloadedFilePath,
+                baseAssetsPath
               );
               resource.setFile(
                 path

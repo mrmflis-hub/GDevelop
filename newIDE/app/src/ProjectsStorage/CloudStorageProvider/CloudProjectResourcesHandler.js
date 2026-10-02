@@ -68,6 +68,7 @@ export const generateGetResourceActions = ({
             filePath: targetPath,
           },
         ],
+        basePath: path.dirname(targetPath),
         onProgress: () => {},
         throwIfAnyError: false,
       });

@@ -84,16 +84,18 @@ import { buildExposedScriptFunctions } from './ScriptExecution/ExposedFunctions'
 import { capScriptExecutionResult } from './ScriptExecution/CapScriptOutput';
 import { isNoOpConsideredSuccess } from './IsNoOpConsideredSuccess';
 import {
+  collectIteratedInstances,
   describeInstancesInContainer,
   extractRequiredString,
   getLayerNameForMessage,
   getOccupiedSpaceDescription,
   INSTANCE_POSITION_SEMANTICS_MESSAGE,
   injectObjectSizeInfo,
-  iterateOnInstances,
   makeGenericFailure,
+  makeRequestedIdByInstance,
   makeWrongObjectInstanceIdsFailure,
   putInstancesInContainer,
+  resolveExistingInstanceIds,
 } from './InstanceTools';
 
 export type HintEntry = {|
@@ -120,7 +122,11 @@ export type EditorFunctionCallResult =
       call_id: string,
       success: boolean,
       output: any,
-      didModifyProject?: true,
+      // `true` when the call modified the project, an explicit `false` when
+      // the function reported it did not (run_script can report either even
+      // on failure), unset when the default `modifiesProject && success`
+      // rule did not apply.
+      didModifyProject?: boolean,
     |}
   | {|
       status: 'aborted',
@@ -3644,17 +3650,29 @@ const put3dInstances: EditorFunction = {
       );
       const brushSize = brush_size || 0;
 
+      // Resolve the requested ids against the existing instances before
+      // touching anything: an id matching several instances must fail the call
+      // instead of erasing all of them.
+      const iteratedInstances = collectIteratedInstances(initialInstances);
+      const resolution = resolveExistingInstanceIds(
+        iteratedInstances,
+        existingInstanceIds
+      );
+      if (!resolution.ok) {
+        return makeGenericFailure(resolution.error);
+      }
+      const requestedIdByInstance = makeRequestedIdByInstance(
+        resolution.matches
+      );
+
       // Iterate on existing instances and remove them, and/or those inside the brush radius.
       const instancesToDelete = new Set<gdInitialInstance>();
-      const notFoundExistingInstanceIds = new Set<string>(existingInstanceIds);
+      const notFoundExistingInstanceIds = new Set<string>(resolution.notFound);
       const wrongObjectIdDescriptions = [];
 
-      iterateOnInstances(initialInstances, instance => {
-        const foundExistingInstanceId = existingInstanceIds.find(id =>
-          instance.getPersistentUuid().startsWith(id)
-        );
+      iteratedInstances.forEach(({ instance }) => {
+        const foundExistingInstanceId = requestedIdByInstance.get(instance);
         if (foundExistingInstanceId) {
-          notFoundExistingInstanceIds.delete(foundExistingInstanceId);
           if (object_name && instance.getObjectName() !== object_name) {
             wrongObjectIdDescriptions.push(
               `"${foundExistingInstanceId}" (instance of "${instance.getObjectName()}")`
@@ -3860,50 +3878,58 @@ const put3dInstances: EditorFunction = {
         );
       }
 
+      // Resolve the requested ids against the existing instances before
+      // touching anything: an id matching several instances must fail the call
+      // instead of modifying all of them.
+      const resolution = resolveExistingInstanceIds(
+        collectIteratedInstances(initialInstances),
+        existingInstanceIds
+      );
+      if (!resolution.ok) {
+        return makeGenericFailure(resolution.error);
+      }
+      const requestedIdByInstance = makeRequestedIdByInstance(
+        resolution.matches
+      );
+
       // Store original states of existing instances for comparison
       // $FlowFixMe[underconstrained-implicit-instantiation]
       const existingInstanceStates = new Map();
-      const notFoundExistingInstanceIds = new Set<string>(existingInstanceIds);
+      const notFoundExistingInstanceIds = new Set<string>(resolution.notFound);
       const wrongObjectIdDescriptions = [];
 
       // Create the array of existing instances to move/modify, and new instances to create.
       const modifiedAndCreatedInstances: Array<gdInitialInstance> = [];
-      iterateOnInstances(initialInstances, instance => {
-        const foundExistingInstanceId = existingInstanceIds.find(id =>
-          instance.getPersistentUuid().startsWith(id)
-        );
-        if (foundExistingInstanceId) {
-          notFoundExistingInstanceIds.delete(foundExistingInstanceId);
-          if (object_name && instance.getObjectName() !== object_name) {
-            wrongObjectIdDescriptions.push(
-              `"${foundExistingInstanceId}" (instance of "${instance.getObjectName()}")`
-            );
-            return;
-          }
-
-          // Store original state before modifications
-          existingInstanceStates.set(instance, {
-            originalLayer: instance.getLayer(),
-            originalX: instance.getX(),
-            originalY: instance.getY(),
-            originalZ: instance.getZ(),
-            originalRotationX: instance.getRotationX(),
-            originalRotationY: instance.getRotationY(),
-            originalRotationZ: instance.getAngle(),
-            originalHidden: instance.isHidden(),
-            originalCustomWidth: instance.hasCustomSize()
-              ? instance.getCustomWidth()
-              : null,
-            originalCustomHeight: instance.hasCustomSize()
-              ? instance.getCustomHeight()
-              : null,
-            originalCustomDepth: instance.hasCustomDepth()
-              ? instance.getCustomDepth()
-              : null,
-          });
-
-          modifiedAndCreatedInstances.push(instance);
+      requestedIdByInstance.forEach((foundExistingInstanceId, instance) => {
+        if (object_name && instance.getObjectName() !== object_name) {
+          wrongObjectIdDescriptions.push(
+            `"${foundExistingInstanceId}" (instance of "${instance.getObjectName()}")`
+          );
+          return;
         }
+
+        // Store original state before modifications
+        existingInstanceStates.set(instance, {
+          originalLayer: instance.getLayer(),
+          originalX: instance.getX(),
+          originalY: instance.getY(),
+          originalZ: instance.getZ(),
+          originalRotationX: instance.getRotationX(),
+          originalRotationY: instance.getRotationY(),
+          originalRotationZ: instance.getAngle(),
+          originalHidden: instance.isHidden(),
+          originalCustomWidth: instance.hasCustomSize()
+            ? instance.getCustomWidth()
+            : null,
+          originalCustomHeight: instance.hasCustomSize()
+            ? instance.getCustomHeight()
+            : null,
+          originalCustomDepth: instance.hasCustomDepth()
+            ? instance.getCustomDepth()
+            : null,
+        });
+
+        modifiedAndCreatedInstances.push(instance);
       });
 
       if (object_name && wrongObjectIdDescriptions.length > 0) {
@@ -7097,30 +7123,31 @@ const resolveVariablesContainers = ({
     }
 
     const layout = project.getLayout(scene_name);
-    let wrongObjectDescription = null;
-    // The id is a prefix of the instance persistent uuid (like everywhere
-    // else, see `describe_instances`) - it normally matches a single
-    // instance.
-    const matchedInstances: Array<gdInitialInstance> = [];
-    iterateOnInstances(layout.getInitialInstances(), instance => {
-      if (!instance.getPersistentUuid().startsWith(instanceId)) return;
-      if (object_name && instance.getObjectName() !== object_name) {
-        wrongObjectDescription = `"${instanceId}" (instance of "${instance.getObjectName()}")`;
-        return;
-      }
-      matchedInstances.push(instance);
-    });
-
-    if (object_name && wrongObjectDescription) {
-      return fail(
-        `This instance id is not an instance of object "${object_name}": ${wrongObjectDescription}. Nothing was changed. Pass the right \`object_name\` (or omit it), or fix the id using \`describe_instances\`.`
-      );
+    // Resolve the id like the instance tools do: an exact full-uuid match
+    // wins, an unambiguous prefix (as reported truncated by
+    // `describe_instances`) resolves, and a prefix matching SEVERAL
+    // instances is a targeting mistake that fails with the candidates
+    // instead of silently widening the change to all of them.
+    const resolution = resolveExistingInstanceIds(
+      collectIteratedInstances(layout.getInitialInstances()),
+      [instanceId]
+    );
+    if (!resolution.ok) {
+      return fail(resolution.error);
     }
-    if (matchedInstances.length === 0) {
+    const matchedInstance = resolution.matches.get(instanceId);
+    if (!matchedInstance) {
       return fail(
         `No instance with id "${instanceId}" found in scene "${scene_name}". Nothing was changed. Call \`describe_instances\` to get valid ids (the \`id\` field of each instance).`
       );
     }
+    if (object_name && matchedInstance.getObjectName() !== object_name) {
+      return fail(
+        `This instance id is not an instance of object "${object_name}": "${instanceId}" (instance of "${matchedInstance.getObjectName()}"). Nothing was changed. Pass the right \`object_name\` (or omit it), or fix the id using \`describe_instances\`.`
+      );
+    }
+
+    const matchedInstances = [matchedInstance];
 
     const instancesLabel = matchedInstances
       .map(

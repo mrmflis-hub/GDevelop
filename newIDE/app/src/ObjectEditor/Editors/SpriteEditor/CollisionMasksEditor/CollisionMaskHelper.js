@@ -27,6 +27,41 @@ const isPixelAboveTransparencyThreshold = (
   return alpha >= PIXEL_TRANSPARENCY_THRESHOLD;
 };
 
+/**
+ * Build the collision mask vector for the non-transparent bounds found in an
+ * image: a single rectangle polygon, centered on those bounds. Extracted
+ * from getMatchingCollisionMask so the wrapper lifecycle is testable
+ * without loading an image.
+ */
+export const createCollisionMaskFromBounds = (
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number
+): gdVectorPolygon2d => {
+  const collisionMaskWidth = maxX - minX + 1;
+  const collisionMaskHeight = maxY - minY + 1;
+  const collisionMaskXCenter = (minX + maxX + 1) / 2;
+  const collisionMaskYCenter = (minY + maxY + 1) / 2;
+  if (collisionMaskWidth <= 0 || collisionMaskHeight <= 0) {
+    throw new Error('Invalid collision mask size.');
+  }
+
+  const newPolygon = gd.Polygon2d.createRectangle(
+    collisionMaskWidth,
+    collisionMaskHeight
+  );
+  newPolygon.move(collisionMaskXCenter, collisionMaskYCenter);
+  const polygons = new gd.VectorPolygon2d();
+  // The mask vector takes ownership of the pushed polygon: the wrapper must
+  // NOT be delete()d afterwards — unlike Sprite/Point/Vector2f wrappers,
+  // deleting it corrupts the wasm heap (see ByokSpriteTools
+  // .applyPolygonMaskToFrame, which mirrors this lifecycle).
+  polygons.push_back(newPolygon);
+
+  return polygons;
+};
+
 export const getMatchingCollisionMask = async (
   pathToFile: string
 ): Promise<gdVectorPolygon2d> => {
@@ -137,23 +172,7 @@ export const getMatchingCollisionMask = async (
       );
     }
 
-    const collisionMaskWidth = maxX - minX + 1;
-    const collisionMaskHeight = maxY - minY + 1;
-    const collisionMaskXCenter = (minX + maxX + 1) / 2;
-    const collisionMaskYCenter = (minY + maxY + 1) / 2;
-    if (collisionMaskWidth <= 0 || collisionMaskHeight <= 0) {
-      throw new Error('Invalid collision mask size.');
-    }
-
-    const newPolygon = gd.Polygon2d.createRectangle(
-      collisionMaskWidth,
-      collisionMaskHeight
-    );
-    newPolygon.move(collisionMaskXCenter, collisionMaskYCenter);
-    const polygons = new gd.VectorPolygon2d();
-    polygons.push_back(newPolygon);
-
-    return polygons;
+    return createCollisionMaskFromBounds(minX, maxX, minY, maxY);
   } catch (e) {
     throw new Error('Unable to load image: ' + e);
   }

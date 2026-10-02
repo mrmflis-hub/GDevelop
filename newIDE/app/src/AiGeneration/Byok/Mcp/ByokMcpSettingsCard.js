@@ -17,7 +17,13 @@ import {
   type ByokMcpAccessMode,
   type ByokMcpServerSettings,
 } from '../ByokTypes';
-import { clearByokMcpActivity, listByokMcpActivity } from './ByokMcpToolHost';
+import {
+  clearByokMcpActivity,
+  listByokMcpActivity,
+  subscribeByokMcpActivity,
+  type ByokMcpActivityEntry,
+} from './ByokMcpToolHost';
+import { mergeByokMcpActivity } from './ByokMcpActivity';
 
 /**
  * The Preferences → BYOK "MCP server" card (Phase 10): the enable toggle,
@@ -78,6 +84,9 @@ export const ByokMcpSettingsCard = ({
   const isDesktop = !!ipcRenderer;
 
   const [status, setStatus] = React.useState<McpServerStatus>(IDLE_STATUS);
+  const [remoteActivity, setRemoteActivity] = React.useState<
+    Array<ByokMcpActivityEntry>
+  >([]);
   const [activityVersion, setActivityVersion] = React.useState(0);
 
   const fetchStatus = React.useCallback(
@@ -92,17 +101,25 @@ export const ByokMcpSettingsCard = ({
             discoveryPath: result.discoveryPath || null,
             error: null,
           });
+          // The main-side aggregate covers every window (audit011026
+          // B-MCP-13); without it (or without the field) the card falls
+          // back to this window's own ring alone.
+          setRemoteActivity(
+            Array.isArray(result.activity) ? result.activity : []
+          );
         } else {
           setStatus({
             ...IDLE_STATUS,
             error: (result && result.error) || 'The MCP server is unavailable.',
           });
+          setRemoteActivity([]);
         }
       } catch (error) {
         setStatus({
           ...IDLE_STATUS,
           error: 'The MCP server state is unavailable.',
         });
+        setRemoteActivity([]);
       }
     },
     [ipcRenderer]
@@ -121,14 +138,28 @@ export const ByokMcpSettingsCard = ({
     [isDesktop, mcpServer.enabled, fetchStatus]
   );
 
+  // Local ring entries land outside React's knowledge (module state): the
+  // subscription refreshes the moment one is recorded — the interval only
+  // refreshes the remote aggregate.
+  React.useEffect(() => {
+    const unsubscribe = subscribeByokMcpActivity(() => {
+      setActivityVersion(version => version + 1);
+    });
+    return unsubscribe;
+  }, []);
+
   const activity = React.useMemo(
     () => {
-      // activityVersion is the refresh signal (the ring is module state, not
-      // React state): the interval tick re-reads it.
+      // activityVersion is the refresh signal (the rings are module/IPC
+      // state, not React state): the interval tick and the subscription
+      // re-read them.
       void activityVersion;
-      return listByokMcpActivity().slice(0, ACTIVITY_DISPLAY_COUNT);
+      return mergeByokMcpActivity(listByokMcpActivity(), remoteActivity).slice(
+        0,
+        ACTIVITY_DISPLAY_COUNT
+      );
     },
-    [activityVersion]
+    [activityVersion, remoteActivity]
   );
 
   return (
@@ -249,6 +280,13 @@ export const ByokMcpSettingsCard = ({
                   label={<Trans>Clear the activity log</Trans>}
                   onClick={() => {
                     clearByokMcpActivity();
+                    // The merged log spans every window: clear the main-side
+                    // aggregate too, or the next status poll would bring the
+                    // cleared entries right back.
+                    if (ipcRenderer) {
+                      ipcRenderer.send('byok-mcp-activity-clear');
+                    }
+                    setRemoteActivity([]);
                     setActivityVersion(version => version + 1);
                   }}
                 />

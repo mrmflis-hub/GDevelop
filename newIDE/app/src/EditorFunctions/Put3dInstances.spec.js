@@ -2,6 +2,7 @@
 import { editorFunctions, type EditorFunctionGenericOutput } from './index';
 import { makeFakeLaunchFunctionOptionsWithProject } from './TestHelpers';
 import { makeTestExtensions } from '../fixtures/TestExtensions';
+import { unserializeFromJSObject } from '../Utils/Serializer';
 
 const gd: libGDevelop = global.gd;
 
@@ -410,5 +411,173 @@ describe('put_3d_instances (instances_hidden)', () => {
       expect.stringContaining('Marked 1 instance of "Cube" as hidden at start')
     );
     expect(created.isHidden()).toBe(true);
+  });
+});
+
+describe('put_3d_instances (instance id resolution)', () => {
+  let project: gdProject;
+  let testScene: gdLayout;
+
+  beforeEach(() => {
+    makeTestExtensions(gd);
+    // $FlowFixMe[invalid-constructor]
+    project = new gd.ProjectHelper.createNewGDJSProject();
+    testScene = project.insertNewLayout('TestScene', 0);
+    testScene
+      .getObjects()
+      .insertNewObject(project, 'FakeScene3D::Cube3DObject', 'Cube', 0);
+  });
+
+  afterEach(() => {
+    project.delete();
+  });
+
+  // Two instances whose uuids share their first 6 characters ("abcdef"): an
+  // id-prefix matching both must fail the call instead of silently modifying
+  // or erasing both instances.
+  const SHARED_PREFIX = 'abcdef';
+  const FIRST_UUID = 'abcdef-1111-4111-8111-111111111111';
+  const SECOND_UUID = 'abcdef-2222-4222-8222-222222222222';
+
+  // Unserialize instances with chosen persistent uuids (clearing the scene),
+  // so id-prefix matching can be exercised with controlled prefixes.
+  const makeInstancesWithSharedUuidPrefix = () => {
+    unserializeFromJSObject(
+      testScene.getInitialInstances(),
+      [
+        { name: 'Cube', x: 0, y: 0, layer: '', persistentUuid: FIRST_UUID },
+        {
+          name: 'Cube',
+          x: 100,
+          y: 200,
+          layer: '',
+          persistentUuid: SECOND_UUID,
+        },
+      ],
+      'unserializeFrom',
+      project
+    );
+  };
+
+  const listInstancePositions = (): Array<{|
+    x: number,
+    y: number,
+    z: number,
+  |}> => {
+    const positions = [];
+    const functor = new gd.InitialInstanceJSFunctor();
+    // $FlowFixMe[cannot-write]
+    functor.invoke = instancePtr => {
+      const instance: gdInitialInstance = gd.wrapPointer(
+        // $FlowFixMe[incompatible-type]
+        instancePtr,
+        gd.InitialInstance
+      );
+      positions.push({
+        x: instance.getX(),
+        y: instance.getY(),
+        z: instance.getZ(),
+      });
+    };
+    // $FlowFixMe[incompatible-type]
+    testScene.getInitialInstances().iterateOverInstances(functor);
+    functor.delete();
+    return positions;
+  };
+
+  const countInstances = (): number => listInstancePositions().length;
+
+  const callPutInstances = async (args: any) =>
+    editorFunctions.put_3d_instances.launchFunction({
+      ...makeFakeLaunchFunctionOptionsWithProject(project),
+      args: {
+        scene_name: 'TestScene',
+        object_name: 'Cube',
+        layer_name: '',
+        ...args,
+      },
+    });
+
+  it('fails with the candidates and moves nothing when an id matches several instances', async () => {
+    makeInstancesWithSharedUuidPrefix();
+
+    const result = await callPutInstances({
+      brush_kind: 'point',
+      brush_position: '500, 500, 500',
+      existing_instance_ids: SHARED_PREFIX,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('ambiguous');
+    expect(result.message).toContain(FIRST_UUID);
+    expect(result.message).toContain(SECOND_UUID);
+    // Neither instance was moved.
+    expect(listInstancePositions()).toEqual([
+      { x: 0, y: 0, z: 0 },
+      { x: 100, y: 200, z: 0 },
+    ]);
+  });
+
+  it('fails with the candidates and erases nothing when an id matches several instances', async () => {
+    makeInstancesWithSharedUuidPrefix();
+
+    const result = await callPutInstances({
+      brush_kind: 'erase',
+      existing_instance_ids: SHARED_PREFIX,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('ambiguous');
+    expect(countInstances()).toBe(2);
+  });
+
+  it('still resolves a full uuid to its single instance', async () => {
+    makeInstancesWithSharedUuidPrefix();
+
+    const result = await callPutInstances({
+      brush_kind: 'point',
+      brush_position: '500, 500, 500',
+      existing_instance_ids: FIRST_UUID,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('Repositioned 1 instance');
+    // Only the first instance was moved, the second one is untouched.
+    expect(listInstancePositions()).toEqual([
+      { x: 500, y: 500, z: 500 },
+      { x: 100, y: 200, z: 0 },
+    ]);
+  });
+
+  it('still resolves a unique id prefix, as reported by describe_instances', async () => {
+    makeInstancesWithSharedUuidPrefix();
+
+    const result = await callPutInstances({
+      brush_kind: 'point',
+      brush_position: '500, 500, 500',
+      existing_instance_ids: 'abcdef-2',
+    });
+
+    expect(result.success).toBe(true);
+    // Only the second instance (whose uuid starts with "abcdef-2") moved.
+    expect(listInstancePositions()).toEqual([
+      { x: 0, y: 0, z: 0 },
+      { x: 500, y: 500, z: 500 },
+    ]);
+  });
+
+  it('still reports the not-found failure for an unknown id', async () => {
+    makeInstancesWithSharedUuidPrefix();
+
+    const result = await callPutInstances({
+      brush_kind: 'erase',
+      existing_instance_ids: 'zzzzzz-unknown',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain(
+      'None of the specified instance ids were found: zzzzzz-unknown'
+    );
+    expect(countInstances()).toBe(2);
   });
 });

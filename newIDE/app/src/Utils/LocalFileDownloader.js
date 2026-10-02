@@ -7,6 +7,7 @@ const ipcRenderer = electron ? electron.ipcRenderer : null;
 
 type Input<Item> = {|
   urlContainers: Array<Item>,
+  basePath: string,
   onProgress: (count: number, total: number) => void,
   throwIfAnyError: boolean,
 |};
@@ -20,6 +21,7 @@ export const downloadUrlsToLocalFiles = async <
   Item: { url: string, filePath: string }
 >({
   urlContainers,
+  basePath,
   onProgress,
   throwIfAnyError,
 }: Input<Item>): Promise<Array<ItemResult<Item>>> => {
@@ -36,7 +38,12 @@ export const downloadUrlsToLocalFiles = async <
       try {
         await retryIfFailed({ times: 2 }, async () => {
           const encodedUrl = new URL(url).href; // Encode the URL to support special characters in file names.
-          await ipcRenderer.invoke('local-file-download', encodedUrl, filePath);
+          await ipcRenderer.invoke(
+            'local-file-download',
+            encodedUrl,
+            filePath,
+            basePath
+          );
         });
 
         const result: ItemResult<Item> = {

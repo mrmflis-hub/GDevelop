@@ -19,6 +19,7 @@ import {
   cancelByokMcpCall,
   executeByokMcpToolCall,
   getByokMcpToolHost,
+  subscribeByokMcpActivity,
   subscribeByokMcpToolHost,
 } from './ByokMcpToolHost';
 
@@ -93,6 +94,21 @@ export const useByokMcpServer = (enabled: boolean): ByokMcpServerStatus => {
       };
       announce();
       const unsubscribe = subscribeByokMcpToolHost(announce);
+      return unsubscribe;
+    },
+    [ipcRenderer]
+  );
+
+  // Mirror every recorded activity entry to main, fire-and-forget
+  // (audit011026 B-MCP-13): the settings card's ring is per-renderer module
+  // state, so main aggregates every window's entries and serves the union
+  // through `byok-mcp-status`.
+  React.useEffect(
+    () => {
+      if (!ipcRenderer) return undefined;
+      const unsubscribe = subscribeByokMcpActivity(entry => {
+        ipcRenderer.send('byok-mcp-activity', entry);
+      });
       return unsubscribe;
     },
     [ipcRenderer]

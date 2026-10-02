@@ -68,6 +68,110 @@ export const iterateOnInstances = (
   instanceGetter.delete();
 };
 
+// An instance collected by one iteration pass over a container, with the
+// persistent uuid it must be searched by.
+export type IteratedInstance = {|
+  persistentUuid: string,
+  instance: gdInitialInstance,
+|};
+
+/**
+ * Collect the instances of a container (with their persistent uuids) in a
+ * single iteration pass, so ids can be resolved against them without
+ * re-walking the container for each id.
+ */
+export const collectIteratedInstances = (
+  initialInstances: gdInitialInstancesContainer
+): Array<IteratedInstance> => {
+  const iteratedInstances: Array<IteratedInstance> = [];
+  iterateOnInstances(initialInstances, instance => {
+    iteratedInstances.push({
+      persistentUuid: instance.getPersistentUuid(),
+      instance,
+    });
+  });
+  return iteratedInstances;
+};
+
+export type ExistingInstanceIdsResolution =
+  | {|
+      ok: true,
+      matches: Map<string, gdInitialInstance>,
+      notFound: Array<string>,
+    |}
+  | {| ok: false, error: string |};
+
+/**
+ * Resolve the ids given in `existing_instance_ids` against the collected
+ * instances of the container. A requested id is either the full persistent
+ * uuid of an instance, or an unambiguous prefix of one (ids are reported
+ * truncated by `describe_instances`). An id that is a prefix of SEVERAL
+ * instance uuids is a targeting mistake: the whole resolution fails so the
+ * caller refuses to erase/modify all of them, instead of silently widening
+ * the operation like a plain `uuid.startsWith(id)` match would.
+ */
+export const resolveExistingInstanceIds = (
+  iteratedInstances: Array<IteratedInstance>,
+  requestedIds: Array<string>
+): ExistingInstanceIdsResolution => {
+  const matches = new Map<string, gdInitialInstance>();
+  const notFound: Array<string> = [];
+
+  for (const requestedId of requestedIds) {
+    // An exact full-uuid match always wins, even if the id is also a prefix
+    // of other uuids.
+    const exactMatch = iteratedInstances.find(
+      entry => entry.persistentUuid === requestedId
+    );
+    if (exactMatch) {
+      matches.set(requestedId, exactMatch.instance);
+      continue;
+    }
+
+    // Otherwise the id must be the prefix of exactly one uuid.
+    const prefixMatches = iteratedInstances.filter(entry =>
+      entry.persistentUuid.startsWith(requestedId)
+    );
+    if (prefixMatches.length === 1) {
+      matches.set(requestedId, prefixMatches[0].instance);
+      continue;
+    }
+    if (prefixMatches.length > 1) {
+      return {
+        ok: false,
+        error: `The instance id "${requestedId}" is ambiguous: it is a prefix of ${
+          prefixMatches.length
+        } instance ids (${prefixMatches
+          .map(entry => entry.persistentUuid)
+          .join(
+            ', '
+          )}). Nothing was changed. Pass the full id of a single instance (the \`id\` field from \`describe_instances\`).`,
+      };
+    }
+    notFound.push(requestedId);
+  }
+
+  return { ok: true, matches, notFound };
+};
+
+/**
+ * Invert the requested-id → instance resolution into an instance →
+ * requested-id attribution: when several requested ids resolve to the same
+ * instance (e.g. an id and a longer id of that same instance), only the first
+ * one is kept, so each instance is processed exactly once by the callers.
+ */
+export const makeRequestedIdByInstance = (
+  matches: Map<string, gdInitialInstance>
+): Map<gdInitialInstance, string> => {
+  const requestedIdByInstance = new Map<gdInitialInstance, string>();
+  matches.forEach((instance, requestedId) => {
+    if (!requestedIdByInstance.has(instance)) {
+      requestedIdByInstance.set(instance, requestedId);
+    }
+  });
+  return requestedIdByInstance;
+};
+
 // An id pointing at another object's instance is always a targeting mistake:
 // fail loudly instead of silently modifying or erasing the wrong object.
 export const makeWrongObjectInstanceIdsFailure = (
@@ -377,17 +481,27 @@ export const putInstancesInContainer = async (
     );
     const brushSize = brush_size || 0;
 
+    // Resolve the requested ids against the existing instances before
+    // touching anything: an id matching several instances must fail the call
+    // instead of erasing all of them.
+    const iteratedInstances = collectIteratedInstances(initialInstances);
+    const resolution = resolveExistingInstanceIds(
+      iteratedInstances,
+      existingInstanceIds
+    );
+    if (!resolution.ok) {
+      return makeGenericFailure(resolution.error);
+    }
+    const requestedIdByInstance = makeRequestedIdByInstance(resolution.matches);
+
     // Iterate on existing instances and remove them, and/or those inside the brush radius.
     const instancesToDelete = new Set<gdInitialInstance>();
-    const notFoundExistingInstanceIds = new Set<string>(existingInstanceIds);
+    const notFoundExistingInstanceIds = new Set<string>(resolution.notFound);
     const wrongObjectIdDescriptions = [];
 
-    iterateOnInstances(initialInstances, instance => {
-      const foundExistingInstanceId = existingInstanceIds.find(id =>
-        instance.getPersistentUuid().startsWith(id)
-      );
+    iteratedInstances.forEach(({ instance }) => {
+      const foundExistingInstanceId = requestedIdByInstance.get(instance);
       if (foundExistingInstanceId) {
-        notFoundExistingInstanceIds.delete(foundExistingInstanceId);
         if (object_name && instance.getObjectName() !== object_name) {
           wrongObjectIdDescriptions.push(
             `"${foundExistingInstanceId}" (instance of "${instance.getObjectName()}")`
@@ -593,47 +707,52 @@ export const putInstancesInContainer = async (
       );
     }
 
+    // Resolve the requested ids against the existing instances before
+    // touching anything: an id matching several instances must fail the call
+    // instead of modifying all of them.
+    const resolution = resolveExistingInstanceIds(
+      collectIteratedInstances(initialInstances),
+      existingInstanceIds
+    );
+    if (!resolution.ok) {
+      return makeGenericFailure(resolution.error);
+    }
+    const requestedIdByInstance = makeRequestedIdByInstance(resolution.matches);
+
     // Store original states of existing instances for comparison
     // $FlowFixMe[underconstrained-implicit-instantiation]
     const existingInstanceStates = new Map();
-    const notFoundExistingInstanceIds = new Set<string>(existingInstanceIds);
+    const notFoundExistingInstanceIds = new Set<string>(resolution.notFound);
     const wrongObjectIdDescriptions = [];
 
     // Create the array of existing instances to move/modify, and new instances to create.
     const modifiedAndCreatedInstances: Array<gdInitialInstance> = [];
-    iterateOnInstances(initialInstances, instance => {
-      const foundExistingInstanceId = existingInstanceIds.find(id =>
-        instance.getPersistentUuid().startsWith(id)
-      );
-
-      if (foundExistingInstanceId) {
-        notFoundExistingInstanceIds.delete(foundExistingInstanceId);
-        if (object_name && instance.getObjectName() !== object_name) {
-          wrongObjectIdDescriptions.push(
-            `"${foundExistingInstanceId}" (instance of "${instance.getObjectName()}")`
-          );
-          return;
-        }
-
-        // Store original state before modifications
-        existingInstanceStates.set(instance, {
-          originalLayer: instance.getLayer(),
-          originalX: instance.getX(),
-          originalY: instance.getY(),
-          originalZOrder: instance.getZOrder(),
-          originalRotation: instance.getAngle(),
-          originalOpacity: instance.getOpacity(),
-          originalHidden: instance.isHidden(),
-          originalCustomWidth: instance.hasCustomSize()
-            ? instance.getCustomWidth()
-            : null,
-          originalCustomHeight: instance.hasCustomSize()
-            ? instance.getCustomHeight()
-            : null,
-        });
-
-        modifiedAndCreatedInstances.push(instance);
+    requestedIdByInstance.forEach((foundExistingInstanceId, instance) => {
+      if (object_name && instance.getObjectName() !== object_name) {
+        wrongObjectIdDescriptions.push(
+          `"${foundExistingInstanceId}" (instance of "${instance.getObjectName()}")`
+        );
+        return;
       }
+
+      // Store original state before modifications
+      existingInstanceStates.set(instance, {
+        originalLayer: instance.getLayer(),
+        originalX: instance.getX(),
+        originalY: instance.getY(),
+        originalZOrder: instance.getZOrder(),
+        originalRotation: instance.getAngle(),
+        originalOpacity: instance.getOpacity(),
+        originalHidden: instance.isHidden(),
+        originalCustomWidth: instance.hasCustomSize()
+          ? instance.getCustomWidth()
+          : null,
+        originalCustomHeight: instance.hasCustomSize()
+          ? instance.getCustomHeight()
+          : null,
+      });
+
+      modifiedAndCreatedInstances.push(instance);
     });
 
     if (object_name && wrongObjectIdDescriptions.length > 0) {

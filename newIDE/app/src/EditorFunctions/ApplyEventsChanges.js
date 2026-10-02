@@ -750,6 +750,12 @@ export const applyEventsChanges = (
                 existingSubEvents.getEventsCount(),
                 0
               );
+            } else {
+              // The sub-events cannot be moved to the first new event: report
+              // the loss instead of silently dropping them.
+              errors.push(
+                `Cannot preserve sub-events: the first replacement event at path [${pathForLog}] does not support sub-events.`
+              );
             }
           }
         }

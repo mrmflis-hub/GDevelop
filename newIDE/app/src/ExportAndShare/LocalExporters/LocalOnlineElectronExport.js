@@ -150,6 +150,7 @@ export const localOnlineElectronExportPipeline: ExportPipeline<
   ): Promise<ResourcesDownloadOutput> => {
     await downloadUrlsToLocalFiles({
       urlContainers: urlFiles,
+      basePath: temporaryOutputDir,
       onProgress: context.updateStepProgress,
       throwIfAnyError: true,
     });

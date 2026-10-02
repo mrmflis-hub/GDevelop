@@ -1,6 +1,9 @@
 // @flow
 import { processEditorFunctionCalls } from './EditorFunctionCallRunner';
-import { type EditorFunctionCall } from './index';
+import {
+  editorFunctionsWithoutProject,
+  type EditorFunctionCall,
+} from './index';
 import { makeFakeLaunchFunctionOptionsWithoutProject } from './TestHelpers';
 
 // The real PixiResourcesLoader transitively imports ESM-only packages that
@@ -170,5 +173,89 @@ describe('processEditorFunctionCalls', () => {
     ]);
 
     project.delete();
+  });
+
+  // `didModifyProject` reporting: a function reporting an explicit false in
+  // its meta (like run_script can, even on failure) must keep that false —
+  // not have it collapsed into the unset case.
+  describe('didModifyProject reporting', () => {
+    const FAKE_FUNCTION_NAME = 'fake_did_modify_project_reporting_function';
+
+    const registerFakeNoProjectFunction = (
+      modifiesProject: boolean,
+      output: any
+    ) => {
+      editorFunctionsWithoutProject[FAKE_FUNCTION_NAME] = ({
+        launchFunction: async () => output,
+        modifiesProject,
+      }: any);
+    };
+
+    const runFakeFunction = async () =>
+      processEditorFunctionCalls(
+        makeRunnerOptions(null, [
+          {
+            call_id: 'call-1',
+            name: FAKE_FUNCTION_NAME,
+            arguments: '{}',
+          },
+        ])
+      );
+
+    afterEach(() => {
+      delete editorFunctionsWithoutProject[FAKE_FUNCTION_NAME];
+    });
+
+    it('keeps an explicit false from meta.didModifyProject', async () => {
+      registerFakeNoProjectFunction(true, {
+        success: true,
+        meta: { didModifyProject: false },
+      });
+
+      const { results } = await runFakeFunction();
+      const result: any = results[0];
+
+      expect(results).toHaveLength(1);
+      expect(result.didModifyProject).toBe(false);
+    });
+
+    it('keeps an explicit true from meta.didModifyProject', async () => {
+      registerFakeNoProjectFunction(false, {
+        success: true,
+        meta: { didModifyProject: true },
+      });
+
+      const { results } = await runFakeFunction();
+      const result: any = results[0];
+
+      expect(result.didModifyProject).toBe(true);
+    });
+
+    it('defaults to true for a modifying, successful function without meta', async () => {
+      registerFakeNoProjectFunction(true, { success: true });
+
+      const { results } = await runFakeFunction();
+      const result: any = results[0];
+
+      expect(result.didModifyProject).toBe(true);
+    });
+
+    it('defaults to unset for a failed function without meta', async () => {
+      registerFakeNoProjectFunction(true, { success: false });
+
+      const { results } = await runFakeFunction();
+      const result: any = results[0];
+
+      expect(result.didModifyProject).toBe(undefined);
+    });
+
+    it('defaults to unset for a non-modifying, successful function without meta', async () => {
+      registerFakeNoProjectFunction(false, { success: true });
+
+      const { results } = await runFakeFunction();
+      const result: any = results[0];
+
+      expect(result.didModifyProject).toBe(undefined);
+    });
   });
 });

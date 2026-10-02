@@ -682,16 +682,20 @@ app.on('ready', function() {
   });
 
   // LocalFileDownloader events:
-  ipcMain.handle('local-file-download', async (event, url, outputPath) => {
-    const result = await downloadLocalFile(url, outputPath);
-    return result;
-  });
+  ipcMain.handle(
+    'local-file-download',
+    async (event, url, outputPath, basePath) => {
+      const result = await downloadLocalFile(url, outputPath, basePath);
+      return result;
+    }
+  );
   ipcMain.handle(
     'local-file-save-from-arraybuffer',
-    async (event, arrayBuffer, outputPath) => {
+    async (event, arrayBuffer, outputPath, basePath) => {
       const result = await saveLocalFileFromArrayBuffer(
         arrayBuffer,
-        outputPath
+        outputPath,
+        basePath
       );
       return result;
     }

@@ -41,6 +41,7 @@ const openPreviewWindow = ({
     // bottom-right
     4: { x: screenWidth / 2, y: screenHeight / 2 },
   };
+  const createdWindowIds = [];
   for (let i = 0; i < numberOfWindows; i++) {
     const browserWindowOptions = {
       ...previewBrowserWindowOptions,
@@ -50,6 +51,9 @@ const openPreviewWindow = ({
     };
 
     let previewWindow = new BrowserWindow(browserWindowOptions);
+    // Read the id now: the window is destroyed when the "closed" event fires,
+    // so the id must not be read from `previewWindow` in its handler.
+    const windowId = previewWindow.id;
 
     previewWindow.setMenuBarVisibility(hideMenuBar);
     previewWindow.webContents.on('devtools-opened', () => {
@@ -77,18 +81,23 @@ const openPreviewWindow = ({
       previewWindow: previewWindow,
       parentWindowId: parentWindow ? parentWindow.id : null,
     });
+    createdWindowIds.push(windowId);
 
     previewWindow.on('closed', closeEvent => {
       previewWindows = previewWindows.filter(
         entry => entry.previewWindow !== previewWindow
       );
-      // Only send message if the parent window still exists
+      // Only send message if the parent window still exists. The closed
+      // window id is sent so that launchers can find the launch that owns
+      // the window (and its capture options).
       if (openEvent.sender && !openEvent.sender.isDestroyed()) {
-        openEvent.sender.send('preview-window-closed');
+        openEvent.sender.send('preview-window-closed', windowId);
       }
       previewWindow = null;
     });
   }
+
+  return createdWindowIds;
 };
 
 const closePreviewWindow = windowId => {

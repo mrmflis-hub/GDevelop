@@ -177,6 +177,7 @@ export const localFacebookInstantGamesExportPipeline: ExportPipeline<
   ): Promise<ResourcesDownloadOutput> => {
     await downloadUrlsToLocalFiles({
       urlContainers: urlFiles,
+      basePath: temporaryOutputDir,
       onProgress: context.updateStepProgress,
       throwIfAnyError: true,
     });

@@ -136,6 +136,7 @@ export const subscribeByokMcpToolHost = (
 // ---- The activity ring ----
 
 const activityRing: Array<ByokMcpActivityEntry> = [];
+const activityListeners: Set<(entry: ByokMcpActivityEntry) => void> = new Set();
 
 /** Newest first. */
 export const listByokMcpActivity = (): Array<ByokMcpActivityEntry> =>
@@ -145,11 +146,27 @@ export const clearByokMcpActivity = (): void => {
   activityRing.length = 0;
 };
 
+/**
+ * Notified on every recorded activity entry, whatever the outcome
+ * (completed/rejected/failed/timeout/cancelled) — the hook mirrors each
+ * entry to the main process so the aggregate there covers every window
+ * (audit011026 B-MCP-13).
+ */
+export const subscribeByokMcpActivity = (
+  listener: (entry: ByokMcpActivityEntry) => void
+): (() => void) => {
+  activityListeners.add(listener);
+  return () => {
+    activityListeners.delete(listener);
+  };
+};
+
 const recordActivity = (entry: ByokMcpActivityEntry): void => {
   activityRing.push(entry);
   if (activityRing.length > BYOK_MCP_ACTIVITY_CAPACITY) {
     activityRing.shift();
   }
+  activityListeners.forEach(listener => listener(entry));
 };
 
 // ---- The serialized call queue ----

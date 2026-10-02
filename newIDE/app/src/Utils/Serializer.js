@@ -51,6 +51,24 @@ function withSerializationOptions<T>(
  * @param {*} methodName The name of the serialization method. "serializeTo" by default
  * @param {*} options Optional serialization options (e.g. canonical mode)
  */
+/**
+ * Parse the JSON string produced by gd.Serializer.toJSON, logging a precise
+ * error before rethrowing (toJSON should always return valid JSON). Used by
+ * the serializations owning a SerializerElement wrapper in a try/finally,
+ * so a parse failure cannot leak the wrapper.
+ */
+const parseSerializedJSON = (json: string): any => {
+  try {
+    return JSON.parse(json);
+  } catch (error) {
+    console.error(
+      'Invalid JSON when serializing to JS object. toJSON should always return a valid JSON string.',
+      { json, error }
+    );
+    throw error;
+  }
+};
+
 export function serializeToJSObject(
   serializable: gdSerializable,
   methodName: string = 'serializeTo',
@@ -58,23 +76,15 @@ export function serializeToJSObject(
 ): any {
   return withSerializationOptions(options, () => {
     const serializedElement = new gd.SerializerElement();
-    serializable[methodName](serializedElement);
-
-    // JSON.parse + toJSON is 30% faster than gd.Serializer.toJSObject.
-    const json = gd.Serializer.toJSON(serializedElement);
-
     try {
-      const object = JSON.parse(json);
+      serializable[methodName](serializedElement);
 
+      // JSON.parse + toJSON is 30% faster than gd.Serializer.toJSObject.
+      const json = gd.Serializer.toJSON(serializedElement);
+
+      return parseSerializedJSON(json);
+    } finally {
       serializedElement.delete();
-      return object;
-    } catch (error) {
-      serializedElement.delete();
-      console.error(
-        'Invalid JSON when serializing to JS object. toJSON should always return a valid JSON string.',
-        { json, error }
-      );
-      throw error;
     }
   });
 }
@@ -83,25 +93,18 @@ export function serializeObjectWithCleanDefaultBehaviorFlags(
   object: gdObject
 ): any {
   const serializedElement = new gd.SerializerElement();
-  gd.BehaviorDefaultFlagClearer.serializeObjectWithCleanDefaultBehaviorFlags(
-    object,
-    serializedElement
-  );
-
-  // JSON.parse + toJSON is 30% faster than gd.Serializer.toJSObject.
-  const json = gd.Serializer.toJSON(serializedElement);
   try {
-    const object = JSON.parse(json);
-
-    serializedElement.delete();
-    return object;
-  } catch (error) {
-    serializedElement.delete();
-    console.error(
-      'Invalid JSON when serializing to JS object. toJSON should always return a valid JSON string.',
-      { json, error }
+    gd.BehaviorDefaultFlagClearer.serializeObjectWithCleanDefaultBehaviorFlags(
+      object,
+      serializedElement
     );
-    throw error;
+
+    // JSON.parse + toJSON is 30% faster than gd.Serializer.toJSObject.
+    const json = gd.Serializer.toJSON(serializedElement);
+
+    return parseSerializedJSON(json);
+  } finally {
+    serializedElement.delete();
   }
 }
 
@@ -114,22 +117,25 @@ export function serializeToObjectAsset(
 ): any {
   const usedResourceNamesVector = new gd.VectorString();
   const serializedElement = new gd.SerializerElement();
-  gd.ObjectAssetSerializer.serializeTo(
-    project,
-    object,
-    objectFullName,
-    serializedElement,
-    usedResourceNamesVector,
-    extensionDependencyCache
-  );
-  usedResourceNames.push(...usedResourceNamesVector.toJSArray());
-  usedResourceNamesVector.delete();
+  try {
+    gd.ObjectAssetSerializer.serializeTo(
+      project,
+      object,
+      objectFullName,
+      serializedElement,
+      usedResourceNamesVector,
+      extensionDependencyCache
+    );
+    usedResourceNames.push(...usedResourceNamesVector.toJSArray());
 
-  // JSON.parse + toJSON is 30% faster than gd.Serializer.toJSObject.
-  const objectAsset = JSON.parse(gd.Serializer.toJSON(serializedElement));
-  serializedElement.delete();
+    // JSON.parse + toJSON is 30% faster than gd.Serializer.toJSObject.
+    const objectAsset = JSON.parse(gd.Serializer.toJSON(serializedElement));
 
-  return objectAsset;
+    return objectAsset;
+  } finally {
+    serializedElement.delete();
+    usedResourceNamesVector.delete();
+  }
 }
 
 /**
@@ -148,13 +154,16 @@ export function serializeToJSON(
 ): string {
   return withSerializationOptions(options, () => {
     const serializedElement = new gd.SerializerElement();
-    serializable[methodName](serializedElement);
+    try {
+      serializable[methodName](serializedElement);
 
-    // toJSON is 20% faster than gd.Serializer.toJSObject + JSON.stringify.
-    const json = gd.Serializer.toJSON(serializedElement);
-    serializedElement.delete();
+      // toJSON is 20% faster than gd.Serializer.toJSObject + JSON.stringify.
+      const json = gd.Serializer.toJSON(serializedElement);
 
-    return json;
+      return json;
+    } finally {
+      serializedElement.delete();
+    }
   });
 }
 
@@ -181,19 +190,22 @@ export function unserializeFromJSObject(
   optionalProject: ?gdProject = undefined
 ) {
   const serializedElement = gd.Serializer.fromJSObject(object);
-  if (!optionalProject || optionalProject === serializable) {
-    // The two-argument form is for elements *inside* a project (a layout,
-    // an object…). Passing the project as both the serializable and the
-    // "context" argument corrupts the WASM memory (out-of-bounds access):
-    // a project is unserialized in place, with the single-argument form
-    // (see MainFrame's loadFromSerializedProject).
-    serializable[methodName](serializedElement);
-  } else {
-    // It's not uncommon for unserializeFrom methods of gd.* classes
-    // to require the project to be passed as first argument.
-    serializable[methodName](optionalProject, serializedElement);
+  try {
+    if (!optionalProject || optionalProject === serializable) {
+      // The two-argument form is for elements *inside* a project (a layout,
+      // an object…). Passing the project as both the serializable and the
+      // "context" argument corrupts the WASM memory (out-of-bounds access):
+      // a project is unserialized in place, with the single-argument form
+      // (see MainFrame's loadFromSerializedProject).
+      serializable[methodName](serializedElement);
+    } else {
+      // It's not uncommon for unserializeFrom methods of gd.* classes
+      // to require the project to be passed as first argument.
+      serializable[methodName](optionalProject, serializedElement);
+    }
+  } finally {
+    serializedElement.delete();
   }
-  serializedElement.delete();
 }
 
 export function unserializeResourceFromJSObject(
@@ -201,6 +213,9 @@ export function unserializeResourceFromJSObject(
   object: Object
 ) {
   const serializedElement = gd.Serializer.fromJSObject(object);
-  gd.ResourcesContainer.unserializeResourceFrom(resource, serializedElement);
-  serializedElement.delete();
+  try {
+    gd.ResourcesContainer.unserializeResourceFrom(resource, serializedElement);
+  } finally {
+    serializedElement.delete();
+  }
 }

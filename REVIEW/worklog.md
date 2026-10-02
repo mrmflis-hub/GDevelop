@@ -3958,3 +3958,178 @@ on record.
   gdevelop-mcp-stdio.js; newIDE/electron-app/app/: main.js,
   ByokMcpServer.js, ByokQdrant.js, ByokRagFiles.js, ByokChatFiles.js,
   ByokResourceDownload.js (new).
+
+## 2026-10-02 — audit011026 completion session: B-TOOL-11/B-MCP-13/B-UI-13 + all eight upstream findings implemented
+
+- **Date:** 2026-10-02
+- **Description of actions:**
+  - Owner order: "implement fixes for findings in REVIEW/audit011026.md —
+    this includes fixes to upstream errors; nothing deferred; every AC to
+    green; if a listed fix needs unlisted supporting work, build that
+    too." Scope executed: the three open BYOK findings (B-TOOL-11,
+    B-MCP-13, B-UI-13), B-ARTIFACT-1 (verified — the artifact had already
+    landed in owner commit `943379bff0`), and all eight Part-2 upstream
+    proposals UP-1…UP-8 applied in-tree.
+  - Worked in three waves of implementation subagents (3+4+1, never more
+    than 4 concurrent per the owner's rate-limit instruction), each wave's
+    claims re-verified by the orchestrating agent against the tree, all
+    code consolidated and gate-checked by the orchestrating agent.
+  - B-TOOL-11: `ByokPreviewSession` binds its debugger only to
+    connections opened AFTER `launchPreview` resolves (`launchBoundAtMs`
+    gate; `Number.POSITIVE_INFINITY` sentinel while a launch is in flight
+    so the gate is closed exactly during the steal window; `stop()` resets
+    it) — a user preview connecting during the export window can no longer
+    steal pause/profile; pushed runtime messages stay ungated.
+  - B-MCP-13: `ByokMcpToolHost` gained `subscribeByokMcpActivity` (fired
+    from `recordActivity`, all six outcome paths); the seam hook mirrors
+    entries to main over `byok-mcp-activity`; `ByokMcpServer` keeps a
+    shape-validated 200-entry aggregate exposed as `activity` in the
+    `byok-mcp-status` response; the Preferences card merges local+remote
+    via the new pure `ByokMcpActivity.mergeByokMcpActivity` (composite-key
+    dedupe, capacity cap, local-only fallback without IPC) and its Clear
+    also clears the aggregate (`byok-mcp-activity-clear` — otherwise the
+    status poll would visibly un-clear the log).
+  - B-UI-13: `ByokChatPersistence` gained a versioned `index.json`
+    (`BYOK_CHAT_INDEX_SCHEMA = 1`) persisted through the same backend
+    abstraction; steady-state `listChatMetas` is stat-only (zero
+    chat-content reads), mutations resolve through the index and update
+    it, and a reconcile pass adopts unseen files (legacy/crash windows —
+    parsing just those, quarantining unparseable ones) and drops stale
+    entries; usage/quota now run off stat sizes; the public
+    `ByokChatFileStore` API is unchanged (no caller edits).
+  - UP-1: new pure core `Utils/LocalFileDownloadCore.js` (protocol
+    http(s)-only, gdevelop.io-only cloud cookie, segment-aware
+    caller-declared `basePath` containment, 200 MB cap, 60 s timeout,
+    5-hop redirect cap) wired into BOTH `local-file-download` AND
+    `local-file-save-from-arraybuffer` (the audit title named both; the
+    save side got path containment + payload cap); the Electron downloader
+    follows redirects MANUALLY with per-hop re-validation and a per-host
+    cookie decision because the bundled axios 0.19 forwards headers
+    cross-host; renderer `downloadUrlsToLocalFiles` now requires
+    `basePath`, passed by all nine export callers,
+    `CloudProjectResourcesHandler` (Downloads dir) and the mover (project
+    folder for the blob save, `assets` for downloads).
+  - UP-2: `preview-window-closed` now carries the closing window's id
+    (captured at creation — reading `.id` inside `closed` risks a destroyed
+    window), `openPreviewWindow` returns the created ids, and
+    `LocalPreviewLauncher` routes closes through one stable listener + the
+    new pure `PreviewClosedTracker` (own/handleClosed/releaseAll), removed
+    on unmount — the per-launch `removeAllListeners` clobbering is gone.
+  - UP-3: `replace_event_but_keep_existing_sub_events` now pushes an
+    error when the first replacement event cannot host the preserved
+    sub-events (which used to be silently deleted).
+  - UP-4: try/finally wrapper deletion in all six `Utils/Serializer.js`
+    functions (resource-names vector included; duplicated invalid-JSON
+    catch folded into one helper with byte-identical logging).
+  - UP-5: `launchPreview` deletes the exporter and previewExportOptions
+    on every path (try/finally), the two hot-reload `SerializerElement`s
+    included.
+  - UP-6: an explicit `meta.didModifyProject === false` now survives
+    `EditorFunctionCallRunner` (the `|| undefined` removed;
+    `EditorFunctionCallResult.didModifyProject` widened to `boolean` —
+    all consumers verified truthy-checked).
+  - UP-7: exported resolver in `InstanceTools.js`
+    (`collectIteratedInstances`/`resolveExistingInstanceIds`/
+    `makeRequestedIdByInstance`) — exact full-uuid wins, a uniquely
+    matching prefix still resolves (hosted single-prefix behavior
+    preserved), an ambiguous prefix fails the whole call listing the
+    candidate uuids; applied at FIVE sites: the audit's two plus the same
+    live pattern found in `EditorFunctions/index.js` (put_3d erase +
+    modify, and the instance-variables `instance` scope — the owner's
+    "build the missing part" rule).
+  - UP-8: resolved via the audit's alternative variant — the Polygon2d
+    ownership transfer is now DOCUMENTED at both collision-mask editor
+    sites and pinned by inverse regression tests (spy `gd.Polygon2d`
+    asserting push_back happens and delete does NOT); the add/mask logic
+    was extracted into exported helpers
+    (`addRectangleCollisionMaskTo`, `createCollisionMaskFromBounds`) for
+    testability. The delete variant is disproven in-repo (the 2026-09-24
+    WASM-heap corruption repro encoded in ByokSpriteTools); NOT deleting
+    is the status-quo behavior and cannot corrupt either binding.
+  - Docs: `audit011026.md` every token flipped to `[fixed]` (Parts 1, 2
+    and 5 rewritten for the completion session); `outofscoped.md` entries
+    for B-TOOL-11/B-MCP-13/B-UI-13/B-ARTIFACT-1 and the Polygon2d block
+    removed per the remove-when-fixed rule; `usertasks.md` Task 18 items
+    1/3/4 updated (commit contents, upstream reporting now optional, four
+    new desktop-QA additions); `AGENTS.md` §2 completion-session bullet +
+    Last updated bumped.
+  - Gates from `newIDE\app`: `npm test -- --watchAll=false --maxWorkers=1`
+    → 235 suites, 2,628 passed + 1 pre-existing skip, 0 test failures
+    (each full run flakes exactly one different untouched suite — the
+    documented O4 family; this session's runs: ByokExtraTools,
+    ByokRagIndex, LocalResourceMover, LocalResourceExternalEditors — every
+    one verified standalone-passing); `npm run lint` → 0/0; `npm run flow`
+    → No errors; `npm run check-format` → clean; electron-app changed
+    files prettier-clean; `node --check` on every touched Electron main
+    file.
+- **Bugs found (beyond the audit list, all fixed this session):**
+  - The UP-7 `startsWith` over-matching was also live in three MORE sites
+    than the audit cited (`EditorFunctions/index.js` put_3d erase/modify
+    + the instance-variables scope) — all fixed with the same resolver.
+  - `local-file-save-from-arraybuffer` wrote unvalidated renderer paths
+    (named in UP-1's title, absent from its fix proposal) — containment +
+    payload cap added.
+  - axios 0.19 forwards the Cookie header across cross-host redirects,
+    which would have re-leaked the cloud cookie on the very redirect hop
+    UP-1 gates — replaced with a per-hop-validated manual redirect walk.
+  - The two hot-reload `gd.SerializerElement`s in `launchPreview` leaked
+    on their own throw paths — folded into UP-5's try/finally.
+  - Repo anomaly: the git index tracks BOTH `AGENTS.md` and `agents.md`
+    with DIFFERENT contents at HEAD while Windows has one physical file —
+    surfaced as phantom diffs once the file was edited; owner heads-up
+    added to Task 18 item 1 (not fixable unilaterally).
+- **Issues found (not fixed):**
+  - The O4 full-run flake family grew again (four more standalone-passing
+    members observed; `outofscoped.md` updated).
+  - `PolygonHelper.spec.js` deletes a polygon pushed into a STANDALONE
+    `gd.VectorPolygon2d` and passes against real WASM — so push_back
+    copy/ownership semantics differ per vector binding; the libGD-side
+    check behind the old OOS block remains an open curiosity (moot for
+    correctness: not-deleting is safe under both semantics).
+  - `LocalPreviewLauncher.closePreview` fires its invoke without
+    `.catch`, and `PreviewWindow.closePreviewWindow` reads `.id` on
+    possibly-destroyed windows in a close race — two small pre-existing
+    nits, filed as one OOS entry.
+  - The mover's blob path downloads via renderer axios with no cap
+    (blob: URLs, same-app origin — low risk), and the MCP main aggregate
+    is process-lifetime state by design (resets on restart, like the
+    renderer ring); a timed-out call that later settles records both
+    entries (pre-existing ring semantics, now equally visible in the
+    aggregate).
+  - Pre-existing on the clean tree: `useByokChatSeam.spec` teardown
+    prints a `useEnsureExtensionInstalled` destructure TypeError (the
+    same mock-bleed the flake family shows at suite scale).
+- **Triage:** one new OOS entry (the two preview-launcher nits above);
+    four audit OOS entries + the Polygon2d block removed as fixed-and-
+    verified. `no deferred`. UT: `usertasks.md` Task 18 updated (commit
+    contents + the AGENTS.md case-duplication heads-up; upstream
+    reporting now optional; four new desktop-QA additions) — no other new
+    owner questions.
+- **Files worked on:**
+  - BYOK renderer: `AiGeneration/Byok/ByokPreviewSession.js` (+spec),
+    `AiGeneration/Byok/ByokChatPersistence.js` (+spec),
+    `AiGeneration/Byok/Mcp/ByokMcpToolHost.js` (+spec),
+    `AiGeneration/Byok/Mcp/useByokMcpServer.js` (+spec),
+    `AiGeneration/Byok/Mcp/ByokMcpSettingsCard.js` (+spec), NEW
+    `AiGeneration/Byok/Mcp/ByokMcpActivity.js` (+spec).
+  - Upstream renderer: `EditorFunctions/ApplyEventsChanges.js` (+spec),
+    `EditorFunctions/EditorFunctionCallRunner.js` (+spec),
+    `EditorFunctions/InstanceTools.js` (+spec),
+    `EditorFunctions/index.js`, `EditorFunctions/Put3dInstances.spec.js`,
+    `EditorFunctions/AddOrEditVariable.spec.js`,
+    `ExportAndShare/LocalExporters/LocalPreviewLauncher/index.js`, NEW
+    `…/LocalPreviewLauncher/PreviewClosedTracker.js` (+spec), NEW
+    `…/LocalPreviewLauncher/index.spec.js`,
+    `ExportAndShare/LocalExporters/Local{Electron,HTML5,Cordova,FacebookInstantGames,OnlineWeb,OnlineElectron,OnlineCordova,OnlineCordovaIos}Export.js`,
+    `ObjectEditor/Editors/SpriteEditor/CollisionMasksEditor/PolygonsList.js`
+    (+ NEW spec), `…/CollisionMasksEditor/CollisionMaskHelper.js` (+
+    NEW spec), `ProjectsStorage/CloudStorageProvider/CloudProjectResourcesHandler.js`,
+    `ProjectsStorage/LocalFileStorageProvider/LocalFileResourceMover.js`
+    (+spec), `Utils/LocalFileDownloader.js`, `Utils/Serializer.js`
+    (+spec), NEW `Utils/LocalFileDownloadCore.js` (+spec).
+  - Electron main: `electron-app/app/main.js`,
+    `electron-app/app/LocalFileDownloader.js`,
+    `electron-app/app/PreviewWindow.js`,
+    `electron-app/app/ByokMcpServer.js`.
+  - Docs: `REVIEW/audit011026.md`, `REVIEW/outofscoped.md`,
+    `REVIEW/usertasks.md`, `AGENTS.md`, `REVIEW/worklog.md` (this entry).

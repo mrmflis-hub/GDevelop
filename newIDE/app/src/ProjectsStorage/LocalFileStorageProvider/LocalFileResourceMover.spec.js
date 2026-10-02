@@ -24,6 +24,11 @@ const encodedPublicResourceUrl =
   'https://asset-resources.gdevelop.io/public-resources/16x16%20Dungeon%20Tileset/Armor/0a130324cd2501a97027b518b41231896a81e25034fd3a7baaca9581d079f8b6_Imp%20Run%202.png';
 const localFileUrl = 'some-local-file.png';
 const blobUrl = 'blob:http://something.com/1234567';
+// The base folder the mover passes to (and confines downloads in) the
+// local-file-download IPC (fileIdentifier of the fixture is "fake-file").
+const baseAssetsPath = path.join(path.dirname('fake-file'), 'assets');
+// The project folder the mover confines blob saves in (same fixture).
+const projectPath = path.dirname('fake-file');
 
 const makeTestProjectWithResourcesToDownload = () => {
   const { project } = makeTestProject(gd);
@@ -162,21 +167,24 @@ describe('LocalResourceMover', () => {
     ).toHaveBeenCalledWith(
       'local-file-download',
       classicUrl,
-      path.join('assets', 'file-to-download.png')
+      path.join('assets', 'file-to-download.png'),
+      baseAssetsPath
     );
     expect(
       optionalRequire.mockElectron.ipcRenderer.invoke
     ).toHaveBeenCalledWith(
       'local-file-download',
       encodedProductAuthorizedUrl,
-      path.join('assets', 'stars_levels (3) 汉字.png')
+      path.join('assets', 'stars_levels (3) 汉字.png'),
+      baseAssetsPath
     );
     expect(
       optionalRequire.mockElectron.ipcRenderer.invoke
     ).toHaveBeenCalledWith(
       'local-file-download',
       encodedPublicResourceUrl,
-      path.join('assets', 'Imp Run 2.png')
+      path.join('assets', 'Imp Run 2.png'),
+      baseAssetsPath
     );
     expect(fetchedResources.erroredResources).toEqual([]);
   });
@@ -205,21 +213,24 @@ describe('LocalResourceMover', () => {
     ).toHaveBeenCalledWith(
       'local-file-download',
       classicUrl,
-      path.join('assets', 'file-to-download.png')
+      path.join('assets', 'file-to-download.png'),
+      baseAssetsPath
     );
     expect(
       optionalRequire.mockElectron.ipcRenderer.invoke
     ).toHaveBeenCalledWith(
       'local-file-download',
       encodedProductAuthorizedUrl,
-      path.join('assets', 'stars_levels (3) 汉字.png')
+      path.join('assets', 'stars_levels (3) 汉字.png'),
+      baseAssetsPath
     );
     expect(
       optionalRequire.mockElectron.ipcRenderer.invoke
     ).toHaveBeenCalledWith(
       'local-file-download',
       encodedPublicResourceUrl,
-      path.join('assets', 'Imp Run 2.png')
+      path.join('assets', 'Imp Run 2.png'),
+      baseAssetsPath
     );
     expect(fetchedResources.erroredResources).toEqual([
       { resourceName: 'MyResourceToDownload', error: expect.any(Error) },
@@ -255,21 +266,24 @@ describe('LocalResourceMover', () => {
     ).toHaveBeenCalledWith(
       'local-file-download',
       classicUrl,
-      path.join('assets', 'file-to-download.png')
+      path.join('assets', 'file-to-download.png'),
+      baseAssetsPath
     );
     expect(
       optionalRequire.mockElectron.ipcRenderer.invoke
     ).toHaveBeenCalledWith(
       'local-file-download',
       encodedProductAuthorizedUrl,
-      path.join('assets', 'stars_levels (3) 汉字.png')
+      path.join('assets', 'stars_levels (3) 汉字.png'),
+      baseAssetsPath
     );
     expect(
       optionalRequire.mockElectron.ipcRenderer.invoke
     ).toHaveBeenCalledWith(
       'local-file-download',
       encodedPublicResourceUrl,
-      path.join('assets', 'Imp Run 2.png')
+      path.join('assets', 'Imp Run 2.png'),
+      baseAssetsPath
     );
     expect(fetchedResources.erroredResources).toEqual([]);
   });
@@ -304,7 +318,9 @@ describe('LocalResourceMover', () => {
         path.join(
           'assets',
           "My Blob Resource To Download with 汉字 and funk¥/character__'_"
-        )
+        ),
+        // The save is confined to the project folder (security fix UP-1).
+        projectPath
       );
       expect(
         optionalRequire.mockElectron.ipcRenderer.invoke
@@ -312,7 +328,8 @@ describe('LocalResourceMover', () => {
         'local-file-save-from-arraybuffer',
         'fake-array-buffer-content',
         // The filename in the metadata is used.
-        path.resolve('existing-file.png')
+        path.resolve('existing-file.png'),
+        projectPath
       );
       expect(fetchedResources.erroredResources).toEqual([]);
     });
@@ -345,7 +362,9 @@ describe('LocalResourceMover', () => {
       ).toHaveBeenCalledWith(
         'local-file-save-from-arraybuffer',
         'fake-array-buffer-content',
-        path.join('assets', 'MyBlobResourceFailingToDownload')
+        path.join('assets', 'MyBlobResourceFailingToDownload'),
+        // The save is confined to the project folder (security fix UP-1).
+        projectPath
       );
       expect(
         optionalRequire.mockElectron.ipcRenderer.invoke
@@ -353,7 +372,8 @@ describe('LocalResourceMover', () => {
         'local-file-save-from-arraybuffer',
         'fake-array-buffer-content',
         // Metadata was invalid, so the name was inferred.
-        path.join('assets', 'MyOtherBlobResourceWithInvalidMetadata')
+        path.join('assets', 'MyOtherBlobResourceWithInvalidMetadata'),
+        projectPath
       );
       expect(fetchedResources.erroredResources).toEqual([
         {

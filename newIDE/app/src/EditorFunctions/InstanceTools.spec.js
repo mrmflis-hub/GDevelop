@@ -1,5 +1,6 @@
 // @flow
 import {
+  collectIteratedInstances,
   describeInstancesInContainer,
   extractRequiredString,
   getLayerNameForMessage,
@@ -8,9 +9,12 @@ import {
   injectObjectSizeInfo,
   iterateOnInstances,
   makeGenericFailure,
+  makeRequestedIdByInstance,
   makeWrongObjectInstanceIdsFailure,
   putInstancesInContainer,
+  resolveExistingInstanceIds,
 } from './InstanceTools';
+import { unserializeFromJSObject } from '../Utils/Serializer';
 import { makeFakeLaunchFunctionOptionsWithProject } from './TestHelpers';
 import type { ObjectSizeInfo } from './Utils';
 import type { EditorFunctionGenericOutput } from './index';
@@ -53,6 +57,57 @@ const listInstances = (
     });
   });
   return instances;
+};
+
+type UuidInstanceFixture = {|
+  objectName: string,
+  x: number,
+  y: number,
+  persistentUuid: string,
+|};
+
+const makeUuidInstance = (
+  objectName: string,
+  x: number,
+  y: number,
+  persistentUuid: string
+): UuidInstanceFixture => ({ objectName, x, y, persistentUuid });
+
+// Unserialize instances with chosen persistent uuids (clearing the container),
+// so id-prefix matching can be exercised with controlled prefixes.
+const unserializeInstancesWithUuids = (
+  project: gdProject,
+  container: gdInitialInstancesContainer,
+  instances: Array<UuidInstanceFixture>
+) => {
+  unserializeFromJSObject(
+    container,
+    instances.map(({ objectName, x, y, persistentUuid }) => ({
+      name: objectName,
+      x,
+      y,
+      layer: '',
+      persistentUuid,
+    })),
+    'unserializeFrom',
+    project
+  );
+};
+
+// Two instances whose uuids share their first 6 characters ("abcdef"): the
+// id-matching must refuse such an ambiguous id instead of matching both.
+const SHARED_PREFIX = 'abcdef';
+const FIRST_UUID = 'abcdef-1111-4111-8111-111111111111';
+const SECOND_UUID = 'abcdef-2222-4222-8222-222222222222';
+
+const makeInstancesWithSharedUuidPrefix = (
+  project: gdProject,
+  container: gdInitialInstancesContainer
+) => {
+  unserializeInstancesWithUuids(project, container, [
+    makeUuidInstance('Player', 0, 0, FIRST_UUID),
+    makeUuidInstance('Player', 100, 200, SECOND_UUID),
+  ]);
 };
 
 describe('InstanceTools', () => {
@@ -196,6 +251,120 @@ describe('InstanceTools', () => {
     });
   });
 
+  describe('collectIteratedInstances', () => {
+    it('collects the instances of a container with their persistent uuids', () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+
+      const entries = collectIteratedInstances(scene.getInitialInstances());
+      expect(entries.map(entry => entry.persistentUuid)).toEqual([
+        FIRST_UUID,
+        SECOND_UUID,
+      ]);
+      // The collected entries carry live instances, not detached copies.
+      expect(entries[0].instance.getX()).toBe(0);
+      expect(entries[1].instance.getX()).toBe(100);
+    });
+  });
+
+  describe('resolveExistingInstanceIds', () => {
+    it('resolves an exact full uuid', () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+      const entries = collectIteratedInstances(scene.getInitialInstances());
+
+      const resolution = resolveExistingInstanceIds(entries, [FIRST_UUID]);
+      expect(resolution.ok).toBe(true);
+      if (!resolution.ok) return;
+      expect(resolution.matches.size).toBe(1);
+      expect(resolution.matches.get(FIRST_UUID)).toBe(entries[0].instance);
+      expect(resolution.notFound).toEqual([]);
+    });
+
+    it('resolves an unambiguous uuid prefix', () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+      const entries = collectIteratedInstances(scene.getInitialInstances());
+
+      // Only the second uuid starts with "abcdef-2".
+      const resolution = resolveExistingInstanceIds(entries, ['abcdef-2']);
+      expect(resolution.ok).toBe(true);
+      if (!resolution.ok) return;
+      expect(resolution.matches.size).toBe(1);
+      expect(resolution.matches.get('abcdef-2')).toBe(entries[1].instance);
+      expect(resolution.notFound).toEqual([]);
+    });
+
+    it('fails, listing the candidates, when the id is a prefix of several uuids', () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+      const entries = collectIteratedInstances(scene.getInitialInstances());
+
+      const resolution = resolveExistingInstanceIds(entries, [SHARED_PREFIX]);
+      expect(resolution.ok).toBe(false);
+      if (resolution.ok) return;
+      expect(resolution.error).toContain(`"${SHARED_PREFIX}"`);
+      expect(resolution.error).toContain(FIRST_UUID);
+      expect(resolution.error).toContain(SECOND_UUID);
+      expect(resolution.error).toContain('Nothing was changed');
+    });
+
+    it('prefers an exact uuid match over a longer uuid starting with it', () => {
+      const first = insertInstance(scene.getInitialInstances(), 'Player', 0, 0);
+      const second = insertInstance(
+        scene.getInitialInstances(),
+        'Player',
+        100,
+        200
+      );
+      // The second uuid starts with the whole first uuid: the exact match
+      // must win instead of failing as ambiguous.
+      const entries = [
+        { persistentUuid: 'exact-uuid', instance: first },
+        { persistentUuid: 'exact-uuid-tail', instance: second },
+      ];
+
+      const resolution = resolveExistingInstanceIds(entries, ['exact-uuid']);
+      expect(resolution.ok).toBe(true);
+      if (!resolution.ok) return;
+      expect(resolution.matches.get('exact-uuid')).toBe(first);
+      expect(resolution.notFound).toEqual([]);
+    });
+
+    it('reports ids matching no uuid as not found', () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+      const entries = collectIteratedInstances(scene.getInitialInstances());
+
+      const resolution = resolveExistingInstanceIds(entries, [
+        'zzzzzz-unknown',
+        FIRST_UUID,
+      ]);
+      expect(resolution.ok).toBe(true);
+      if (!resolution.ok) return;
+      expect(resolution.matches.size).toBe(1);
+      expect(resolution.notFound).toEqual(['zzzzzz-unknown']);
+    });
+  });
+
+  describe('makeRequestedIdByInstance', () => {
+    it('attributes each instance to the first requested id that resolved to it', () => {
+      const first = insertInstance(scene.getInitialInstances(), 'Player', 0, 0);
+      const second = insertInstance(
+        scene.getInitialInstances(),
+        'Player',
+        100,
+        200
+      );
+      // "short-id" and "longer-id..." both resolve to the same instance.
+      const matches = new Map<string, gdInitialInstance>([
+        ['short-id', first],
+        ['longer-id-of-the-same-instance', first],
+        ['other-id', second],
+      ]);
+
+      const requestedIdByInstance = makeRequestedIdByInstance(matches);
+      expect(requestedIdByInstance.size).toBe(2);
+      expect(requestedIdByInstance.get(first)).toBe('short-id');
+      expect(requestedIdByInstance.get(second)).toBe('other-id');
+    });
+  });
+
   describe('describeInstancesInContainer', () => {
     it('serializes the instances of a scene layout', () => {
       insertInstance(scene.getInitialInstances(), 'Player', 10, 20);
@@ -333,6 +502,138 @@ describe('InstanceTools', () => {
 
       expect(output.success).toBe(true);
       expect(listInstances(scene.getInitialInstances())).toHaveLength(0);
+    });
+
+    it('fails and modifies nothing when an id matches several instances', async () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+
+      const output = await putInstancesInContainer(
+        makePutOptions(
+          project,
+          scene.getInitialInstances(),
+          scene,
+          {
+            layer_name: '',
+            brush_kind: 'point',
+            brush_position: '500, 500',
+            existing_instance_ids: SHARED_PREFIX,
+          },
+          () => {}
+        )
+      );
+
+      expect(output.success).toBe(false);
+      expect(output.message).toContain('ambiguous');
+      expect(output.message).toContain(FIRST_UUID);
+      expect(output.message).toContain(SECOND_UUID);
+      // Neither instance was moved.
+      const positions = listInstances(scene.getInitialInstances()).map(
+        ({ x, y }) => ({ x, y })
+      );
+      expect(positions).toEqual([{ x: 0, y: 0 }, { x: 100, y: 200 }]);
+    });
+
+    it('fails and erases nothing when an id matches several instances', async () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+
+      const output = await putInstancesInContainer(
+        makePutOptions(
+          project,
+          scene.getInitialInstances(),
+          scene,
+          {
+            layer_name: '',
+            brush_kind: 'erase',
+            existing_instance_ids: SHARED_PREFIX,
+          },
+          () => {}
+        )
+      );
+
+      expect(output.success).toBe(false);
+      expect(output.message).toContain('ambiguous');
+      expect(listInstances(scene.getInitialInstances())).toHaveLength(2);
+    });
+
+    it('resolves a full uuid to its single instance', async () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+
+      const output = await putInstancesInContainer(
+        makePutOptions(
+          project,
+          scene.getInitialInstances(),
+          scene,
+          {
+            layer_name: '',
+            brush_kind: 'point',
+            brush_position: '500, 500',
+            existing_instance_ids: FIRST_UUID,
+          },
+          () => {}
+        )
+      );
+
+      expect(output.success).toBe(true);
+      expect(output.message).toContain('Repositioned 1 instance');
+      // Only the first instance was moved, the second one is untouched.
+      const positions = listInstances(scene.getInitialInstances()).map(
+        ({ x, y }) => ({ x, y })
+      );
+      expect(positions).toEqual([{ x: 500, y: 500 }, { x: 100, y: 200 }]);
+    });
+
+    it('still resolves a unique id prefix, as reported by describe_instances', async () => {
+      makeInstancesWithSharedUuidPrefix(project, scene.getInitialInstances());
+
+      const output = await putInstancesInContainer(
+        makePutOptions(
+          project,
+          scene.getInitialInstances(),
+          scene,
+          {
+            layer_name: '',
+            brush_kind: 'point',
+            brush_position: '500, 500',
+            existing_instance_ids: 'abcdef-2',
+          },
+          () => {}
+        )
+      );
+
+      expect(output.success).toBe(true);
+      // Only the second instance (whose uuid starts with "abcdef-2") moved.
+      const positions = listInstances(scene.getInitialInstances()).map(
+        ({ x, y }) => ({ x, y })
+      );
+      expect(positions).toEqual([{ x: 0, y: 0 }, { x: 500, y: 500 }]);
+    });
+
+    it('still reports the not-found failure for an unknown id', async () => {
+      insertInstance(scene.getInitialInstances(), 'Player', 0, 0);
+
+      const output = await putInstancesInContainer(
+        makePutOptions(
+          project,
+          scene.getInitialInstances(),
+          scene,
+          {
+            layer_name: '',
+            brush_kind: 'none',
+            existing_instance_ids: 'zzzzzz-unknown',
+            instances_z_order: 42,
+          },
+          () => {}
+        )
+      );
+
+      expect(output.success).toBe(false);
+      expect(output.message).toContain(
+        'None of the specified instance ids were found: zzzzzz-unknown'
+      );
+      // The unmatched instance is untouched.
+      const instances = listInstances(scene.getInitialInstances());
+      expect(instances).toHaveLength(1);
+      expect(instances[0].x).toBe(0);
     });
 
     it('fails with the container label when the layer does not exist', async () => {

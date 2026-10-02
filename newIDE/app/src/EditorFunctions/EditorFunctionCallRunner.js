@@ -265,10 +265,12 @@ export const processEditorFunctionCalls = async ({
       const editorFunctionDef = editorFunction || editorFunctionWithoutProject;
       // `run_script` sets `meta.didModifyProject` explicitly: a script can
       // apply project-changing calls before failing, so its "did modify" is
-      // NOT `modifiesProject && success` — honor the reported value when given.
+      // NOT `modifiesProject && success` — honor the reported value when
+      // given, including an explicit false (which must stay false, not
+      // collapse into the unset case).
       const didModifyProject =
         meta && typeof meta.didModifyProject === 'boolean'
-          ? meta.didModifyProject || undefined
+          ? meta.didModifyProject
           : editorFunctionDef && editorFunctionDef.modifiesProject && success
           ? true
           : undefined;

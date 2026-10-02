@@ -1080,22 +1080,32 @@ No ML experience needed; the notebook is self-contained.
 Full record: `REVIEW/audit011026.md` (Part 1 BYOK, Part 2 upstream).
 Recommended dispositions, one line each:
 
-1. **Commit the session.** The tree carries the audit fixes (55 findings,
+1. **Commit the session(s).** The tree carries the audit fixes (55 findings,
    prompt byok-v11) AND the staged `MinifiedDocs.generated.js` — the
    artifact MUST be in the commit or fresh clones fail every gate
-   (`[B-ARTIFACT-1]`).
+   (`[B-ARTIFACT-1]`). Update 2026-10-02: the artifact already landed in
+   `943379bff0`; the tree now ALSO carries the completion session's fixes
+   (B-TOOL-11/B-MCP-13/B-UI-13 + upstream UP-1…UP-8, ~30 files, all gates
+   green) awaiting the same review-and-commit. Heads-up found 2026-10-02:
+   the index tracks BOTH `AGENTS.md` and `agents.md` as separate entries
+   with DIFFERENT contents at HEAD (a case-duplication; one physical file
+   exists on Windows) — drop one spelling when committing or the anomaly
+   keeps surfacing as phantom diffs.
 2. **Task 17.2 becomes a v3 bundle.** The corpus hash changed on
    2026-10-01 (tags folded into the hash with delimiters, map-chunk tag
    split, two EventScript example fixes, fence-aware chunking) — the
    built v2 (`571d1b30`) is stale and the import will (correctly) refuse
    it; rebuild via `scripts/byok-embedder/build-byok-rag-bundle.js`
    before uploading.
-3. **Report the Part-2 upstream findings** (UP-1..UP-8, each with a
-   proposed fix + test) to upstream when you open that channel; UP-1
-   (cookie sent to arbitrary hosts + unvalidated download path in
-   `local-file-download`) is the one worth reporting first — BYOK no
-   longer uses that handler for model-chosen URLs, but every other caller
-   keeps the exposure.
+3. **Report the Part-2 upstream findings** (UP-1..UP-8) to upstream when
+   you open that channel; UP-1 (cookie sent to arbitrary hosts +
+   unvalidated download path in `local-file-download`) is the one worth
+   reporting first. Update 2026-10-02: the owner ordered all eight
+   IMPLEMENTED in-tree (owner order: "this includes fixes to upstream
+   errors — nothing deferred") — they are fixed with tests in this
+   checkout (see `audit011026.md` Part 2 for the applied diffs);
+   reporting the patches upstream is now the only remaining action, at
+   your discretion.
 4. **Desktop QA additions for the fixed behaviors** (fold into Tasks
    13/16/17.5 as convenient): provider "Test" uses the provider's own
    model; providers-only config turns the toggle green and starts chats;
@@ -1105,4 +1115,12 @@ Recommended dispositions, one line each:
    setup survives a restart on the same port; MCP client cancellation
    actually cancels; `read_doc_page` answers the docs-min drill-down
    offline (the Task 17.5.2 text assumed it existed — it did not until
-   now).
+   now). Added 2026-10-02 (completion-session behaviors): a user preview
+   launched during a BYOK `start_preview` no longer steals the debugger
+   binding (pause/profile hit the BYOK preview); the MCP activity log in
+   Preferences shows calls made through OTHER editor windows and Clear
+   clears everywhere; the chat-history rail stays instant on projects
+   with many saved chats (legacy files reconcile once on first listing);
+   local exporters still download resources fine through the now
+   confined `local-file-download` (path containment + gdevelop.io-only
+   cookie — worth one online-export smoke test).

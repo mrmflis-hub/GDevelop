@@ -27,6 +27,11 @@ if (!(window: any).matchMedia) {
 // is immune.
 let mockElectronModule: any = null;
 const mockIpcInvoke = (jest.fn(): any);
+const mockIpcSend = (jest.fn(): any);
+
+const makeDesktopElectron = () => ({
+  ipcRenderer: { invoke: mockIpcInvoke, send: mockIpcSend },
+});
 
 jest.mock('../../../Utils/OptionalRequire', () => ({
   __esModule: true,
@@ -39,6 +44,7 @@ const FlatButton = require('../../../UI/FlatButton').default;
 const ByokMcpSettingsCardModule = require('./ByokMcpSettingsCard');
 const ByokMcpSettingsCard = ByokMcpSettingsCardModule.ByokMcpSettingsCard;
 const {
+  clearByokMcpActivity,
   executeByokMcpToolCall,
   makeByokMcpToolHost,
   setByokMcpToolHost,
@@ -60,6 +66,18 @@ const makeMcpServer = (overrides?: Object) => ({
   accessMode: 'read-write',
   ...(DEFAULT_BYOK_SETTINGS: any).mcpServer,
   ...overrides,
+});
+
+// A main-side aggregate entry, as `byok-mcp-status` serves them: by default
+// from another window, newer than anything the local ring can hold today.
+const makeRemoteActivityEntry = (overrides?: Object) => ({
+  at: '2027-01-01T00:00:00.000Z',
+  tool: 'other_window_tool',
+  argsPreview: '{}',
+  outcome: 'completed',
+  didModifyProject: false,
+  durationMs: 12,
+  ...(overrides || {}),
 });
 
 const renderCard = async (props: {
@@ -103,6 +121,7 @@ beforeEach(() => {
     port: 51234,
     discoveryPath: 'C:/fake/gdevelop-mcp-endpoint.json',
   });
+  clearByokMcpActivity();
   setByokMcpToolHost(null);
 });
 
@@ -128,7 +147,7 @@ describe('ByokMcpSettingsCard', () => {
   });
 
   it('shows the running endpoint and discovery path when enabled on desktop', async () => {
-    mockElectronModule = { ipcRenderer: { invoke: mockIpcInvoke } };
+    mockElectronModule = makeDesktopElectron();
     const component = await renderCard({
       mcpServer: makeMcpServer({ enabled: true }),
       onChange: jest.fn(),
@@ -140,7 +159,7 @@ describe('ByokMcpSettingsCard', () => {
   });
 
   it('toggles the server through onChange', async () => {
-    mockElectronModule = { ipcRenderer: { invoke: mockIpcInvoke } };
+    mockElectronModule = makeDesktopElectron();
     const onChange = (jest.fn(): any);
     const component = await renderCard({
       mcpServer: makeMcpServer({ enabled: true }),
@@ -154,7 +173,7 @@ describe('ByokMcpSettingsCard', () => {
   });
 
   it('changes the access mode through onChange', async () => {
-    mockElectronModule = { ipcRenderer: { invoke: mockIpcInvoke } };
+    mockElectronModule = makeDesktopElectron();
     const onChange = (jest.fn(): any);
     const component = await renderCard({
       mcpServer: makeMcpServer({ enabled: true, accessMode: 'read-write' }),
@@ -169,7 +188,7 @@ describe('ByokMcpSettingsCard', () => {
   });
 
   it('lists the recent activity and clears it', async () => {
-    mockElectronModule = { ipcRenderer: { invoke: mockIpcInvoke } };
+    mockElectronModule = makeDesktopElectron();
     const host = makeByokMcpToolHost(
       ({
         executeRegistryTool: jest.fn(),
@@ -211,5 +230,107 @@ describe('ByokMcpSettingsCard', () => {
     });
     const renderedAfterClear = JSON.stringify(component.toJSON());
     expect(renderedAfterClear).not.toContain('read_scene_events');
+  });
+
+  it('merges the main-side aggregate into the activity list (B-MCP-13)', async () => {
+    mockElectronModule = makeDesktopElectron();
+    mockIpcInvoke.mockResolvedValue({
+      ok: true,
+      running: true,
+      port: 51234,
+      discoveryPath: 'C:/fake/gdevelop-mcp-endpoint.json',
+      activity: [makeRemoteActivityEntry()],
+    });
+    const host = makeByokMcpToolHost(
+      ({
+        executeRegistryTool: jest.fn(),
+        executeExtraTool: jest.fn(),
+        getExtraTool: () => null,
+        isExtraToolShadowedByRegistry: () => false,
+        editorFunctions: {},
+        editorFunctionsWithoutProject: {},
+        getProject: () => null,
+        getSettings: () => ({
+          mcpServer: { enabled: true, accessMode: 'read-write' },
+        }),
+      }: any)
+    );
+    setByokMcpToolHost(host);
+    await executeByokMcpToolCall('read_scene_events', {}, { timeoutMs: 1000 });
+
+    const component = await renderCard({
+      mcpServer: makeMcpServer({ enabled: true }),
+      onChange: jest.fn(),
+    });
+    const rendered = JSON.stringify(component.toJSON());
+    // This window's own entry...
+    expect(rendered).toContain('read_scene_events');
+    // ...and the other window's entry from the main-side aggregate.
+    expect(rendered).toContain('other_window_tool');
+  });
+
+  it('falls back to the local ring alone when the status invoke fails', async () => {
+    mockElectronModule = makeDesktopElectron();
+    mockIpcInvoke.mockRejectedValue(new Error('no handler'));
+    const host = makeByokMcpToolHost(
+      ({
+        executeRegistryTool: jest.fn(),
+        executeExtraTool: jest.fn(),
+        getExtraTool: () => null,
+        isExtraToolShadowedByRegistry: () => false,
+        editorFunctions: {},
+        editorFunctionsWithoutProject: {},
+        getProject: () => null,
+        getSettings: () => ({
+          mcpServer: { enabled: true, accessMode: 'read-write' },
+        }),
+      }: any)
+    );
+    setByokMcpToolHost(host);
+    await executeByokMcpToolCall('read_scene_events', {}, { timeoutMs: 1000 });
+
+    const component = await renderCard({
+      mcpServer: makeMcpServer({ enabled: true }),
+      onChange: jest.fn(),
+    });
+    const rendered = JSON.stringify(component.toJSON());
+    expect(rendered).toContain('read_scene_events');
+    expect(rendered).toContain('unavailable');
+  });
+
+  it('clears the merged log in this window and the main aggregate', async () => {
+    mockElectronModule = makeDesktopElectron();
+    mockIpcInvoke.mockResolvedValue({
+      ok: true,
+      running: true,
+      port: 51234,
+      discoveryPath: 'C:/fake/gdevelop-mcp-endpoint.json',
+      activity: [makeRemoteActivityEntry()],
+    });
+    const component = await renderCard({
+      mcpServer: makeMcpServer({ enabled: true }),
+      onChange: jest.fn(),
+    });
+    const rendered = JSON.stringify(component.toJSON());
+    expect(rendered).toContain('other_window_tool');
+
+    const clearButton = component.root
+      .findAllByType(FlatButton)
+      .find(button => {
+        const label = button.props.label;
+        return (
+          label &&
+          label.props &&
+          label.props.id &&
+          label.props.id.includes('Clear')
+        );
+      });
+    if (!clearButton) throw new Error('The clear button was not rendered');
+    await act(async () => {
+      clearButton.props.onClick();
+    });
+    expect(mockIpcSend).toHaveBeenCalledWith('byok-mcp-activity-clear');
+    const renderedAfterClear = JSON.stringify(component.toJSON());
+    expect(renderedAfterClear).not.toContain('other_window_tool');
   });
 });

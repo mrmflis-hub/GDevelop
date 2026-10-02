@@ -19,11 +19,13 @@ const { BrowserWindow } = require('electron');
 //     -> HTTP response.
 //
 // IPC channels registered here:
-//   byok-mcp-set-enabled   (renderer -> main, invoke) start/stop the endpoint
-//   byok-mcp-status        (renderer -> main, invoke) current state
-//   byok-mcp-host-status   (renderer -> main) announce the tool host readiness
-//   byok-mcp-request       (main -> renderer) a forwarded JSON-RPC message
-//   byok-mcp-response      (renderer -> main) the JSON-RPC response object
+//   byok-mcp-set-enabled      (renderer -> main, invoke) start/stop the endpoint
+//   byok-mcp-status           (renderer -> main, invoke) current state
+//   byok-mcp-host-status      (renderer -> main) announce the tool host readiness
+//   byok-mcp-activity         (renderer -> main) a mirrored tool-call activity entry
+//   byok-mcp-activity-clear   (renderer -> main) wipe the aggregated activity log
+//   byok-mcp-request          (main -> renderer) a forwarded JSON-RPC message
+//   byok-mcp-response         (renderer -> main) the JSON-RPC response object
 //
 // The adapter finds the endpoint through the discovery file
 // (`gdevelop-mcp-endpoint.json` in userData: port, token, pid). The endpoint
@@ -62,6 +64,40 @@ const readySenders = new Set();
 let forwardCounter = 0;
 // Senders that already carry the destroyed hook (audit011026 B-MCP-7).
 const sendersWithDestroyedHook = new WeakSet();
+
+// Mirrors BYOK_MCP_ACTIVITY_CAPACITY in the renderer's Flow module
+// (ByokMcpToolHost.js) — main cannot import that module, so the value is
+// duplicated here on purpose.
+const MAX_ACTIVITY_ENTRIES = 200;
+const ACTIVITY_OUTCOMES = new Set([
+  'completed',
+  'rejected',
+  'failed',
+  'timeout',
+  'cancelled',
+]);
+// The aggregate activity ring (audit011026 B-MCP-13): every renderer mirrors
+// its recorded entries here, so the settings card can show every window's
+// calls, not only its own. Oldest first (index 0), like the renderer's ring;
+// outlives enable/disable cycles — it is a log, not server state.
+const activityAggregate = [];
+
+const isValidActivityEntry = entry => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  if (typeof entry.at !== 'string') return false;
+  if (typeof entry.tool !== 'string') return false;
+  if (typeof entry.argsPreview !== 'string') return false;
+  if (!ACTIVITY_OUTCOMES.has(entry.outcome)) return false;
+  if (typeof entry.didModifyProject !== 'boolean') return false;
+  return typeof entry.durationMs === 'number';
+};
+
+const recordActivityEntry = entry => {
+  activityAggregate.push(entry);
+  if (activityAggregate.length > MAX_ACTIVITY_ENTRIES) {
+    activityAggregate.shift();
+  }
+};
 
 const getDiscoveryFilePath = app =>
   path.join(app.getPath('userData'), DISCOVERY_FILE_NAME);
@@ -437,7 +473,19 @@ const registerByokMcpServer = (ipcMain, app) => {
     port: serverState ? serverState.port : null,
     protocolVersion: MCP_PROTOCOL_VERSION,
     discoveryPath: getDiscoveryFilePath(app),
+    // The cross-window activity aggregate, newest first (audit011026
+    // B-MCP-13): the renderer merges it with its own ring for display.
+    activity: activityAggregate.slice().reverse(),
   }));
+  ipcMain.on('byok-mcp-activity', (event, entry) => {
+    // A renderer (or anything injecting into one) may send garbage: the
+    // entry shape is validated before it can reach the aggregate.
+    if (!isValidActivityEntry(entry)) return;
+    recordActivityEntry(entry);
+  });
+  ipcMain.on('byok-mcp-activity-clear', () => {
+    activityAggregate.length = 0;
+  });
   ipcMain.on('byok-mcp-host-status', (event, payload) => {
     const sender = event.sender;
     const isReady = Boolean(payload && payload.ready);
