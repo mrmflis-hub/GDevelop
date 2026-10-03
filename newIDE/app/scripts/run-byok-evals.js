@@ -83,26 +83,49 @@ const jsonContainsFragment = (value, fragment) => {
 
 // ---- Event-logic tasks (10): the model writes event batches. ----
 
+/**
+ * The EventScript text the agent sent, whatever shape it used: the
+ * `event_script` string, or the `event_script` of each event batch (the
+ * batches are EventScript too — see the add_scene_events schema).
+ */
+const readEventScriptText = args => {
+  if (!args || typeof args !== 'object') return '';
+  if (typeof args.event_script === 'string') return args.event_script;
+  const batches = Array.isArray(args.event_batches) ? args.event_batches : [];
+  return batches
+    .map(batch =>
+      batch && typeof batch.event_script === 'string' ? batch.event_script : ''
+    )
+    .join('\n');
+};
+
+/**
+ * Score an event-logic answer against the EventScript the LOCAL WRITER
+ * actually accepts.
+ *
+ * The scorers used to grep for the hosted backend's serialized
+ * instruction vocabulary (`CreerObjet`, `DepartDeLaScene`, `ChangeScene`,
+ * `BuiltinCommonInstructions::Timer`): the local writer refuses that shape,
+ * so the harness failed every answer in the only format the real tool
+ * accepts and passed answers the real tool would reject — the scores
+ * measured the wrong thing entirely (audit100226 SCRIPT-1).
+ */
 const eventBatchHasStandardEvent = (
   args,
   conditionFragment,
   actionFragment
 ) => {
-  const batches =
-    args && Array.isArray(args.event_batches)
-      ? args.event_batches
-      : args && args.events
-      ? args.events
-      : null;
-  if (!batches) return fail('No event_batches found in the arguments.');
-  const serialized = JSON.stringify(batches);
-  if (conditionFragment && !serialized.includes(conditionFragment)) {
-    return fail(`Missing condition marker "${conditionFragment}".`);
+  const script = readEventScriptText(args);
+  if (!script.trim()) {
+    return fail('No event_script (EventScript) found in the arguments.');
   }
-  if (actionFragment && !serialized.includes(actionFragment)) {
-    return fail(`Missing action marker "${actionFragment}".`);
+  if (conditionFragment && !script.includes(conditionFragment)) {
+    return fail(`Missing condition "${conditionFragment}" in the EventScript.`);
   }
-  return pass('Event batch carries the expected condition and action.');
+  if (actionFragment && !script.includes(actionFragment)) {
+    return fail(`Missing action "${actionFragment}" in the EventScript.`);
+  }
+  return pass('The EventScript carries the expected condition and action.');
 };
 
 const eventLogicScorers = {
@@ -110,7 +133,7 @@ const eventLogicScorers = {
     const call = collectToolCall(result, 'add_scene_events');
     const args = parseArgs(call);
     if (!args) return fail('No add_scene_events call found.');
-    const check = eventBatchHasStandardEvent(args, 'Timer', 'CreerObjet');
+    const check = eventBatchHasStandardEvent(args, 'Timer', 'Create(');
     if (!check.passed) return check;
     if (!jsonContainsFragment(args, 'Coin')) return fail('No "Coin" created.');
     return pass('Timer condition and coin creation present.');
@@ -124,10 +147,12 @@ const eventLogicScorers = {
   'enemy-patrol-left-right': result => {
     const args = parseArgs(collectToolCall(result, 'add_scene_events'));
     if (!args) return fail('No add_scene_events call found.');
-    const serialized = JSON.stringify(args);
-    if (!serialized.includes('Force')) return fail('No force-based movement.');
-    if (!serialized.includes('XDirection')) return fail('No XDirection flip.');
-    return pass('Patrol with direction flip described.');
+    const script = readEventScriptText(args);
+    if (!script.includes('Force')) return fail('No force-based movement.');
+    if (!/Direction|Angle/.test(script)) {
+      return fail('No direction flip for the patrol turn-around.');
+    }
+    return pass('Patrol with a direction flip described.');
   },
   'jump-when-space-pressed': result => {
     const args = parseArgs(collectToolCall(result, 'add_scene_events'));
@@ -152,7 +177,7 @@ const eventLogicScorers = {
     if (!args) return fail('No add_scene_events call found.');
     const check = eventBatchHasStandardEvent(args, 'Timer', null);
     if (!check.passed) return check;
-    if (!jsonContainsFragment(args, 'ResetTimer')) {
+    if (!readEventScriptText(args).includes('ResetTimer')) {
       return fail('The timer is never reset (event would fire every frame).');
     }
     return pass('Timer condition with reset present.');
@@ -160,25 +185,23 @@ const eventLogicScorers = {
   'delete-object-when-offscreen': result => {
     const args = parseArgs(collectToolCall(result, 'add_scene_events'));
     if (!args) return fail('No add_scene_events call found.');
-    const check = eventBatchHasStandardEvent(
-      args,
-      'DepartDeLaScene',
-      'Supprimer'
-    );
+    const check = eventBatchHasStandardEvent(args, 'DepartScene', 'Delete(');
     return check;
   },
   'scene-change-on-goal': result => {
     const args = parseArgs(collectToolCall(result, 'add_scene_events'));
     if (!args) return fail('No add_scene_events call found.');
-    const check = eventBatchHasStandardEvent(args, 'Collision', 'ChangeScene');
+    const check = eventBatchHasStandardEvent(args, 'Collision', 'Scene(');
     return check;
   },
   'while-loop-spawn-grid': result => {
     const args = parseArgs(collectToolCall(result, 'add_scene_events'));
     if (!args) return fail('No add_scene_events call found.');
-    const serialized = JSON.stringify(args);
-    if (!serialized.includes('While')) return fail('No "While" event used.');
-    if (!jsonContainsFragment(args, 'CreerObjet')) {
+    const script = readEventScriptText(args);
+    if (!script.split('\n').some(line => /^\s*while\b/.test(line))) {
+      return fail('No "while" event used.');
+    }
+    if (!script.includes('Create(')) {
       return fail('No object creation inside the while loop.');
     }
     return pass('While loop with creation present.');
@@ -493,7 +516,9 @@ const authoringReachScorers = {
     if (!hasContent && !hasBatches) {
       return fail('No event_script or event_batches content.');
     }
-    return pass('The sheet creation call carries scene association and content.');
+    return pass(
+      'The sheet creation call carries scene association and content.'
+    );
   },
   'external-layout-spawn': result => {
     const args = parseArgs(
@@ -518,7 +543,9 @@ const authoringReachScorers = {
       return fail('list_effects must be called before choosing an effect.');
     }
     const changeArgs =
-      parseArgs(collectToolCall(result, 'change_scene_properties_layers_effects_groups')) ||
+      parseArgs(
+        collectToolCall(result, 'change_scene_properties_layers_effects_groups')
+      ) ||
       parseArgs(collectToolCall(result, 'change_object_properties_effects'));
     if (!changeArgs) return fail('No effect change call found.');
     const serialized = JSON.stringify(changeArgs);
@@ -538,7 +565,11 @@ const authoringReachScorers = {
     if (!opNames.includes('set_frame_image')) {
       return fail('No set_frame_image operation.');
     }
-    if (!opNames.some(name => name.startsWith('set_') && name !== 'set_frame_image')) {
+    if (
+      !opNames.some(
+        name => name.startsWith('set_') && name !== 'set_frame_image'
+      )
+    ) {
       return fail('No second operation family exercised.');
     }
     return pass('The sprite edit mixes frame and property operations.');
@@ -549,7 +580,10 @@ const authoringReachScorers = {
     const entries = Array.isArray(args.entries) ? args.entries : [];
     if (entries.length === 0) return fail('No entries.');
     const hasUrl = entries.some(
-      entry => entry && typeof entry.source === 'string' && /^https?:\/\//.test(entry.source)
+      entry =>
+        entry &&
+        typeof entry.source === 'string' &&
+        /^https?:\/\//.test(entry.source)
     );
     if (!hasUrl) return fail('No URL source in the entries.');
     return pass('The import call carries a URL entry.');
@@ -557,10 +591,15 @@ const authoringReachScorers = {
   'custom-object-children': result => {
     const args = parseArgs(collectToolCall(result, 'change_custom_object'));
     if (!args) return fail('No change_custom_object call found.');
-    const children = Array.isArray(args.children_to_add) ? args.children_to_add : [];
+    const children = Array.isArray(args.children_to_add)
+      ? args.children_to_add
+      : [];
     if (children.length === 0) return fail('No children_to_add.');
     const wellFormed = children.every(
-      child => child && typeof child.name === 'string' && typeof child.object_type === 'string'
+      child =>
+        child &&
+        typeof child.name === 'string' &&
+        typeof child.object_type === 'string'
     );
     if (!wellFormed) {
       return fail('A child lacks name or object_type.');
@@ -575,7 +614,9 @@ const discoveryScorers = {
   'starter-template-pick': result => {
     const listCall = findToolCall(result, 'get_game_starter_summary');
     if (!listCall) {
-      return fail('get_game_starter_summary must be called to pick a real slug.');
+      return fail(
+        'get_game_starter_summary must be called to pick a real slug.'
+      );
     }
     const initArgs = parseArgs(collectToolCall(result, 'initialize_project'));
     if (!initArgs) return fail('No initialize_project call found.');
@@ -583,30 +624,51 @@ const discoveryScorers = {
     if (typeof slug !== 'string' || !slug) {
       return fail('initialize_project carries no template_slug.');
     }
-    return pass(`The starter "${slug}" comes from the catalog and feeds initialize_project.`);
+    return pass(
+      `The starter "${slug}" comes from the catalog and feeds initialize_project.`
+    );
   },
   'asset-search-then-install': result => {
-    const searchArgs = parseArgs(collectToolCall(result, 'search_object_asset_store'));
+    const searchArgs = parseArgs(
+      collectToolCall(result, 'search_object_asset_store')
+    );
     if (!searchArgs || typeof searchArgs.search_terms !== 'string') {
       return fail('No search_object_asset_store call with search_terms.');
     }
-    const createArgs = parseArgs(collectToolCall(result, 'create_or_replace_object'));
+    const createArgs = parseArgs(
+      collectToolCall(result, 'create_or_replace_object')
+    );
     if (!createArgs || typeof createArgs.search_terms !== 'string') {
-      return fail('No create_or_replace_object call with search_terms (the install path).');
+      return fail(
+        'No create_or_replace_object call with search_terms (the install path).'
+      );
     }
-    return pass('Searched the store, then installed through create_or_replace_object.');
+    return pass(
+      'Searched the store, then installed through create_or_replace_object.'
+    );
   },
   'resource-search-then-import': result => {
-    const searchArgs = parseArgs(collectToolCall(result, 'search_resource_store'));
+    const searchArgs = parseArgs(
+      collectToolCall(result, 'search_resource_store')
+    );
     if (!searchArgs || typeof searchArgs.search_terms !== 'string') {
       return fail('No search_resource_store call with search_terms.');
     }
-    const importArgs = parseArgs(collectToolCall(result, 'import_project_resources'));
-    if (!importArgs || !Array.isArray(importArgs.entries) || importArgs.entries.length === 0) {
+    const importArgs = parseArgs(
+      collectToolCall(result, 'import_project_resources')
+    );
+    if (
+      !importArgs ||
+      !Array.isArray(importArgs.entries) ||
+      importArgs.entries.length === 0
+    ) {
       return fail('No import_project_resources call with entries.');
     }
     const hasUrl = importArgs.entries.some(
-      entry => entry && typeof entry.source === 'string' && /^https?:\/\//.test(entry.source)
+      entry =>
+        entry &&
+        typeof entry.source === 'string' &&
+        /^https?:\/\//.test(entry.source)
     );
     if (!hasUrl) return fail('No URL entry imported from the store results.');
     return pass('Searched the resource store, then imported the url.');
@@ -614,7 +676,9 @@ const discoveryScorers = {
   'notes-read-before-build': result => {
     const readCall = findToolCall(result, 'read_project_notes');
     if (!readCall) {
-      return fail('read_project_notes must be called before continuing an existing project.');
+      return fail(
+        'read_project_notes must be called before continuing an existing project.'
+      );
     }
     return pass('The persistent notes were read first.');
   },
@@ -624,12 +688,17 @@ const discoveryScorers = {
       return fail('No profile_runtime call found.');
     }
     const controlCalls = result.toolCalls.filter(
-      call => call.name === 'control_runtime' || call.name === 'read_runtime_details'
+      call =>
+        call.name === 'control_runtime' || call.name === 'read_runtime_details'
     );
     if (controlCalls.length === 0) {
-      return fail('No control_runtime/read_runtime_details call to pair with the profile.');
+      return fail(
+        'No control_runtime/read_runtime_details call to pair with the profile.'
+      );
     }
-    return pass('The runtime was profiled and inspected through the debugger channel.');
+    return pass(
+      'The runtime was profiled and inspected through the debugger channel.'
+    );
   },
 };
 
@@ -751,9 +820,9 @@ async function runJudgePass({ results, judgeModel, sendJudgeCompletion }) {
           {
             role: 'user',
             content:
-              `Task ${result.taskId} (${result.category}) failed the mechanical scorer: ${
-                result.reason
-              }. ` +
+              `Task ${result.taskId} (${
+                result.category
+              }) failed the mechanical scorer: ${result.reason}. ` +
               `Rounds used: ${result.rounds}, tool calls: ${
                 result.toolCalls
               }. ` +
@@ -1016,7 +1085,11 @@ async function main() {
     );
     fs.writeFileSync(
       checkpointPath,
-      JSON.stringify({ modelName: model, results, writtenAt: new Date().toISOString() }, null, 2),
+      JSON.stringify(
+        { modelName: model, results, writtenAt: new Date().toISOString() },
+        null,
+        2
+      ),
       'utf8'
     );
   }

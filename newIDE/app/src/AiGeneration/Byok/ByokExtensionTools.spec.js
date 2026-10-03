@@ -134,7 +134,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
       {
         extension_name: 'CoinLogic',
         custom_behavior_name: 'Magnet',
-        function_name: 'doStepPreEvents',
+        function_name: 'applyMagnetForce',
         function_type: 'Action',
         event_script: 'always:\n  Wait(0.1)',
       },
@@ -169,12 +169,12 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
       .getEventsBasedBehaviors()
       .get('Magnet')
       .getEventsFunctions();
-    expect(magnetFunctions.hasEventsFunctionNamed('doStepPreEvents')).toBe(
+    expect(magnetFunctions.hasEventsFunctionNamed('applyMagnetForce')).toBe(
       true
     );
     expect(
       magnetFunctions
-        .getEventsFunction('doStepPreEvents')
+        .getEventsFunction('applyMagnetForce')
         .getEvents()
         .getEventsCount()
     ).toBeGreaterThan(0);
@@ -827,5 +827,78 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     expect(removed.output.success).toBe(true);
     expect(removed.output.dependencies).toEqual([]);
     expect(extension.getAllDependencies().size()).toBe(0);
+  });
+});
+
+describe('ByokExtensionTools: reserved lifecycle names (audit100226 UP-12)', () => {
+  let project: any;
+  let collaborators: any;
+  const runTool = async (name: string, args: Object) => {
+    const tool = getByokExtensionTools().find(entry => entry.name === name);
+    if (!tool) throw new Error(`Unknown tool: ${name}`);
+    return tool.run(args, collaborators);
+  };
+
+  beforeEach(() => {
+    project = gd.ProjectHelper.createNewGDJSProject();
+    collaborators = {
+      getProject: () => project,
+      reloadEventsFunctionsExtensions: jest.fn(),
+      reloadEventsFunctionsExtensionMetadata: jest.fn(),
+    };
+  });
+
+  it('refuses a BEHAVIOR lifecycle name (the engine creates it at runtime)', async () => {
+    const created = await runTool('create_extension', {
+      extension_name: 'MagnetLogic',
+    });
+    expect(created.output.success).toBe(true);
+    // The scope must exist before the reserved-name check is reached.
+    await runTool('create_custom_behavior', {
+      extension_name: 'MagnetLogic',
+      custom_behavior_name: 'Magnet',
+    });
+    const refusal = await runTool('create_custom_function', {
+      extension_name: 'MagnetLogic',
+      custom_behavior_name: 'Magnet',
+      function_name: 'doStepPreEvents',
+      function_type: 'Action',
+    });
+    expect(refusal.output.success).toBe(false);
+    expect(refusal.didModifyProject).toBe(false);
+    expect(JSON.stringify(refusal.output)).toContain('reserved');
+  });
+
+  it('refuses an EXTENSION lifecycle name for a free function', async () => {
+    await runTool('create_extension', { extension_name: 'Helpers' });
+    const refusal = await runTool('create_custom_function', {
+      extension_name: 'Helpers',
+      function_name: 'onSceneLoaded',
+      function_type: 'Action',
+    });
+    expect(refusal.output.success).toBe(false);
+    expect(JSON.stringify(refusal.output)).toContain('reserved');
+  });
+
+  it('still accepts an ordinary function name', async () => {
+    await runTool('create_extension', { extension_name: 'Helpers2' });
+    const created = await runTool('create_custom_function', {
+      extension_name: 'Helpers2',
+      function_name: 'spawnEnemies',
+      function_type: 'Action',
+    });
+    expect(created.output.success).toBe(true);
+  });
+
+  it('sanitizes a name with invalid characters before inserting', async () => {
+    const created = await runTool('create_extension', {
+      extension_name: 'My Extension!',
+    });
+    expect(created.output.success).toBe(true);
+    // The stored name is the sanitized one, so the object types derived
+    // from it stay in the shape the editor can produce.
+    const storedName = project.getEventsFunctionsExtensionAt(0).getName();
+    expect(storedName).not.toBe('My Extension!');
+    expect(storedName).toBe(gd.Project.getSafeName('My Extension!'));
   });
 });

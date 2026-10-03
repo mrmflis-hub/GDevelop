@@ -678,7 +678,13 @@ const ByokSettingsTab = (): React.Node => {
       providers: remainingProviders,
       ...(migrated ? { ...migrated } : {}),
     });
-    void clearByokKey(provider.keyRef);
+    // The legacy slot (keyRef === '') is NOT exclusively owned by a provider
+    // card: the still-present "Single-endpoint fallback" section, the Test
+    // button and every ''-routed call read it. Clearing it on removal left
+    // a working global endpoint silently keyless (audit100226 UI-5).
+    if (provider.keyRef) {
+      void clearByokKey(provider.keyRef);
+    }
     clearByokModels();
   };
 
@@ -1111,7 +1117,7 @@ const ByokSettingsTab = (): React.Node => {
   // The models of one provider, from the session cache (fetched with the
   // provider's Fetch models button, or left empty until then).
   const getProviderModels = (provider: ByokProvider): Array<ByokModelInfo> =>
-    getCachedByokModels(provider.endpointUrl) || [];
+    getCachedByokModels(provider.endpointUrl, provider.id) || [];
 
   const renderProfilePicker = (
     profileName: 'fastProfile' | 'strongProfile',

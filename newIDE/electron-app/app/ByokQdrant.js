@@ -328,7 +328,16 @@ const ensureStarted = async app => {
 /** One JSON request over the loopback Qdrant REST API (the restore deps). */
 const BYOK_QDRANT_REQUEST_TIMEOUT_MS = 30000;
 
-const requestJson = (baseUrl, method, requestPath, body) =>
+// `timeoutMs` defaults to the health-check budget; the snapshot upload
+// passes a much longer one (a tens-of-MB asset, and `?wait=true` blocks
+// until Qdrant has downloaded AND recovered it — audit100226 RAG-3).
+const requestJson = (
+  baseUrl,
+  method,
+  requestPath,
+  body,
+  timeoutMs = BYOK_QDRANT_REQUEST_TIMEOUT_MS
+) =>
   new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const request = http.request(
@@ -367,9 +376,16 @@ const requestJson = (baseUrl, method, requestPath, body) =>
     );
     // A wedged Qdrant must settle the IPC, not hang it forever
     // (audit011026 B-RAG-16).
-    request.setTimeout(BYOK_QDRANT_REQUEST_TIMEOUT_MS, () => {
+    request.setTimeout(timeoutMs, () => {
       request.destroy();
-      reject(new Error(`Qdrant ${method} ${requestPath}: timed out.`));
+      // Marked so the restore can tell "we gave up waiting" from "Qdrant
+      // refused": the first must NOT drop the collection, because the
+      // server may still be importing into it (audit100226 RAG-3).
+      const timeoutError = new Error(
+        `Qdrant ${method} ${requestPath}: timed out after ${timeoutMs} ms.`
+      );
+      timeoutError.clientTimedOut = true;
+      reject(timeoutError);
     });
     request.on('error', reject);
     if (payload) request.write(payload);
@@ -386,6 +402,18 @@ const registerByokQdrant = (ipcMain, app) => {
   // the official collection snapshot from its release URL. The consent
   // (snapshot download + Qdrant binary when missing) ran in the UI first.
   ipcMain.handle('byok-qdrant-restore-snapshot', async (event, options) => {
+    // Validated BEFORE anything is downloaded, dropped or fetched: the URL
+    // comes from the renderer and Qdrant fetches it server-side, so an
+    // unvalidated value let a caller make the local process request any URL
+    // (audit100226 ELEC-17).
+    if (!core.isAllowedByokQdrantSnapshotUrl(options && options.snapshotUrl)) {
+      return {
+        ok: false,
+        stage: 'validating',
+        error:
+          'Refused: the snapshot URL is not the official GDevelop RAG release URL.',
+      };
+    }
     const setupOutcome = await runSetup(app);
     if (!setupOutcome.ok) return setupOutcome;
     lastKnownBaseUrl = setupOutcome.baseUrl;
@@ -395,8 +423,14 @@ const registerByokQdrant = (ipcMain, app) => {
       expectedDimensions: options.expectedDimensions,
       deps: {
         isHealthy,
-        requestJson: (method, requestPath, body) =>
-          requestJson(setupOutcome.baseUrl, method, requestPath, body),
+        requestJson: (method, requestPath, body, requestTimeoutMs) =>
+          requestJson(
+            setupOutcome.baseUrl,
+            method,
+            requestPath,
+            body,
+            requestTimeoutMs
+          ),
       },
     });
   });

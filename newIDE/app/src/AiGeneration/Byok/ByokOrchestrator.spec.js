@@ -16,6 +16,7 @@ import {
 import { cacheByokModels, clearByokModels } from './ByokModelsCache';
 import { registerByokImage } from './ByokImageContent';
 import * as ByokProjectNotesModule from './ByokProjectNotes';
+import * as ByokPromptsModule from './ByokPrompts';
 
 jest.mock('./ByokClient', () => ({
   sendByokChatCompletionWithRetries: jest.fn(),
@@ -2014,11 +2015,19 @@ describe('ByokOrchestrator: prompt-cache stability (Phase 14.1)', () => {
         })
       )
       .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
-    // The loader + executor together simulate what the real
-    // update_project_notes handler causes: round 1 composes from empty
-    // notes, the tool call persists them mid-chat, and the storage would
-    // answer with fresh values from the next prompt build on.
+    // The real write path is driven: update_project_notes is an intercepted
+    // extra tool, so it never reaches the executor — spying the storage
+    // pair (what the handler actually calls) is what makes the mid-chat
+    // write real. A previous version of this spec flipped a flag from the
+    // EXECUTOR mock, which never fires for an intercepted tool: the notes
+    // never arrived and the byte-stability assertion passed vacuously.
     let notesArrived = false;
+    const promptComposer = jest.spyOn(
+      ByokPromptsModule,
+      'buildByokSystemPrompt'
+    );
+    // The real loader never resolves null (every failure path returns the
+    // empty-notes record), so the "no notes yet" state is that record.
     notesLoader.mockImplementation(async () =>
       notesArrived
         ? {
@@ -2027,26 +2036,26 @@ describe('ByokOrchestrator: prompt-cache stability (Phase 14.1)', () => {
             decisions: '',
             updatedAt: '2026-09-27T00:00:00.000Z',
           }
-        : null
+        : { conventions: '', inProgress: '', decisions: '', updatedAt: '' }
     );
+    jest
+      .spyOn(ByokProjectNotesModule, 'saveByokProjectNotes')
+      // $FlowFixMe[cannot-write]
+      .mockImplementation(async () => {
+        notesArrived = true;
+        return true;
+      });
     const executeFunctionCalls = mockFn(
-      jest.fn(async (functionCalls: Array<any>) => {
-        for (const functionCall of functionCalls) {
-          if (functionCall.function.name === 'update_project_notes') {
-            notesArrived = true;
-          }
-        }
-        return {
-          results: functionCalls.map((functionCall: any) => ({
-            status: 'finished',
-            call_id: functionCall.call_id,
-            success: true,
-            output: { message: 'done' },
-          })),
-          createdSceneNames: [],
-          createdProject: null,
-        };
-      })
+      jest.fn(async (functionCalls: Array<any>) => ({
+        results: functionCalls.map((functionCall: any) => ({
+          status: 'finished',
+          call_id: functionCall.call_id,
+          success: true,
+          output: { message: 'done' },
+        })),
+        createdSceneNames: [],
+        createdProject: null,
+      }))
     );
     const { orchestrator, aiRequest } = makeOrchestrator({
       executeFunctionCalls,
@@ -2073,8 +2082,20 @@ describe('ByokOrchestrator: prompt-cache stability (Phase 14.1)', () => {
     // The frozen prompt was composed BEFORE the note existed: the fresh
     // notes never leaked into it (staleness accepted until chat end).
     expect(systemContents[0].content).not.toContain('Pixel-art tiles only');
-    // The notes loader really ran (round one composed the prompt from it).
-    expect(notesLoader).toHaveBeenCalled();
+    // The note really was persisted mid-chat (the write path ran), and the
+    // prompt was composed EXACTLY ONCE for the whole chat: this is the
+    // snapshot-hit assertion that catches a broken invalidation key (the
+    // 2026-10-02 audit regression where the notes identifier was compared
+    // but never stored, so every round re-composed and busted the cache).
+    expect(notesArrived).toBe(true);
+    // The prompt was composed EXACTLY ONCE for the whole chat. This is the
+    // snapshot-hit assertion that catches a broken invalidation key (the
+    // 2026-10-02 audit regression where the notes identifier was compared
+    // but never stored, so every round re-composed and busted the provider
+    // prefix cache). Counting the composer — not the notes loader, which
+    // the update_project_notes handler also calls to read-merge — is what
+    // makes this precise.
+    expect(promptComposer).toHaveBeenCalledTimes(1);
     // The tools array is identical across rounds too (fixed order, fixed
     // schemas — the other prefix-cache-stable block of the request).
     const toolsJson = modelCalls.map(options => JSON.stringify(options.tools));
@@ -2404,5 +2425,135 @@ describe('ByokOrchestrator: audit011026 fixes', () => {
     );
     expect(systemContents[0]).toContain('Conventions of project A');
     expect(systemContents[1]).toContain('Conventions of project B');
+  });
+});
+
+describe('ByokOrchestrator: tool-call pairing safety net', () => {
+  beforeEach(() => {
+    mockSendByokChatCompletion.mockReset();
+    (createByokCancellation: any).mockImplementation(() => ({
+      token: { __fakeCancelToken: true },
+      cancel: mockFn(jest.fn()),
+    }));
+    clearByokModels();
+  });
+
+  // Every assistant tool_call must be followed by a tool message, or a
+  // strict endpoint rejects every later replay with a 400 and Retry
+  // replays the same broken transcript (the B-CORE-2 brick class).
+  const orphanCallIds = (transcript: Array<any>): Array<string> => {
+    const calledIds: Array<string> = [];
+    const answeredIds = new Set<string>();
+    for (const message of transcript) {
+      if (message.type === 'function_call_output') {
+        answeredIds.add(message.call_id);
+      }
+      if (message.type !== 'message' || message.role !== 'assistant') continue;
+      for (const item of message.content || []) {
+        if (item.type === 'function_call') calledIds.push(item.call_id);
+      }
+    }
+    return calledIds.filter(callId => !answeredIds.has(callId));
+  };
+
+  it('answers the batch when the extensions reload throws after the calls', async () => {
+    // The editor-side extensions reload runs once per batch, after the
+    // intercepted tools, whenever one of them edited an extension. A
+    // project with a broken generated extension makes it throw — and an
+    // exception escaping there used to leave the editor calls of the batch
+    // with no tool output at all (this batch mixes an intercepted tool and
+    // a registry tool).
+    mockSendByokChatCompletion
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [
+            makeToolCall(
+              'call-1',
+              'create_extension',
+              '{"extension_name":"MyExt"}'
+            ),
+            makeToolCall('call-2', 'describe_instances', '{}'),
+          ],
+        })
+      )
+      .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+    const extensionStub: any = {
+      setName: mockFn(jest.fn()),
+      setFullName: mockFn(jest.fn()),
+      setShortDescription: mockFn(jest.fn()),
+      setDescription: mockFn(jest.fn()),
+      setVersion: mockFn(jest.fn()),
+      setAuthor: mockFn(jest.fn()),
+      setCategory: mockFn(jest.fn()),
+      setOrigin: mockFn(jest.fn()),
+    };
+    // The extension does not exist until create_extension inserts it; the
+    // metadata reload then finds it by name.
+    let extensionExists = false;
+    const projectStub: any = {
+      hasEventsFunctionsExtensionNamed: () => extensionExists,
+      insertNewEventsFunctionsExtension: () => {
+        extensionExists = true;
+        return extensionStub;
+      },
+      getEventsFunctionsExtensionsCount: () => 0,
+      getEventsFunctionsExtension: () => extensionStub,
+    };
+    let reloadAttempted = false;
+    const { orchestrator, aiRequest } = makeOrchestrator({
+      getProject: () => projectStub,
+      reloadEventsFunctionsExtensionMetadata: () => {
+        reloadAttempted = true;
+        throw new Error('broken generated extension');
+      },
+    });
+
+    await orchestrator.startNewChat('Add an extension and inspect the scene');
+
+    // Non-vacuity: the reload really ran and really threw. Without the
+    // fix this throws out of the batch, the editor call of the batch never
+    // gets its output, and the assertion below fails.
+    expect(reloadAttempted).toBe(true);
+    expect(orphanCallIds(aiRequest.output || [])).toEqual([]);
+    // (The chat's final status is not asserted: create_extension trips the
+    // completion gate, which is orthogonal to the pairing invariant.)
+  });
+
+  it('answers the batch when the edit approval prompt rejects', async () => {
+    mockSendByokChatCompletion
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [makeToolCall('call-1', 'put_2d_instances', '{}')],
+        })
+      )
+      .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+    const { orchestrator, aiRequest } = makeOrchestrator({
+      doesCallRequireApproval: () => true,
+      onRequestEditApproval: async () => {
+        throw new Error('the approval dialog was closed');
+      },
+    });
+
+    await orchestrator.startNewChat('Place the player');
+
+    expect(orphanCallIds(aiRequest.output || [])).toEqual([]);
+  });
+
+  it('never duplicates an output for a call that already answered', async () => {
+    mockSendByokChatCompletion
+      .mockResolvedValueOnce(
+        makeResponse({
+          toolCalls: [makeToolCall('call-1', 'describe_instances', '{}')],
+        })
+      )
+      .mockResolvedValueOnce(makeResponse({ text: 'Done.' }));
+    const { orchestrator, aiRequest } = makeOrchestrator();
+
+    await orchestrator.startNewChat('Inspect the scene');
+
+    const outputIds = (aiRequest.output || []: any[])
+      .filter(message => message.type === 'function_call_output')
+      .map(message => message.call_id);
+    expect(outputIds).toEqual(['call-1']);
   });
 });

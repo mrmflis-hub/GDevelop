@@ -97,26 +97,13 @@ describe('Byok eval harness: the task suite', () => {
           name: 'add_scene_events',
           arguments: {
             scene_name: 'Level 1',
+            // The EventScript BYOK's local writer actually accepts — the
+            // harness used to assert a serialized hosted-backend shape
+            // (`CreerObjet`) the real tool rejects (audit100226 SCRIPT-1).
             event_batches: [
               {
                 placement_relation: 'insert_at_end',
-                events: [
-                  {
-                    type: 'BuiltinCommonInstructions::Standard',
-                    conditions: [
-                      {
-                        type: { value: 'BuiltinCommonInstructions::Timer' },
-                        parameters: ['"spawn"', '3'],
-                      },
-                    ],
-                    actions: [
-                      {
-                        type: { value: 'CreerObjet' },
-                        parameters: ['', 'Coin', 'Level 1', 100, 200],
-                      },
-                    ],
-                  },
-                ],
+                event_script: 'if Timer(3, "spawn"):\n  Create(Coin, 100, 200)',
               },
             ],
           },

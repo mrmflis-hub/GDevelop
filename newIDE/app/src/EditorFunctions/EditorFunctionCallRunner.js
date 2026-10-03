@@ -143,6 +143,8 @@ export const processEditorFunctionCalls = async ({
       continue;
     }
     let args;
+    let calledEditorFunction: EditorFunction | null = null;
+    let calledEditorFunctionWithoutProject: EditorFunctionWithoutProject | null = null;
     try {
       try {
         args = JSON.parse(functionCall.arguments);
@@ -192,6 +194,11 @@ export const processEditorFunctionCalls = async ({
         editorFunctions[name] || null;
       const editorFunctionWithoutProject: EditorFunctionWithoutProject | null =
         editorFunctionsWithoutProject[name] || null;
+      // Kept in the enclosing scope so the catch below can still report the
+      // mutation when the call THROWS (Flow's narrowing does not cross a
+      // try/catch boundary).
+      calledEditorFunction = editorFunction;
+      calledEditorFunctionWithoutProject = editorFunctionWithoutProject;
       if (!editorFunction && !editorFunctionWithoutProject) {
         results.push({
           status: 'finished',
@@ -289,11 +296,22 @@ export const processEditorFunctionCalls = async ({
         createdProject = meta.createdProject;
       }
     } catch (error) {
+      // A mutating function can throw AFTER partially mutating the project
+      // (the per-item loops mutate item by item). Recording the failure
+      // without the mutation signal made every consumer skip the unsaved
+      // mark: the editor said "no unsaved changes" while the project had
+      // changed, and closing lost the edits (audit100226 UP-17). Reporting
+      // it is the safe direction — a spurious unsaved mark is harmless.
+      const threwFromMutatingFunction =
+        (calledEditorFunction && calledEditorFunction.modifiesProject) ||
+        (calledEditorFunctionWithoutProject &&
+          calledEditorFunctionWithoutProject.modifiesProject);
       results.push({
         status: 'finished',
         call_id,
         success: false,
         output: { message: error.message || 'Unknown error' },
+        ...(threwFromMutatingFunction ? { didModifyProject: true } : {}),
       });
     }
   }

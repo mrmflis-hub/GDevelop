@@ -21,7 +21,7 @@ import {
   validateByokRagBundleEnvelope,
 } from './ByokRagBundle';
 import { createByokRagFilesBackendForPlatform } from './ByokRagFileBackends';
-import { setByokRagRuntime } from './ByokRagSearch';
+import { setByokRagRuntime, setByokRagQdrantSearch } from './ByokRagSearch';
 
 /**
  * The RAG build/enable service (Phase 13.7/13.8): what the RAG settings
@@ -133,6 +133,10 @@ export const rebuildByokRagIndex = async (options: {|
     index,
     embedder,
   });
+  // After a Qdrant rebuild the vectors live on the server, so the live
+  // search must go through it rather than the in-memory index
+  // (audit100226 RAG-1).
+  setByokRagQdrantSearch(store.search || null);
   if (options.onProgress) {
     options.onProgress({ stage: 'done', progress: 1 });
   }
@@ -150,6 +154,35 @@ export const rebuildByokRagIndex = async (options: {|
 export const loadPersistedByokRagIndex = async (
   settings: ByokRagSettings
 ): Promise<?{| chunkCount: number |}> => {
+  // The Qdrant backend keeps no local index to load: what must survive a
+  // restart is the REMOTE search, so recovery verifies the collection
+  // really holds points and installs the search closure + embedder. Without
+  // this the backend was upload-only and every restart degraded Qdrant
+  // users to lexical while the status card reported healthy (audit100226
+  // RAG-1).
+  if (settings.backend === 'qdrant') {
+    const qdrantStore = makeStoreForSettings(settings);
+    if (!qdrantStore || !qdrantStore.search || !qdrantStore.inspect) {
+      return null;
+    }
+    let remoteState;
+    try {
+      remoteState = await qdrantStore.inspect();
+    } catch (error) {
+      // Qdrant is not running (or refused): no runtime, lexical degrade.
+      return null;
+    }
+    if (!remoteState.ready) return null;
+    const embedderResult = await loadByokRagEmbedder(settings.embedderId);
+    if (!embedderResult.ok) return null;
+    setByokRagRuntime({
+      settings,
+      index: null,
+      embedder: embedderResult.embedder,
+    });
+    setByokRagQdrantSearch(qdrantStore.search);
+    return { chunkCount: remoteState.pointCount };
+  }
   if (settings.backend !== 'in-process') return null;
   const store = makeStoreForSettings(settings);
   if (!store) return null;
@@ -235,6 +268,26 @@ export const readByokRagIndexStatus = async (
   builtAt: string,
   embedderId: string,
 |}> => {
+  // The Qdrant backend has no local manifest; report what the server
+  // actually holds so the card tells the truth instead of showing "no index
+  // built" while semantic search is live (audit100226 RAG-1). A dead server
+  // reports nothing rather than a fabricated healthy state.
+  if (settings.backend === 'qdrant') {
+    const store = makeStoreForSettings(settings);
+    if (!store || !store.inspect) return null;
+    try {
+      const remoteState = await store.inspect();
+      if (!remoteState.ready) return null;
+      return {
+        chunkCount: remoteState.pointCount,
+        corpusHash: '',
+        builtAt: '',
+        embedderId: settings.embedderId,
+      };
+    } catch (error) {
+      return null;
+    }
+  }
   if (settings.backend !== 'in-process') return null;
   const store = makeStoreForSettings(settings);
   if (!store) return null;

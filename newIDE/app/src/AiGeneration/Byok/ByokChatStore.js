@@ -53,6 +53,13 @@ export const getByokChatPersistence = (): ?ByokChatFileStore => chatFileStore;
 const saveChatNow = async (chat: AiRequest): Promise<void> => {
   const store = chatFileStore;
   if (!store) return;
+  // A chat deleted while this save was in flight must NOT be written back:
+  // the save captured `chat` before deleteChat removed it from the store
+  // and from disk, so its writeFile + index upsert landed afterwards and
+  // resurrected the chat — file and full transcript — in the Recents rail
+  // (audit100226 UI-2). Re-checked immediately before the write, which is
+  // the last point before anything lands on disk.
+  if (!byokChats.has(chat.id)) return;
   try {
     await store.saveChat(chat);
     await store.enforceQuota(BYOK_CHAT_STORAGE_QUOTA_BYTES);

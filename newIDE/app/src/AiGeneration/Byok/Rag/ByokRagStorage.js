@@ -5,6 +5,7 @@ import {
   deserializeByokRagIndex,
 } from './ByokRagIndex';
 import { validateByokRagBundleEnvelope } from './ByokRagBundle';
+import { type ByokRagSearchHit } from './ByokRagSearch';
 
 /**
  * The RAG index storage (Phase 13.7/13.8): one interface, two
@@ -31,6 +32,13 @@ export type ByokRagStore = {|
   kind: 'in-process' | 'qdrant',
   saveIndex: (index: ByokRagSerializedIndex) => Promise<void>,
   loadIndex: () => Promise<?ByokRagStoredIndex>,
+  /** The server-side semantic search (Qdrant only — audit100226 RAG-1). */
+  search?: (
+    queryVector: Float32Array,
+    limit: number
+  ) => Promise<Array<ByokRagSearchHit>>,
+  /** Whether the remote collection actually holds points (Qdrant only). */
+  inspect?: () => Promise<{| ready: boolean, pointCount: number |}>,
   clear: () => Promise<void>,
 |};
 
@@ -128,6 +136,38 @@ export const createByokRagQdrantStore = (options: {|
   const collection = options.collection || BYOK_RAG_QDRANT_COLLECTION;
   const transport = options.transport;
 
+  // Remove the points a shorter corpus no longer has. Point ids are the
+  // chunk POSITION + 1, so "stale" is exactly the numeric range above the
+  // new count — one delete, not a scroll-and-diff.
+  const deleteStalePoints = async (newPointCount: number): Promise<void> => {
+    const countResponse = await transport.request(
+      'POST',
+      `/collections/${collection}/points/count`,
+      { exact: false }
+    );
+    const existingCount =
+      countResponse &&
+      countResponse.result &&
+      typeof countResponse.result.count === 'number'
+        ? countResponse.result.count
+        : 0;
+    if (existingCount <= newPointCount) return;
+    const staleIds = [];
+    for (let pointId = newPointCount + 1; pointId <= existingCount; pointId++) {
+      staleIds.push(pointId);
+    }
+    // Qdrant caps a delete request body; 1024 ids per call is safe.
+    const BATCH = 1024;
+    for (let start = 0; start < staleIds.length; start += BATCH) {
+      // eslint-disable-next-line no-await-in-loop
+      await transport.request(
+        'POST',
+        `/collections/${collection}/points/delete`,
+        { points: staleIds.slice(start, start + BATCH) }
+      );
+    }
+  };
+
   const ensureCollection = async (dimensions: number) => {
     const response = await transport.request(
       'GET',
@@ -189,6 +229,10 @@ export const createByokRagQdrantStore = (options: {|
           { points: points.slice(start, start + BATCH) }
         );
       }
+      // Upserts never REMOVE a point: rebuilding a corpus that SHRANK (a
+      // docs-folder file removed, an app update trimming the wiki) left the
+      // tail of the old corpus searchable forever (audit100226 RAG-2).
+      await deleteStalePoints(points.length);
     },
     loadIndex: async () => {
       // The Qdrant backend does not reload a local index: the manifest is
@@ -196,6 +240,64 @@ export const createByokRagQdrantStore = (options: {|
       // and the search goes straight to the server. Rebuilding always
       // re-uploads; reading everything back would just move the corpus.
       return null;
+    },
+    // The server-side semantic search (audit100226 RAG-1): the backend was
+    // upload-only, so every restart degraded Qdrant users to lexical
+    // search while the settings card still reported a healthy index.
+    search: async (queryVector, limit) => {
+      const response = await transport.request(
+        'POST',
+        `/collections/${collection}/points/search`,
+        { vector: Array.from(queryVector), limit, with_payload: true }
+      );
+      const resultPoints =
+        response && Array.isArray(response.result) ? response.result : [];
+      return resultPoints
+        .map(
+          (point): ?ByokRagSearchHit => {
+            const payload = point && point.payload;
+            if (!payload || typeof payload.id !== 'string') return null;
+            const hit: ByokRagSearchHit = {
+              chunk: ({
+                id: payload.id,
+                source: payload.source,
+                title: payload.title,
+                tags: Array.isArray(payload.tags) ? payload.tags : [],
+                text: payload.text,
+              }: any),
+              score: typeof point.score === 'number' ? point.score : 0,
+              match: 'vector',
+            };
+            return hit;
+          }
+        )
+        .filter(Boolean);
+    },
+    // True when the collection exists and holds points — what the restart
+    // recovery checks before it trusts the Qdrant backend (audit100226
+    // RAG-1: the status card claimed healthy while search was lexical).
+    inspect: async () => {
+      const response = await transport.request(
+        'GET',
+        `/collections/${collection}`
+      );
+      const status =
+        response && response.result ? response.result.status : null;
+      if (status !== 'green' && status !== 'yellow') {
+        return { ready: false, pointCount: 0 };
+      }
+      const countResponse = await transport.request(
+        'POST',
+        `/collections/${collection}/points/count`,
+        { exact: false }
+      );
+      const pointCount =
+        countResponse &&
+        countResponse.result &&
+        typeof countResponse.result.count === 'number'
+          ? countResponse.result.count
+          : 0;
+      return { ready: pointCount > 0, pointCount };
     },
     clear: async () => {
       await transport.request('DELETE', `/collections/${collection}`);

@@ -41,31 +41,86 @@ export const searchByokRagChunksLexically = (
   if (!trimmedQuery) return [];
   const terms = trimmedQuery.split(/\s+/).filter(Boolean);
 
+  // The lowercased view of a corpus, computed once per array instance. The
+  // lexical pass lowercased every chunk's title, text and tags on EVERY query
+  // (~4k chunks, multi-MB with the wiki corpus, synchronously on the renderer
+  // thread) — audit100226 CACHE-6. Keyed weakly so a rebuilt corpus (docs
+  // folder changed) recomputes and the old view is collectable.
+  type ByokRagLowercasedChunk = {|
+    title: string,
+    text: string,
+    tags: string,
+  |};
+  const lowercaseViewCache: WeakMap<
+    Array<ByokRagChunk>,
+    Array<ByokRagLowercasedChunk>
+  > = new WeakMap();
+
+  const getLowercaseView = (
+    chunks: Array<ByokRagChunk>
+  ): Array<ByokRagLowercasedChunk> => {
+    const cached = lowercaseViewCache.get(chunks);
+    if (cached) return cached;
+    const view = chunks.map(chunk => ({
+      title: chunk.title.toLowerCase(),
+      text: chunk.text.toLowerCase(),
+      tags: chunk.tags.map(tag => tag.toLowerCase()).join(' '),
+    }));
+    lowercaseViewCache.set(chunks, view);
+    return view;
+  };
+
   const hits: Array<ByokRagSearchHit> = [];
-  for (const chunk of chunks) {
-    const title = chunk.title.toLowerCase();
-    const text = chunk.text.toLowerCase();
-    const tags = chunk.tags.map(tag => tag.toLowerCase()).join(' ');
+  const partialHits: Array<ByokRagSearchHit> = [];
+  const lowercaseView = getLowercaseView(chunks);
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const chunk = chunks[chunkIndex];
+    const lower = lowercaseView[chunkIndex];
+    const title = lower.title;
+    const text = lower.text;
+    const tags = lower.tags;
     let score = 0;
-    let matchedAllTerms = true;
+    let matchedTermCount = 0;
     for (const term of terms) {
-      if (title.includes(term)) score += 3;
-      else if (tags.includes(term)) score += 2;
-      else if (text.includes(term)) score += 1;
-      else {
-        matchedAllTerms = false;
-        break;
+      let termScore = 0;
+      if (title.includes(term)) termScore = 3;
+      else if (tags.includes(term)) termScore = 2;
+      else if (text.includes(term)) termScore = 1;
+      // A prefix match rescues the plural / inflection / verb-form cases
+      // ("animations" vs "animation", "spawned" vs "spawn").
+      else if (term.length >= 4 && title.includes(term.slice(0, -1))) {
+        termScore = 2;
+      } else if (term.length >= 5 && text.includes(term.slice(0, -1))) {
+        termScore = 1;
       }
+      if (termScore === 0) continue;
+      matchedTermCount++;
+      score += termScore;
     }
-    if (!matchedAllTerms) continue;
-    hits.push({
+    if (matchedTermCount === 0) continue;
+    const weighted = score * getByokRagSourceWeight(chunk.source);
+    if (matchedTermCount === terms.length) {
+      hits.push({ chunk, score: weighted, match: 'exact' });
+      continue;
+    }
+    // An AND-only pass returned NOTHING for queries whose wording differs
+    // from the corpus by one word — and RAG is off by default, so that is
+    // the mode most users are in: the tool answered `success:true` with
+    // zero hits although the chunk was there (audit100226 RAG-5). Partial
+    // matches are kept, ranked below every full match.
+    partialHits.push({
       chunk,
-      score: score * getByokRagSourceWeight(chunk.source),
+      score: (weighted * matchedTermCount) / terms.length,
       match: 'exact',
     });
   }
   hits.sort((a, b) => b.score - a.score || (a.chunk.id < b.chunk.id ? -1 : 1));
-  return hits.slice(0, resultLimit);
+  partialHits.sort(
+    (a, b) => b.score - a.score || (a.chunk.id < b.chunk.id ? -1 : 1)
+  );
+  // Partial hits only fill the tail: a full match is always a better
+  // answer, so a chunk matching every term outranks one matching most.
+  return hits.concat(partialHits).slice(0, resultLimit);
 };
 
 /**
@@ -199,8 +254,13 @@ export const searchByokRagKnowledge = async (options: {|
 
   const exactHits = searchByokRagChunksLexically(filteredPool, query, limit);
 
-  // RAG off (no index or no embedder): the lexical mode.
-  if (!index || !options.deps.embedder) {
+  // RAG off (no embedder, and neither a local index nor a remote one):
+  // the lexical mode. A Qdrant backend has no local index by design — the
+  // vectors live on the server — so `qdrantSearch` alone is enough to
+  // answer semantically (audit100226 RAG-1: the backend was upload-only,
+  // so every restart degraded Qdrant users to lexical).
+  const hasRemoteSearch = !!options.deps.qdrantSearch;
+  if (!options.deps.embedder || (!index && !hasRemoteSearch)) {
     return {
       success: true,
       message:
@@ -222,7 +282,10 @@ export const searchByokRagKnowledge = async (options: {|
       candidateLimit
     );
     vectorCandidates = remoteHits.filter(hit => matchesTagFilter(hit.chunk));
-  } else {
+  } else if (index) {
+    // No remote search means the local index is the vector half. The gate
+    // above already allows the remote case with a null index, so this
+    // narrowing is the local-index guarantee.
     vectorCandidates = searchByokRagIndex(index, queryVector, candidateLimit)
       .filter(hit => matchesTagFilter(hit.chunk))
       .map(hit => ({ chunk: hit.chunk, score: hit.score, match: 'vector' }));
@@ -334,6 +397,21 @@ export const resetByokRagLexicalCorpusForTests = (): void => {
  */
 let persistedLoadAttempted = false;
 
+/** The remote (Qdrant) search closure of the live runtime, when set. */
+let qdrantSearchFn: ?(
+  queryVector: Float32Array,
+  limit: number
+) => Promise<Array<ByokRagSearchHit>> = null;
+
+export const setByokRagQdrantSearch = (
+  search: ?(
+    queryVector: Float32Array,
+    limit: number
+  ) => Promise<Array<ByokRagSearchHit>>
+): void => {
+  qdrantSearchFn = search;
+};
+
 /** Forget the lazy-load state (tests). */
 export const resetByokRagPersistedLoadForTests = (): void => {
   persistedLoadAttempted = false;
@@ -346,9 +424,13 @@ export const getByokRagSearchDepsAsync = async (): Promise<ByokRagSearchDeps> =>
   // to lexical mode while the status card claims a built index
   // (audit011026 B-RAG-1). The heavy modules load only on this path.
   if (!persistedLoadAttempted && (!runtime || !runtime.index)) {
-    persistedLoadAttempted = true;
     const settings = ragSettingsProvider ? ragSettingsProvider() : null;
+    // Only latch after an ACTUAL attempt: latching on a skipped attempt
+    // (RAG disabled, or no provider registered yet) meant enabling RAG
+    // later in the same session never loaded the on-disk index until a
+    // restart (audit100226 RAG-9).
     if (settings && settings.enabled) {
+      persistedLoadAttempted = true;
       const { loadPersistedByokRagIndex } = require('./ByokRagBuildService');
       try {
         await loadPersistedByokRagIndex(settings);
@@ -361,6 +443,19 @@ export const getByokRagSearchDepsAsync = async (): Promise<ByokRagSearchDeps> =>
     return {
       index: runtime.index,
       embedder: runtime.embedder,
+      qdrantSearch: qdrantSearchFn,
+    };
+  }
+  // The Qdrant backend keeps no local index: after a restart the runtime
+  // holds only the embedder and the remote-search closure, which is enough
+  // to answer semantically (audit100226 RAG-1 — the backend used to be
+  // upload-only, so every restart silently degraded to lexical).
+  if (runtime && runtime.embedder && qdrantSearchFn) {
+    return {
+      index: null,
+      embedder: runtime.embedder,
+      lexicalChunks: await ensureByokRagLexicalCorpus(),
+      qdrantSearch: qdrantSearchFn,
     };
   }
   return {

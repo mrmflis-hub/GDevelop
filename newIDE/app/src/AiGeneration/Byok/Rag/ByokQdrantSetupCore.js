@@ -263,6 +263,17 @@ const runByokQdrantSnapshotRestore = async options => {
   const verifyTimeoutMs = options.verifyTimeoutMs || 120000;
   const pollIntervalMs = options.pollIntervalMs || 1000;
 
+  // FIRST, before anything is dropped or fetched: the URL comes from the
+  // renderer and Qdrant fetches it itself (audit100226 ELEC-17).
+  if (!isAllowedByokQdrantSnapshotUrl(options.snapshotUrl)) {
+    return {
+      ok: false,
+      stage: 'validating',
+      error:
+        'Refused: the snapshot URL is not the official GDevelop RAG release URL.',
+    };
+  }
+
   report('health-check');
   if (!(await options.deps.isHealthy(options.baseUrl))) {
     return {
@@ -298,9 +309,26 @@ const runByokQdrantSnapshotRestore = async options => {
     await options.deps.requestJson(
       'POST',
       `/collections/${collection}/snapshots/upload?wait=true`,
-      { url: options.snapshotUrl }
+      { url: options.snapshotUrl },
+      // A snapshot asset is tens of MB and `?wait=true` blocks until
+      // Qdrant has downloaded AND recovered it — the 30 s health-check
+      // timeout is far too short for it (audit100226 RAG-3).
+      options.uploadTimeoutMs || 300000
     );
   } catch (error) {
+    // A CLIENT-side timeout means Qdrant may still be importing: dropping
+    // the collection then deletes data out from under a server-side
+    // restore in progress, and a later retry re-creates it anyway
+    // (audit100226 RAG-3).
+    if (error && error.clientTimedOut) {
+      return {
+        ok: false,
+        stage: 'uploading',
+        clientTimedOut: true,
+        error:
+          'The snapshot restore did not finish before the local timeout — Qdrant may still be importing it in the background. Check the collection before retrying.',
+      };
+    }
     await dropCollectionBestEffort();
     return {
       ok: false,
@@ -355,8 +383,42 @@ const runByokQdrantSnapshotRestore = async options => {
   return { ok: true, baseUrl: options.baseUrl, collection, pointsCount };
 };
 
+/**
+ * Where the RAG snapshot assets live. The app only ever fetches them from
+ * the GDevelop release it ships (BYOK_RAG_BUNDLE_REPO in
+ * Rag/ByokRagTypes.js), over https from github.com — the same host the
+ * Qdrant binary is pinned to above.
+ */
+const BYOK_QDRANT_SNAPSHOT_URL_PREFIX =
+  '/mrmflis-hub/GDevelop/releases/download/';
+
+/**
+ * Only the official GDevelop release snapshot URL may be handed to Qdrant.
+ *
+ * The snapshot URL arrives from the RENDERER and Qdrant fetches it itself,
+ * so an unvalidated value made the local process issue a request to any
+ * URL a caller chose (including cloud metadata endpoints) — and the
+ * restore drops the existing collection BEFORE the upload, so a junk URL
+ * destroyed the current index too (audit100226 ELEC-17).
+ */
+const isAllowedByokQdrantSnapshotUrl = url => {
+  if (typeof url !== 'string') return false;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (error) {
+    return false;
+  }
+  return (
+    parsed.protocol === 'https:' &&
+    parsed.hostname === 'github.com' &&
+    parsed.pathname.startsWith(BYOK_QDRANT_SNAPSHOT_URL_PREFIX)
+  );
+};
+
 module.exports = {
   BYOK_QDRANT_DOWNLOAD_URL_BASE,
+  isAllowedByokQdrantSnapshotUrl,
   BYOK_QDRANT_ENDPOINT_FILE_NAME,
   buildByokQdrantConfigYaml,
   getByokQdrantPlatform,

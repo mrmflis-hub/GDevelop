@@ -1,5 +1,6 @@
 // @flow
 import optionalRequire from '../../Utils/OptionalRequire';
+import { sanitizeFilename } from '../../Utils/Filename';
 import {
   applyResourceDefaults,
   isURL,
@@ -125,7 +126,12 @@ const fileNameFromUrl = (deps: ByokResourceImportDeps, url: string): string => {
     // basename — a traversal straight out of the project folder
     // (audit011026 B-TOOL-2).
     const decoded = decodeURIComponent(parsed.pathname);
-    const safeName = deps.pathLib.basename(decoded);
+    // sanitizeFilename is the app's own rule and rejects the Windows shapes
+    // the guards below miss: a colon (an NTFS Alternate Data Stream, e.g.
+    // "hero.png:secret") and a reserved device name ("CON.png", "nul").
+    // audit011026 B-ELEC-12 fixed those for the chat/RAG file names but
+    // never reached this model-controlled path (audit100226 ELEC-18).
+    const safeName = sanitizeFilename(deps.pathLib.basename(decoded));
     if (
       safeName &&
       safeName !== '.' &&
@@ -231,7 +237,9 @@ const resolveEntryToFile = async (
     }
     // Copy into the project folder (the LocalResourceSources semantics,
     // dedupe included).
-    const fileName = deps.pathLib.basename(entry.source);
+    // Same rule as the URL branch: no ADS colon, no reserved device name on
+    // the target we write (audit100226 ELEC-18).
+    const fileName = sanitizeFilename(deps.pathLib.basename(entry.source));
     const targetPath = makeUnusedTargetPath(deps, projectFolder, fileName);
     try {
       await deps.fs.copyFile(entry.source, targetPath);
@@ -441,13 +449,23 @@ const makeImportProjectResourcesTool = (): ByokExtraTool => ({
         // upstream local-file-download attaches the GDevelop cloud session
         // cookie to ANY host and validates nothing — never hand it a
         // model-chosen URL.
-        downloadFile: (url, targetPath) =>
-          ipcRenderer.invoke(
+        downloadFile: async (url, targetPath) => {
+          const result = await ipcRenderer.invoke(
             'byok-download-resource',
             new URL(url).href,
             targetPath,
             project.getProjectFile()
-          ),
+          );
+          // The dep is typed `Promise<void>` and its only failure channel
+          // is a rejection (resolveEntryToFile catches it); the main
+          // handler answers EVERY failure as {ok:false}, so resolving one
+          // made a 404 / cap-exceeded / refused download look like a
+          // success and the resource was registered pointing at a file
+          // that was never written (audit 2026-10-02 ELEC-15).
+          if (!result || !result.ok) {
+            throw new Error((result && result.error) || 'The download failed.');
+          }
+        },
       },
     });
     const anyChange = results.some(

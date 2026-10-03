@@ -97,12 +97,31 @@ export const makeByokMcpToolDescriptors = (options: {|
  * (an unknown tool cannot be checked here and is refused as unknown before
  * the gate — see ByokMcpToolHost).
  */
+/**
+ * Tools that persist AGENT state rather than touching the project. They are
+ * `modifiesProject: false` (no gd object changes, so the chat's approval
+ * row correctly leaves them alone), but a read-only MCP server promises
+ * "Only read the project (no changes)" — and `update_project_notes` rewrites
+ * the text every future BYOK chat injects into its system prompt. A
+ * read-only external agent could therefore persist an injection there
+ * (audit100226 MCP-7), so it is refused in read-only mode by name.
+ */
+const BYOK_MCP_DURABLE_WRITE_TOOL_NAMES: Set<string> = new Set([
+  'update_project_notes',
+]);
+
+/** True for a tool that persists agent state outside the project. */
+export const byokMcpToolWritesDurableState = (toolName: string): boolean =>
+  BYOK_MCP_DURABLE_WRITE_TOOL_NAMES.has(toolName);
+
 export const byokMcpCallIsAllowed = (
   toolMeta: ?ByokMcpToolMeta,
   args: any,
-  accessMode: ByokMcpAccessMode
+  accessMode: ByokMcpAccessMode,
+  toolName?: ?string
 ): boolean => {
   if (accessMode === 'read-write') return true;
+  if (toolName && byokMcpToolWritesDurableState(toolName)) return false;
   if (!toolMeta) return true;
   if (toolMeta.getModifiesProject) return !toolMeta.getModifiesProject(args);
   return toolMeta.modifiesProject !== true;
@@ -299,7 +318,9 @@ export const runByokMcpToolCall = async (
       outcome: 'failed',
     };
   }
-  if (!byokMcpCallIsAllowed(toolMeta.meta, params.args, accessMode)) {
+  if (
+    !byokMcpCallIsAllowed(toolMeta.meta, params.args, accessMode, params.name)
+  ) {
     return {
       result: makeByokMcpErrorResult(BYOK_MCP_READ_ONLY_REJECTION_MESSAGE),
       didModifyProject: false,

@@ -792,15 +792,22 @@ export const createByokChatFileStore = (
       const files = await reconcileChatIndex(false);
       const chatEntries = chatIndexEntries || [];
       const listedChatIds = new Set(chatEntries.map(entry => entry.id));
-      for (const file of files) {
-        if (!file.fileName.endsWith(IMAGES_FILE_SUFFIX)) continue;
-        const chatIdOfSidecar = file.fileName.slice(
-          0,
-          -IMAGES_FILE_SUFFIX.length
-        );
-        if (listedChatIds.has(chatIdOfSidecar)) continue;
-        await backend.deleteFile(file.fileName).catch(() => {});
-        evictedImageChatCount++;
+      // Belt and braces with the backend fix: an index that HAD entries and
+      // reconciled to zero means the listing failed (or vanished), not that
+      // every sidecar is suddenly orphaned. Deleting them there wiped every
+      // chat's images on a transient enumeration error (audit100226 UI-3).
+      const listingIsTrustworthy = listedChatIds.size > 0;
+      if (listingIsTrustworthy) {
+        for (const file of files) {
+          if (!file.fileName.endsWith(IMAGES_FILE_SUFFIX)) continue;
+          const chatIdOfSidecar = file.fileName.slice(
+            0,
+            -IMAGES_FILE_SUFFIX.length
+          );
+          if (listedChatIds.has(chatIdOfSidecar)) continue;
+          await backend.deleteFile(file.fileName).catch(() => {});
+          evictedImageChatCount++;
+        }
       }
 
       let totalBytes = await backend.getTotalBytes();

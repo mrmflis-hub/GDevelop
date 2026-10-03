@@ -113,3 +113,71 @@ describe('createByokLoopGuard', () => {
     );
   });
 });
+
+describe('ByokLoopGuard: audit100226 fixes', () => {
+  it('TOOL-7: a batch that executed nothing does not move the thresholds', () => {
+    // The user REFUSED the batch, so its calls never ran: they must not
+    // count, or a chat could die with "repeated tool call" for a tool that
+    // had executed zero times.
+    const guard = createByokLoopGuard();
+    guard.beginBatch();
+    expect(guard.checkCall('put_2d_instances', { x: 1 })).toBe('ok');
+    guard.restoreBatch();
+    expect(guard.getHistory()).toEqual([]);
+    // Four more refused rounds: still nothing recorded, still 'ok'.
+    for (let round = 0; round < 4; round++) {
+      guard.beginBatch();
+      expect(guard.checkCall('put_2d_instances', { x: 1 })).toBe('ok');
+      guard.restoreBatch();
+    }
+    expect(guard.getHistory()).toEqual([]);
+  });
+
+  it('TOOL-7: rounds that DID execute still build a streak across batches', () => {
+    const guard = createByokLoopGuard();
+    guard.beginBatch();
+    expect(guard.checkCall('read_events_source', { scene: 'S' })).toBe('ok');
+    guard.beginBatch();
+    expect(guard.checkCall('read_events_source', { scene: 'S' })).toBe('ok');
+    guard.beginBatch();
+    // No restoreBatch: the third identical call executed, so the streak
+    // reaches the corrective threshold exactly as before.
+    expect(guard.checkCall('read_events_source', { scene: 'S' })).toBe(
+      'corrective'
+    );
+    guard.beginBatch();
+    expect(guard.checkCall('read_events_source', { scene: 'S' })).toBe('stop');
+  });
+
+  it('TOOL-8: an ALTERNATING loop is caught (its trailing streak is only 1)', () => {
+    const guard = createByokLoopGuard();
+    // A, B, A, B, ... never exceeds a trailing streak of 1, so the streak
+    // thresholds alone let it run to the round cap.
+    const verdicts = [];
+    for (let round = 0; round < 10; round++) {
+      guard.beginBatch();
+      // Identical arguments each time: only the TOOL alternates, which is
+      // exactly the shape a real stuck loop has (a fingerprint is the name
+      // AND its arguments).
+      verdicts.push(
+        guard.checkCall(
+          round % 2 === 0 ? 'describe_instances' : 'list_effects',
+          {
+            scene: 'Level 1',
+          }
+        )
+      );
+    }
+    expect(verdicts).toContain('stop');
+  });
+
+  it('TOOL-8: ordinary exploration that is NOT a tight cycle is not stopped', () => {
+    const guard = createByokLoopGuard();
+    for (let round = 0; round < 8; round++) {
+      guard.beginBatch();
+      expect(
+        guard.checkCall('describe_instances', { scene: `S${round}` })
+      ).toBe('ok');
+    }
+  });
+});

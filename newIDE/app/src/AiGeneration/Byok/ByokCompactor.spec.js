@@ -4,6 +4,7 @@ import {
   BYOK_COMPACTION_CONTEXT_RATIO,
   compactByokTranscript,
   findKeptTurnsStartIndex,
+  findKeptToolRoundsStartIndex,
   summarizeToolOutput,
 } from './ByokCompactor';
 
@@ -181,6 +182,83 @@ describe('ByokCompactor: drop order', () => {
     expect(oneLineCount).toBe(11);
     // The old turns were ALSO summarized into one message.
     expect(summarizer).toHaveBeenCalledTimes(1);
+  });
+
+  it('compacts a single mega-turn build chat (one user message, many tool rounds)', async () => {
+    // The flagship build shape: ONE user request, then dozens of tool
+    // rounds. With no turn boundary the compaction used to bail out
+    // entirely (keptTurnsStart === 0), so the chat dead-ended at
+    // byok-context-full with most of the transcript still compactable.
+    const transcript: Array<AiRequestMessage> = [
+      userMessage('build me a game'),
+    ];
+    for (let index = 0; index < 12; index++) {
+      transcript.push(
+        ...assistantToolCall(
+          `call-${index}`,
+          `A very long tool output for round ${index}.`.repeat(10)
+        )
+      );
+    }
+    const summarizer = (jest.fn(): any).mockResolvedValue('summary');
+    const outcome = await compactByokTranscript({
+      transcript,
+      summarizer,
+      preservedBlockText: '',
+      keepLastTurns: 10,
+      keepLastToolTurns: 3,
+    });
+    expect(outcome).not.toBe(null);
+    if (!outcome) return;
+    // 12 rounds − 3 kept recent = 9 outputs become one-liners.
+    expect(outcome.summarizedToolOutputCount).toBe(9);
+    // No turn boundary means no summarizable text region: the pass is a
+    // tool-output-only trim (the summarizer is never called).
+    expect(summarizer).not.toHaveBeenCalled();
+    expect(outcome.summaryText).toBe('');
+    // Every tool_call still has its output — the pass must never split a
+    // protocol pair.
+    const callIds: Set<string> = new Set();
+    for (const message of outcome.transcript) {
+      if (message.type === 'message' && message.role === 'assistant') {
+        for (const item of message.content) {
+          if (item.type === 'function_call') callIds.add(item.call_id);
+        }
+      }
+    }
+    const outputIds: Set<string> = new Set();
+    for (const message of outcome.transcript) {
+      if (message.type === 'function_call_output')
+        outputIds.add(message.call_id);
+    }
+    expect(outputIds.size).toBe(callIds.size);
+    for (const callId of callIds) expect(outputIds.has(callId)).toBe(true);
+  });
+
+  it('still bails out when there is neither a turn nor a round to trim', async () => {
+    const transcript: Array<AiRequestMessage> = [userMessage('hello')];
+    transcript.push(...assistantToolCall('call-0', 'A short output.'));
+    const summarizer = (jest.fn(): any).mockResolvedValue('summary');
+    const outcome = await compactByokTranscript({
+      transcript,
+      summarizer,
+      preservedBlockText: '',
+      keepLastTurns: 10,
+      keepLastToolTurns: 3,
+    });
+    expect(outcome).toBe(null);
+  });
+
+  it('findKeptToolRoundsStartIndex marks the 3rd-from-last tool round', () => {
+    const transcript: Array<AiRequestMessage> = [];
+    for (let index = 0; index < 5; index++) {
+      transcript.push(...assistantToolCall(`call-${index}`, `output ${index}`));
+    }
+    // 5 rounds (each round is 2 messages: the call, then its output), keep
+    // 2 → the window starts at the 3rd-from-last round (message index 6).
+    expect(findKeptToolRoundsStartIndex(transcript, 2)).toBe(6);
+    // Fewer rounds than the window: nothing old enough.
+    expect(findKeptToolRoundsStartIndex(transcript, 5)).toBe(0);
   });
 });
 

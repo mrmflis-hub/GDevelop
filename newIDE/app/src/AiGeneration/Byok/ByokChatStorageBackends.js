@@ -27,7 +27,15 @@ export const createByokIpcChatFilesBackend = (): ByokChatFilesBackend => {
   return {
     listFiles: async () => {
       const result = await invoke('byok-chats-list');
-      return result && result.ok ? result.data : [];
+      if (!result || !result.ok) {
+        // A FAILED listing must not read as "the folder is empty": the
+        // quota sweep deletes every sidecar that looks orphaned, so an
+        // empty array on failure wiped every chat's images on any
+        // transient userData enumeration error (audit100226 UI-3). Reject,
+        // exactly like writeFile/deleteFile.
+        throw new Error(result ? result.error : 'The chat file list failed.');
+      }
+      return result.data;
     },
     readFile: async fileName => {
       const result = await invoke('byok-chats-read', fileName);

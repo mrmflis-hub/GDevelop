@@ -200,6 +200,36 @@ describe('ByokModelRouter: target resolution order', () => {
       callKind: 'main',
     });
     expect(target.endpointUrl).toBe('https://global.example.com/v1');
+    // The selection pinned a provider the user has since deleted. It must
+    // fall through to normal profile/global resolution: keeping the dead
+    // provider's MODEL against the global endpoint sent a model that
+    // endpoint never knew (audit100226 UI-4).
+    expect(target.modelName).toBe('global-model');
+  });
+
+  it('keeps a chat selection whose provider still exists', () => {
+    const target = resolveByokModelTarget({
+      settings: makeSettings({
+        endpointUrl: 'https://global.example.com/v1',
+        modelName: 'global-model',
+        providers: [
+          {
+            id: 'kept',
+            name: 'Kept',
+            endpointUrl: 'https://kept.example.com/v1',
+            keyRef: 'kept',
+            modelSettings: [],
+          },
+        ],
+      }),
+      chatSelection: {
+        providerId: 'kept',
+        modelName: 'chat-model',
+        reasoningEffort: 'default',
+      },
+      callKind: 'main',
+    });
+    expect(target.endpointUrl).toBe('https://kept.example.com/v1');
     expect(target.modelName).toBe('chat-model');
   });
 });

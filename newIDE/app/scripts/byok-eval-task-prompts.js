@@ -9,7 +9,7 @@
 module.exports = {
   // ---- Event-logic (10) ----
   'coin-spawner-every-3s':
-    'In scene "Level 1", write an event: every 3 seconds (timer condition "BuiltinCommonInstructions::Timer", timer name "spawn"), create a new instance of object "Coin" at position 100, 200 via "CreerObjet". Use the add_scene_events tool.',
+    'In scene "Level 1", write an event: every 3 seconds (timer condition "BuiltinCommonInstructions::Timer", timer name "spawn"), create a new instance of object "Coin" at position 100, 200. Use the add_scene_events tool with an EventScript.',
   'player-movement-8-directions':
     'In scene "Level 1", add events so the object "Player" moves with forces in the 8 directions of the keyboard (use force actions). Use the add_scene_events tool.',
   'enemy-patrol-left-right':
@@ -23,9 +23,9 @@ module.exports = {
   'timer-based-difficulty-ramp':
     'In scene "Level 1", every 10 seconds (timer "ramp", properly reset each time), increase the global variable "Difficulty" by 1. Use the add_scene_events tool.',
   'delete-object-when-offscreen':
-    'In scene "Level 1", delete (Supprimer) any instance of "Bullet" as soon as it leaves the scene (DepartDeLaScene). Use the add_scene_events tool.',
+    'In scene "Level 1", delete any instance of "Bullet" as soon as it leaves the scene. Use the add_scene_events tool with an EventScript.',
   'scene-change-on-goal':
-    'In scene "Level 1", when "Player" collides with "Goal", change the scene to "Level 2" (ChangeScene). Use the add_scene_events tool.',
+    'In scene "Level 1", when "Player" collides with "Goal", change the scene to "Level 2". Use the add_scene_events tool with an EventScript.',
   'while-loop-spawn-grid':
     'In scene "Level 1", use a While event to create 5 instances of "Block" in a row, incrementing a counter variable each time. Use the add_scene_events tool.',
 
@@ -90,7 +90,7 @@ module.exports = {
     'The project needs this sound: https://example.com/assets/jump.mp3. Import it into the project as an audio resource. Use import_project_resources.',
   'custom-object-children':
     'The extension "UiKit" has a custom object "Button". Add a "Sprite" child named "Icon" to it. Use change_custom_object.',
-// ---- Discovery/runtime (Phase 12) ----
+  // ---- Discovery/runtime (Phase 12) ----
   'starter-template-pick':
     'No project is open. The user wants "a vertical platformer like Doodle Jump, but with a rocket". Pick a suitable starter template from the real catalog and create the project from it. Answer with the tool calls you would make, in order.',
   'asset-search-then-install':

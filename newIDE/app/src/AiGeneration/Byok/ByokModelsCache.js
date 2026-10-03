@@ -102,13 +102,32 @@ const modelsByBaseUrl: Map<string, Array<ByokModelInfo>> = new Map();
 const normalizeCacheBaseUrl = (baseUrl: string): string =>
   baseUrl.trim().replace(/\/+$/, '');
 
+// A model list is a function of BOTH the endpoint AND the key: two
+// providers pointing at the same aggregator URL with different accounts see
+// different models. The key itself is encrypted in safeStorage and cannot
+// be read synchronously here, so the cache is keyed by (URL, scope) where
+// the scope is the provider id (or 'global' for the single-endpoint
+// fallback) — which is what actually distinguishes the two entries
+// (audit100226 CACHE-4). A caller with no scope falls back to any entry of
+// that URL, so an unscoped read never misses a fetched list.
+const makeCacheKey = (baseUrl: string, scope?: ?string): string =>
+  scope
+    ? `${normalizeCacheBaseUrl(baseUrl)}::${scope}`
+    : normalizeCacheBaseUrl(baseUrl);
+
 /**
  * Remember the model list of an endpoint for this session (a copy of it).
  */
 export const cacheByokModels = (
   baseUrl: string,
-  models: Array<ByokModelInfo>
+  models: Array<ByokModelInfo>,
+  scope?: ?string
 ): void => {
+  if (scope) {
+    modelsByBaseUrl.set(makeCacheKey(baseUrl, scope), models.slice());
+    return;
+  }
+  // Unscoped: also keep it reachable under the bare URL.
   modelsByBaseUrl.set(normalizeCacheBaseUrl(baseUrl), models.slice());
 };
 
@@ -116,7 +135,14 @@ export const cacheByokModels = (
  * The model list remembered for an endpoint (a copy of it), or null when it
  * was never fetched (or the app was restarted: the cache is in-memory only).
  */
-export const getCachedByokModels = (baseUrl: string): ?Array<ByokModelInfo> => {
+export const getCachedByokModels = (
+  baseUrl: string,
+  scope?: ?string
+): ?Array<ByokModelInfo> => {
+  const scoped = scope
+    ? modelsByBaseUrl.get(makeCacheKey(baseUrl, scope))
+    : null;
+  if (scoped) return scoped.slice();
   const cachedModels = modelsByBaseUrl.get(normalizeCacheBaseUrl(baseUrl));
   return cachedModels ? cachedModels.slice() : null;
 };
@@ -135,13 +161,14 @@ export const clearByokModels = (): void => {
  * settings tab calls from its "Fetch models" button.
  */
 export const refreshByokModels = async (
-  connection: ByokConnection
+  connection: ByokConnection,
+  scope?: ?string
 ): Promise<Array<ByokModelInfo>> => {
   // The raw entries are needed here so the context-window fields reported by
   // the server can be parsed by normalizeByokModels.
   const rawModels = await fetchRawByokModels(connection);
   const models = normalizeByokModels(rawModels);
-  cacheByokModels(connection.baseUrl, models);
+  cacheByokModels(connection.baseUrl, models, scope);
   return models;
 };
 

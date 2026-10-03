@@ -182,20 +182,35 @@ const cancelledCallIds: Map<string, number> = new Map();
 const QUEUE_SLOT_RELEASE_MS = BYOK_MCP_TOOL_TIMEOUT_MS + 10000;
 
 function enqueue<T>(task: () => Promise<T>): Promise<T> {
-  const queued = queueTail.then(task);
-  // The next task runs after this one settles, whatever its outcome — or
-  // after the slot-release window, whichever comes first (the timer is
-  // cleared as soon as the race is decided, so a settled call leaves no
-  // dangling timer behind).
-  let releaseTimer = null;
-  const release = new Promise(resolve => {
-    releaseTimer = setTimeout(resolve, QUEUE_SLOT_RELEASE_MS);
+  // The release window is armed when the task ACTUALLY STARTS, not when it
+  // is enqueued (audit100226 MCP-1): armed at enqueue time, every call
+  // queued behind a hung head released at ~enqueue+130 s, so a whole burst
+  // started near-simultaneously and ran concurrent MUTATING tools on the
+  // shared project.
+  //
+  // The chain itself is extended SYNCHRONOUSLY (`queueTail = done`), so a
+  // call enqueued in the same tick as this one still waits for this one.
+  let resolveDone = () => {};
+  const done: Promise<void> = new Promise(resolve => {
+    resolveDone = resolve;
   });
-  const settled = queued.then(() => {}, () => {});
-  queueTail = Promise.race([settled, release]).then(() => {
-    clearTimeout(releaseTimer);
+  const previousTail = queueTail;
+  queueTail = done;
+
+  return previousTail.then(() => {
+    let releaseTimer = null;
+    const release = new Promise(resolve => {
+      releaseTimer = setTimeout(resolve, QUEUE_SLOT_RELEASE_MS);
+    });
+    const result = task();
+    // The next task waits for this one's outcome, or for the release window
+    // if it never settles — whichever comes first.
+    Promise.race([result.then(() => {}, () => {}), release]).then(() => {
+      clearTimeout(releaseTimer);
+      resolveDone();
+    });
+    return result;
   });
-  return queued;
 }
 
 export const cancelByokMcpCall = (requestId: string | number): void => {
@@ -269,7 +284,20 @@ export const executeByokMcpToolCall = (
     options && typeof options.timeoutMs === 'number'
       ? options.timeoutMs
       : BYOK_MCP_TOOL_TIMEOUT_MS;
-  return withTimeout(enqueue(task), timeoutMs, name, argsPreview, startedAt);
+  return withTimeout(
+    enqueue(task),
+    timeoutMs,
+    name,
+    argsPreview,
+    startedAt,
+    () => {
+      // The caller has given up, but the call may still be QUEUED and about to
+      // run. Mark it cancelled so the start check skips it: a mutating tool
+      // that runs after the client was told "timed out" discards its result,
+      // and a client retry then ran the mutation twice (audit100226 MCP-2).
+      if (requestIdKey !== null) cancelByokMcpCall(requestIdKey);
+    }
+  );
 };
 
 const readRequestIdKey = (options?: {|
@@ -313,13 +341,15 @@ const withTimeout = (
   timeoutMs: number,
   name: string,
   argsPreview: string,
-  startedAt: number
+  startedAt: number,
+  onTimeout?: () => void
 ): Promise<ByokMcpCallToolResult> =>
   new Promise(resolve => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      if (onTimeout) onTimeout();
       recordActivity(makeEntry(name, argsPreview, startedAt, 'timeout', false));
       resolve(
         makeByokMcpErrorResult(

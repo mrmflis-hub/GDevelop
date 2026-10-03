@@ -445,3 +445,79 @@ describe('importByokProjectResources: replace kind check (audit011026 B-TOOL-9)'
     }
   });
 });
+
+describe('ByokResourceTools: a failed download is never a success', () => {
+  // The production dep resolves the main-process {ok:false} result; the
+  // renderer wrapper converts it to a rejection so resolveEntryToFile's
+  // catch reports the failure instead of registering a resource pointing
+  // at a file that was never written (audit 2026-10-02 ELEC-15).
+  it('reports the entry as failed when downloadFile rejects', async () => {
+    const { deps } = makeDeps(makeFakeFs());
+    deps.downloadFile = async () => {
+      throw new Error('The download failed: HTTP 404.');
+    };
+    const project = makeProject();
+
+    const results = await importByokProjectResources({
+      project,
+      entries: [{ source: 'https://example.com/missing.png' }],
+      replaceExisting: false,
+      deps,
+    });
+
+    expect(results[0].status).toBe('failed');
+    expect(results[0].error).toContain('404');
+    // Nothing was registered: the project's resource list is untouched.
+    expect(project.getResourcesManager().hasResource('missing.png')).toBe(
+      false
+    );
+  });
+
+  it('registers the resource when the download succeeds', async () => {
+    const { deps } = makeDeps(makeFakeFs());
+    const project = makeProject();
+
+    const results = await importByokProjectResources({
+      project,
+      entries: [{ source: 'https://example.com/present.png' }],
+      replaceExisting: false,
+      deps,
+    });
+
+    expect(results[0].status).toBe('registered');
+    expect(results[0].name).toBe('present.png');
+  });
+});
+
+describe('ByokResourceTools: Windows-hostile file names (ELEC-18)', () => {
+  // The model chooses the resource name through the URL. These shapes pass
+  // a plain basename check but are not writable names on Windows: a colon
+  // creates an NTFS Alternate Data Stream, and CON/nul/com1 are device
+  // names. Each case gets its own project because sanitizing can collapse
+  // several of them onto the same fallback name.
+  const hostileSources = [
+    'https://example.com/hero.png:secret',
+    'https://example.com/CON.png',
+    'https://example.com/nul.png',
+    'https://example.com/com1.json',
+    'https://example.com/lpt9.txt',
+  ];
+
+  it.each(hostileSources)(
+    'never writes a hostile name for %s',
+    async source => {
+      const { deps } = makeDeps(makeFakeFs());
+      const project = makeProject();
+      const results = await importByokProjectResources({
+        project,
+        entries: [{ source, kind: 'image' }],
+        replaceExisting: false,
+        deps,
+      });
+      expect(results[0].status).toBe('registered');
+      const name = results[0].name;
+      expect(name).not.toContain(':');
+      expect(name).not.toMatch(/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|_|$)/i);
+    }
+  );
+});

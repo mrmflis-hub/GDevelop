@@ -82,18 +82,59 @@ const ACTIVITY_OUTCOMES = new Set([
 // outlives enable/disable cycles — it is a log, not server state.
 const activityAggregate = [];
 
+// Mirrors ByokMcpToolHost.js: argsPreview is JSON.stringify(args).slice(0,
+// 200), `at` is an ISO timestamp, durationMs is a Date.now() delta.
+const MAX_ACTIVITY_ARGS_PREVIEW_LENGTH = 200;
+const MAX_ACTIVITY_TOOL_LENGTH = 200;
+const MAX_ACTIVITY_TIMESTAMP_LENGTH = 40;
+
 const isValidActivityEntry = entry => {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
-  if (typeof entry.at !== 'string') return false;
-  if (typeof entry.tool !== 'string') return false;
-  if (typeof entry.argsPreview !== 'string') return false;
+  // Bounded lengths: the renderer is not trusted for size, and a
+  // multi-megabyte argsPreview would sit in the main process until the
+  // aggregate rotated (audit100226 MCP-5).
+  if (
+    typeof entry.at !== 'string' ||
+    entry.at.length === 0 ||
+    entry.at.length > MAX_ACTIVITY_TIMESTAMP_LENGTH ||
+    Number.isNaN(Date.parse(entry.at))
+  ) {
+    return false;
+  }
+  if (
+    typeof entry.tool !== 'string' ||
+    entry.tool.length === 0 ||
+    entry.tool.length > MAX_ACTIVITY_TOOL_LENGTH
+  ) {
+    return false;
+  }
+  if (
+    typeof entry.argsPreview !== 'string' ||
+    entry.argsPreview.length > MAX_ACTIVITY_ARGS_PREVIEW_LENGTH
+  ) {
+    return false;
+  }
   if (!ACTIVITY_OUTCOMES.has(entry.outcome)) return false;
   if (typeof entry.didModifyProject !== 'boolean') return false;
-  return typeof entry.durationMs === 'number';
+  // NaN / Infinity survive structured clone across IPC.
+  return (
+    typeof entry.durationMs === 'number' &&
+    Number.isFinite(entry.durationMs) &&
+    entry.durationMs >= 0
+  );
 };
 
 const recordActivityEntry = entry => {
-  activityAggregate.push(entry);
+  // A whitelisted copy: unknown extra keys on the IPC payload must not
+  // reach the aggregate the settings card renders (audit100226 MCP-5).
+  activityAggregate.push({
+    at: entry.at,
+    tool: entry.tool,
+    argsPreview: entry.argsPreview,
+    outcome: entry.outcome,
+    didModifyProject: entry.didModifyProject,
+    durationMs: entry.durationMs,
+  });
   if (activityAggregate.length > MAX_ACTIVITY_ENTRIES) {
     activityAggregate.shift();
   }
@@ -449,7 +490,28 @@ const ensureStopped = app => {
   return { ok: true, running: false, port: null };
 };
 
+// The in-flight start (audit100226 ELEC-16): two rapid
+// `byok-mcp-set-enabled {enabled:true}` invokes both used to pass the
+// `if (serverState)` check during the async owner probe, each bound a
+// loopback listener, and the first server was leaked — still listening and
+// answering with the current token on its own port. Mirrors the
+// `setupInFlight` pattern of ByokQdrant.js.
+let startInFlight = null;
+
 const ensureStarted = async app => {
+  if (serverState) return { ok: true, running: true, port: serverState.port };
+  if (startInFlight) return startInFlight;
+  startInFlight = (async () => {
+    try {
+      return await startServerAndProbe(app);
+    } finally {
+      startInFlight = null;
+    }
+  })();
+  return startInFlight;
+};
+
+const startServerAndProbe = async app => {
   if (serverState) return { ok: true, running: true, port: serverState.port };
   const discoveryFilePath = getDiscoveryFilePath(app);
   const foreignOwnerPid = await findForeignOwnerPid(discoveryFilePath);
@@ -501,6 +563,20 @@ const registerByokMcpServer = (ipcMain, app) => {
     if (!sendersWithDestroyedHook.has(sender)) {
       sendersWithDestroyedHook.add(sender);
       sender.once('destroyed', () => {
+        readySenders.delete(sender);
+      });
+      // A RELOAD (Ctrl+R) recreates the renderer context WITHOUT destroying
+      // the webContents, so the 'destroyed' hook never fires and the stale
+      // sender stayed in readySenders: every forwarded call then went to a
+      // context with no tool host and hung for the full 150 s forward
+      // timeout (audit100226 ELEC-20). did-navigate fires on every
+      // main-frame commit including reloads; in-page navigations only fire
+      // did-navigate-in-page, so they keep their live context and are not
+      // dropped.
+      sender.on('did-navigate', () => {
+        readySenders.delete(sender);
+      });
+      sender.on('render-process-gone', () => {
         readySenders.delete(sender);
       });
     }

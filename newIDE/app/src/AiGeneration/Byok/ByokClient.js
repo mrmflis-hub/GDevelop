@@ -149,6 +149,16 @@ const findChatResponseShapeProblem = (data: mixed): ?string => {
   if (!message || typeof message !== 'object') {
     return 'The endpoint returned a response without a message.';
   }
+  // `content` must be a string (or absent): a gateway that returns it as an
+  // ARRAY of content parts made every turn look like an empty answer, and
+  // Retry replayed the same deterministic failure (audit100226 LOOP-4).
+  if (
+    message.content !== undefined &&
+    message.content !== null &&
+    typeof message.content !== 'string'
+  ) {
+    return 'The endpoint returned a message whose content is not text.';
+  }
   if (message.tool_calls === undefined || message.tool_calls === null) {
     return null;
   }
@@ -170,6 +180,22 @@ const findChatResponseShapeProblem = (data: mixed): ?string => {
       !toolCall.function.name
     ) {
       return 'The endpoint returned a tool call without a function name.';
+    }
+    // `function.arguments` must be a STRING. When a server omitted it, the
+    // call was recorded as undefined and replayed as a tool_call with no
+    // arguments field — which strict endpoints reject with a 400 on the
+    // whole transcript, and Retry replays the same one, so the chat was
+    // bricked (audit100226 LOOP-4). An absent arguments is normalized to
+    // '{}' instead: a no-argument call is a legitimate shape.
+    if (
+      toolCall.function.arguments !== undefined &&
+      toolCall.function.arguments !== null &&
+      typeof toolCall.function.arguments !== 'string'
+    ) {
+      return 'The endpoint returned a tool call whose arguments are not text.';
+    }
+    if (typeof toolCall.function.arguments !== 'string') {
+      toolCall.function.arguments = '{}';
     }
   }
   return null;

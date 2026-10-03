@@ -552,4 +552,98 @@ manual in the same session and say so in the worklog.
   usertasks Task 18 (now including the completion session in the commit
   review and four new desktop-QA additions).
 
+- **Second full BYOK audit 2026-10-02 (audit100226, uncommitted; owner
+  ordered it in chat):** ten read-only subagents in two waves over the
+  axes audit011026 did not cover — caching in depth, tool-layer ergonomics,
+  the upstream editor files BYOK abuses, and **regressions introduced by
+  the previous session's own fixes**. Nine findings fixed with tests:
+  **the prompt-cache invalidation key** (`systemPromptSnapshotNotesIdentifier`
+  was compared but never stored, so with a project open the ~5.4k-token
+  system prompt was recomposed EVERY round and a mid-chat
+  `update_project_notes` write busted the provider prefix cache from
+  position zero — Phase 14.1 was effectively defeated, and its "spec-proven"
+  test was vacuous because `update_project_notes` is intercepted and never
+  reached the executor mock); the **orphaned-`tool_calls` brick class**
+  (an exception escaping the extension-regeneration flush or a rejecting
+  approval prompt persisted a transcript strict endpoints 400 forever —
+  now contained at both awaits PLUS an `answerPendingToolCalls` sweep on
+  every batch); **compaction could not fire in a mega-turn build chat**
+  (both cut points were user-turn based, so the flagship one-user-message /
+  50-100-round shape dead-ended at the non-retryable `byok-context-full` —
+  a round-based fallback boundary now covers the tool-output trim); the
+  parent/sub-agent turn budget was two independent 150s, not one;
+  `add_external_events` still validated after mutating (a B-TOOL-3
+  regression whose own comment claimed otherwise); **failed resource
+  downloads were reported as successes** (the `downloadFile` dep resolves
+  `{ok:false}` and the caller only catches rejections, so a 404 registered
+  a resource pointing at a file never written); the effort pill pinned
+  `providerId: ''` and re-routed providers-only chats to the global
+  endpoint; and the **MCP path never marked the project dirty** (every
+  external-agent edit silently lost on close) nor flushed the extensions
+  reload (created functions unusable over MCP). Every fix was
+  regression-guarded by reverting it and watching the new test go red; two
+  first-draft tests turned out vacuous and were rewritten with explicit
+  non-vacuity assertions. Gates: 235 suites / 2,636 tests + 1 pre-existing
+  skip, lint 0/0, Flow 0, prettier clean. The remaining ~40 open findings
+  are triaged in `REVIEW/outofscoped.md`; the highest are the **Qdrant
+  backend being upload-only** (`qdrantSearch` declared and consumed but
+  never wired, so restart silently degrades to lexical while the card
+  reports healthy) and the **eval scorers rewarding the hosted backend's
+  French instruction vocabulary**, which the local event writer refuses.
+  Permanent record: `REVIEW/audit100226.md`. Owner follow-ups: usertasks
+  Task 19.
+
+- **audit100226 IMPLEMENTATION session 2026-10-02 (owner-ordered
+  "implement all fixes", uncommitted):** the audit's ~40 remaining
+  findings are now fixed and tested — 49 of ~50 overall across the two
+  sessions. Batched by subsystem: **RAG** (the Qdrant backend is no longer
+  upload-only — the store gained `search`/`inspect`, the engine takes the
+  semantic path with a remote dep and no local index, restart recovery
+  gained a Qdrant branch, and the status card follows the server; that
+  branch had ZERO tests, which is why it survived the 63-finding audit,
+  and now has five; stale points are deleted on a shrinking corpus; the
+  snapshot restore no longer drops the collection on a client timeout;
+  lexical search answers paraphrases instead of zero hits, which matters
+  because RAG is off by default), **loop** (response validation covers
+  content/arguments shapes so a gateway quirk can no longer brick a
+  chat; Stop aborts the compaction call; the turn-budget error is
+  non-retryable; the loop guard rolls back an unexecuted batch and
+  detects alternating cycles), **tools** (the two runtime-inspection
+  tools honor the `scene_name`/`variable_paths` they advertised and
+  ignored, and cap their dump with an honest truncation report;
+  `list_effects` is capped with a real total; `read_doc_page` is
+  advertised whenever three prompt surfaces already teach it, and the
+  advertisement is DEDUPED because a duplicate `tools` entry is rejected
+  by strict endpoints), **persistence/UI** (a chat deleted mid-save can
+  no longer be resurrected; a failed file listing can no longer wipe
+  every image sidecar; a chat selection naming a removed provider falls
+  through to normal routing; removing a provider no longer clears the
+  shared legacy key slot), **MCP** (a new project mutation lock
+  serializes the chat's tool batches against MCP calls; the queue
+  releases its slot at task START not at enqueue, so a burst no longer
+  runs concurrent mutating tools; a timed-out call is cancelled rather
+  than executed late; `update_project_notes` is refused in read-only
+  mode), **Electron** (the MCP start is mutexed; the snapshot URL is
+  validated server-side before any download/drop/fetch; model-chosen
+  resource names reject ADS colons and reserved device names; atomic
+  writes use a unique temp name and clean up on failure — extracted to
+  the testable plain-CJS `ByokAtomicWriteCore.js`; a reloaded renderer
+  is dropped from the ready senders), **upstream** (the extension
+  `create_*` tools sanitize names and refuse reserved lifecycle names —
+  the existing spec was itself using `doStepPreEvents` as an ordinary
+  example, a name the editor refuses; the event-replacement paths verify
+  content before clearing; a mutating function that throws still reports
+  the mutation), **prompt/scripts** (the eval harness no longer scores the
+  hosted backend's serialized French instruction vocabulary, which BYOK's
+  local writer rejects — it failed every answer in the only format the
+  real tool accepts). New shared machinery: `ByokMutationLock.js` and
+  `ByokAtomicWriteCore.js` (+specs). Three existing tests pinned buggy
+  behavior and were corrected to state the fixed contract. Gates: 237
+  suites / 2,673 tests + 1 pre-existing skip, lint 0/0, Flow 0, prettier
+  clean (app + electron-app); one different untouched suite still flakes
+  per full run (the documented O4 family, seventh+ members, all passing
+  standalone). ~25 items remain open with their reasons in
+  `outofscoped.md`; dispositions in `audit100226.md` Part 6. Owner
+  follow-ups: usertasks Task 20.
+
 *Last updated: 2026-10-02.*

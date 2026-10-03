@@ -845,8 +845,14 @@ const createExtensionTool: ByokExtraTool = {
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
-    const extensionName = readRequiredString(args, 'extension_name');
-    if (!extensionName) return makeFailure('Missing extension_name.');
+    const requestedExtensionName = readRequiredString(args, 'extension_name');
+    if (!requestedExtensionName) return makeFailure('Missing extension_name.');
+    // The editor's name rule: every editor path (MainFrame rename, the
+    // ProjectManager creation dialog, paste) sanitizes with
+    // gd.Project.getSafeName before inserting. The create tools skipped it,
+    // so a model could create object types ("Platformer Helpers::X") the
+    // editor can never produce (audit100226 UP-12).
+    const extensionName = gd.Project.getSafeName(requestedExtensionName);
 
     if (project.hasEventsFunctionsExtensionNamed(extensionName)) {
       return makeFailure(
@@ -977,8 +983,12 @@ const createCustomObjectTool: ByokExtraTool = {
     const project = collaborators.getProject();
     const extensionName = readRequiredString(args, 'extension_name');
     if (!extensionName) return makeFailure('Missing extension_name.');
-    const customObjectName = readRequiredString(args, 'custom_object_name');
-    if (!customObjectName) return makeFailure('Missing custom_object_name.');
+    const requestedObjectName = readRequiredString(args, 'custom_object_name');
+    if (!requestedObjectName) return makeFailure('Missing custom_object_name.');
+    // Every editor path sanitizes before inserting; the create tools did not,
+    // so a model could create object types the editor can never produce
+    // (audit100226 UP-12). The FIRST occurrence is create_custom_object.
+    const customObjectName = gd.Project.getSafeName(requestedObjectName);
     const { extension, failure } = getExtensionOrFailure(
       project,
       extensionName
@@ -1143,9 +1153,14 @@ const createCustomBehaviorTool: ByokExtraTool = {
     const project = collaborators.getProject();
     const extensionName = readRequiredString(args, 'extension_name');
     if (!extensionName) return makeFailure('Missing extension_name.');
-    const customBehaviorName = readRequiredString(args, 'custom_behavior_name');
-    if (!customBehaviorName)
+    const requestedBehaviorName = readRequiredString(
+      args,
+      'custom_behavior_name'
+    );
+    if (!requestedBehaviorName)
       return makeFailure('Missing custom_behavior_name.');
+    // Sanitized like every editor creation path (audit100226 UP-12).
+    const customBehaviorName = gd.Project.getSafeName(requestedBehaviorName);
     const { extension, failure } = getExtensionOrFailure(
       project,
       extensionName
@@ -1298,8 +1313,10 @@ const createCustomFunctionTool: ByokExtraTool = {
     const project = collaborators.getProject();
     const extensionName = readRequiredString(args, 'extension_name');
     if (!extensionName) return makeFailure('Missing extension_name.');
-    const functionName = readRequiredString(args, 'function_name');
-    if (!functionName) return makeFailure('Missing function_name.');
+    const requestedFunctionName = readRequiredString(args, 'function_name');
+    if (!requestedFunctionName) return makeFailure('Missing function_name.');
+    // Sanitized like every editor creation path (audit100226 UP-12).
+    const functionName = gd.Project.getSafeName(requestedFunctionName);
     const { extension, failure } = getExtensionOrFailure(
       project,
       extensionName
@@ -1315,6 +1332,26 @@ const createCustomFunctionTool: ByokExtraTool = {
     if (functionsContainer.hasEventsFunctionNamed(functionName)) {
       return makeFailure(
         `A function named "${functionName}" already exists in this scope — use change_custom_function to modify it.`
+      );
+    }
+
+    // The lifecycle names are RESERVED: the ensure*ProperParameters machinery
+    // creates them at runtime, and every editor path refuses to let a user
+    // create one. The create tool skipped that check (audit100226 UP-12).
+    const isLifecycleName = readOptionalString(args, 'custom_behavior_name')
+      ? gd.MetadataDeclarationHelper.isBehaviorLifecycleEventsFunction(
+          functionName
+        )
+      : readOptionalString(args, 'custom_object_name')
+      ? gd.MetadataDeclarationHelper.isObjectLifecycleEventsFunction(
+          functionName
+        )
+      : gd.MetadataDeclarationHelper.isExtensionLifecycleEventsFunction(
+          functionName
+        );
+    if (isLifecycleName) {
+      return makeFailure(
+        `"${functionName}" is reserved in this scope for the lifecycle functions the engine creates automatically. Pick another name.`
       );
     }
 

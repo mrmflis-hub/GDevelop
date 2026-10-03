@@ -38,6 +38,36 @@ const isUserTurnStart = (message: AiRequestMessage): boolean =>
   message.role === 'user' &&
   !(message: any).byokCompactionSynthetic;
 
+const carriesToolCalls = (message: AiRequestMessage): boolean => {
+  if (message.type !== 'message' || message.role !== 'assistant') {
+    return false;
+  }
+  return message.content.some(item => item.type === 'function_call');
+};
+
+/**
+ * The transcript index where the last `keepCount` TOOL ROUNDS begin (a
+ * round is an assistant message carrying tool calls).
+ *
+ * The turn-based windows above collapse on the flagship single mega-turn
+ * (one user message, dozens of tool rounds — the documented 50-100-round
+ * build shape): with one or two user turns there is no index to cut at, so
+ * compaction bailed out entirely and the chat dead-ended at
+ * `byok-context-full` with most of the transcript mechanically compactable.
+ * The tool-output trim only needs a ROUND boundary, so it gets one.
+ */
+export const findKeptToolRoundsStartIndex = (
+  transcript: Array<AiRequestMessage>,
+  keepCount: number
+): number => {
+  const roundStartIndices: Array<number> = [];
+  for (let index = 0; index < transcript.length; index++) {
+    if (carriesToolCalls(transcript[index])) roundStartIndices.push(index);
+  }
+  if (roundStartIndices.length <= keepCount) return 0;
+  return roundStartIndices[roundStartIndices.length - keepCount];
+};
+
 /**
  * The two user-role messages a compaction prepends carry this BYOK-local
  * flag: they must not count as conversation turns (turn counting that
@@ -172,10 +202,47 @@ export const compactByokTranscript = async ({
   keepLastToolTurns?: number,
   summaryMaxChars?: number,
 |}): Promise<?ByokCompactionOutcome> => {
-  const keptTurnsStart = findKeptTurnsStartIndex(transcript, keepLastTurns);
-  if (keptTurnsStart === 0) return null;
+  const turnsStart = findKeptTurnsStartIndex(transcript, keepLastTurns);
 
-  const toolTrimStart = findKeptTurnsStartIndex(transcript, keepLastToolTurns);
+  // The tool-output window prefers a turn boundary, but falls back to a
+  // ROUND boundary when the chat is one big user turn (see
+  // findKeptToolRoundsStartIndex).
+  const toolTurnsStart = findKeptTurnsStartIndex(transcript, keepLastToolTurns);
+  const toolRoundsStart = findKeptToolRoundsStartIndex(
+    transcript,
+    keepLastToolTurns
+  );
+  const toolTrimStart =
+    toolTurnsStart > 0
+      ? toolTurnsStart
+      : toolRoundsStart > 0
+      ? toolRoundsStart
+      : 0;
+
+  // Count the outputs this pass would actually SHORTEN: one that is
+  // already a one-liner is left alone (summarizeToolOutput is a no-op on
+  // it). Without this, a just-compacted transcript would keep returning a
+  // non-null outcome that changes nothing, re-entering compaction every
+  // round — the churn the B-CORE-5 fix closed.
+  let trimmableToolOutputCount = 0;
+  for (let index = 0; index < transcript.length; index++) {
+    const message = transcript[index];
+    if (message.type !== 'function_call_output') continue;
+    if (index >= toolTrimStart) continue;
+    if (summarizeToolOutput(message.output) === message.output) continue;
+    trimmableToolOutputCount++;
+  }
+
+  // Nothing to summarize AND nothing to trim: there is genuinely nothing
+  // this pass could reclaim.
+  if (turnsStart === 0 && trimmableToolOutputCount === 0) return null;
+
+  // Without a turn boundary there is no old region to summarize, so the
+  // pass is a tool-output-only trim: a keptTurnsStart of -1 puts NO message
+  // in the summarize region (index < -1 is never true), which keeps the
+  // protocol pairs intact and simply turns the old bulky outputs into
+  // one-liners.
+  const keptTurnsStart = turnsStart === 0 ? -1 : turnsStart;
 
   // The latest image of the whole chat survives; every older one goes.
   const allImageIds: Array<string> = [];
@@ -206,12 +273,6 @@ export const compactByokTranscript = async ({
   // OpenAI protocol pairs them; splitting a pair across the summary
   // boundary would send orphan tool messages). They are compacted in
   // place: the outputs become one-liners, the call stays.
-  const carriesToolCalls = (message: AiRequestMessage): boolean => {
-    if (message.type !== 'message' || message.role !== 'assistant') {
-      return false;
-    }
-    return message.content.some(item => item.type === 'function_call');
-  };
 
   for (let index = 0; index < transcript.length; index++) {
     const message = transcript[index];

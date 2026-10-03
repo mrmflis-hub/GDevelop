@@ -400,3 +400,42 @@ describe('runByokMcpToolCall', () => {
     expect(detailed.result.content[0].text).toContain('project closed');
   });
 });
+
+describe('ByokMcpTools: read-only refuses durable agent-state writes (MCP-7)', () => {
+  it('blocks update_project_notes in read-only mode', () => {
+    // It is modifiesProject:false (no gd object changes), so the chat's
+    // approval row correctly ignores it — but a read-only MCP server
+    // promises "no changes", and the notes are injected into the system
+    // prompt of every future BYOK chat.
+    expect(
+      byokMcpCallIsAllowed(
+        { modifiesProject: false },
+        { conventions: 'x' },
+        'read-only',
+        'update_project_notes'
+      )
+    ).toBe(false);
+  });
+
+  it('allows it in read-write mode', () => {
+    expect(
+      byokMcpCallIsAllowed(
+        { modifiesProject: false },
+        { conventions: 'x' },
+        'read-write',
+        'update_project_notes'
+      )
+    ).toBe(true);
+  });
+
+  it('leaves genuinely read-only tools allowed in read-only mode', () => {
+    expect(
+      byokMcpCallIsAllowed(
+        { modifiesProject: false },
+        {},
+        'read-only',
+        'read_project_notes'
+      )
+    ).toBe(true);
+  });
+});

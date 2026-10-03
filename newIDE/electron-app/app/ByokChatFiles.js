@@ -1,5 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const {
+  writeByokFileAtomically,
+} = require('../../app/src/AiGeneration/Byok/ByokAtomicWriteCore');
+const makeUniqueTempToken = () =>
+  require('crypto')
+    .randomBytes(8)
+    .toString('hex');
 
 // BYOK durable chat history (Phase 9.3): the desktop side of the chat file
 // store. The chats live as Markdown files (plus `.images.json` image
@@ -80,14 +87,16 @@ const writeByokChatFile = (userDataPath, fileName, content) => {
     // Atomic write (audit011026 B-ELEC-10): a crash mid-write of the final
     // path left a truncated chat that the renderer's quarantine then hid —
     // temp + same-volume rename keeps the previous file intact until the
-    // new one is fully on disk.
-    const finalPath = path.join(chatsFolder, fileName);
-    const temporaryPath = path.join(
+    // new one is fully on disk. The temp name is unique per call: it used
+    // to be fixed per file+pid, so two windows saving the same chat
+    // published each other's buffer (audit100226 ELEC-19).
+    writeByokFileAtomically(
+      fs,
       chatsFolder,
-      `${fileName}.tmp-${process.pid}`
+      fileName,
+      content,
+      makeUniqueTempToken
     );
-    fs.writeFileSync(temporaryPath, content, 'utf8');
-    fs.renameSync(temporaryPath, finalPath);
     return { ok: true, data: null };
   } catch (error) {
     return { ok: false, error: String(error) };

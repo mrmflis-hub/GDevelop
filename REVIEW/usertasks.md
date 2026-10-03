@@ -1124,3 +1124,147 @@ Recommended dispositions, one line each:
    local exporters still download resources fine through the now
    confined `local-file-download` (path containment + gdevelop.io-only
    cookie — worth one online-export smoke test).
+
+## Task 19 — audit100226 (2026-10-02 full BYOK audit, second pass)
+
+1. **Commit the audit100226 fixes** — the session's nine fixes are
+   **uncommitted**, awaiting your review like every prior session. The
+   highest-value one is the prompt-cache regression (A1002-CACHE-1): with a
+   project open the ~5.4k-token system prompt was being recomposed on every
+   round, so long build turns paid for it repeatedly and a mid-chat
+   `update_project_notes` write busted the provider prefix cache from
+   position zero. Phase 14.1's cost benefit was effectively zero until now.
+2. **A1002-UP-9 needs a desktop check** — MCP mutations now mark the project
+   dirty. Before the fix, an external MCP agent's edits left the editor
+   saying "no unsaved changes", so closing the project silently discarded
+   them. Worth one manual confirmation: enable MCP read-write, have a
+   client call `add_scene_events`, and confirm the save prompt appears.
+3. **Qdrant is the one open high finding** (`outofscoped.md`
+   `[A1002-RAG-1]`): the backend is upload-only — after a restart, Qdrant
+   users silently fall back to lexical search while the settings card
+   reports healthy. If you want Qdrant to be a real option rather than a
+   half-implemented one, this is the next piece of work; otherwise it is a
+   candidate to remove from the UI rather than leave misleading.
+4. **The eval harness scores a format the tool refuses**
+   (`outofscoped.md` `[A1002-SCRIPT-1]`): the 10 event-logic scorers grep for
+   the hosted backend's French instruction vocabulary, which the local event
+   writer rejects — so the eval passes answers the real tool would refuse
+   and fails ones it accepts. If you rely on those scores to judge prompt
+   changes, they currently measure the wrong thing.
+5. **Desktop QA additions for this session's fixes** (fold into Task 18/17.5):
+   the effort pill no longer re-routes a providers-only chat to the global
+   endpoint; a mega-turn build chat compacts instead of dead-ending at
+   "context full"; a failed resource download reports a failure instead of
+   registering a broken resource; MCP extension authoring regenerates so
+   created functions are callable in events.
+
+## Phase 15 owner decisions — presented 2026-10-02, completed 2026-10-03
+
+The owner asked for BYOK to write real JavaScript game code in Monaco,
+bundled to files on disk the way the build bundles, with edits hot-reloaded
+into a running preview — under the standing BYOK constraint of touching as
+little GDevelop code as possible. The survey found that most of the requested
+machinery already ships upstream (the extension "extra source files" bundler,
+the runtime `HotReloader`, a project-folder watcher, a Monaco wrapper, a
+virtualized `TreeView`, and a three-pane `EditorMosaic`), so the phase is an
+orchestration layer in `Byok/GameCode/` plus a small upstream touchpoint
+budget. Plan: `Phase15.md`.
+
+1. `[D15-1]` **Source of truth is the file on disk**, in a BYOK-owned folder
+   inside the project folder; the project model holds only the registry entry.
+   **Owner: yes.** (This drops the owner's original "pull the JS out of the
+   project model heap" premise — GDevelop never stores JS text in the heap, so
+   there is no heap↔disk sync to build.)
+2. `[D15-2]` **One `<script src>` per file**, ordered by our rules; no
+   concatenation into a bundle. **Owner: yes.**
+3. `[D15-3]` **Folder layout is domain-first, the owner's own scheme**:
+   `<project>/<GameName>Code/` with core files at the root plus folders
+   divided by what they affect (`character/` = every character script).
+   **Owner: yes, as specified.**
+4. `[D15-3a]` **Load order inside the domain-first taxonomy**: groupings stay
+   coherent by what the files refer to (owner's examples: `character/`,
+   `enemy/`, `floor/`, `lava/`), alphabetical within each grouping. Tier 1 =
+   root files + `core/`; tier 2 = other groupings alphabetically. `main.js` is
+   a boot convention, not a load position. **Owner (2026-10-03): yes, exactly
+   that** ("as long as we try to maintain some sort of coherence by what the
+   files refer to … they can be ordered alphabetically within their respective
+   groupings"). Recorded as `[D15-3b]`: because the grouping name is also the
+   runtime namespace (D15-12), the taxonomy is a contract the AI must honour —
+   create a grouping before adding the first file of a new kind.
+5. `[D15-4]` **A dedicated carrier extension** holding the source-file
+   declarations, made structurally used by the game so the exporter always
+   includes it. **Owner: yes.**
+6. `[D15-5]` **A documented `main.js` entry** the AI writes, owning boot
+   order. **Owner: yes.**
+7. `[D15-6]` **Both hot-reload triggers**: an explicit tool/button, and
+   automatic on watcher events behind a setting that defaults on for local
+   projects. **Owner: both.**
+8. `[D15-7]` **A real IDE pane, not a viewer**: Monaco read *and* write, a
+   file tree rooted at the game-code folder only (no wider engine filesystem
+   access), opened as a top tab, laid out like VS Code — tree left, editor
+   middle, Ask AI chat right. **Owner: yes, as specified.**
+9. `[D15-8]` **BYOK's own debugger client** pushes the `hotReload` command.
+   **Owner: yes.**
+10. `[D15-9]` **A dedicated tab opened from a button above the settings
+    button.** There is no settings button in the editor toolbar, so this
+    resolves to the home page vertical bar / menu burger list
+    (`HomePageMenu.js:155-167`): new button at index 0, Preferences to index
+    1. **Owner: yes, and confirmed this exact reading ("I meant the homepage
+    vertical bar and menu burger").**
+11. `[D15-10]` **The pre-existing "JavaScript code" event** (`JsCodeEvent`,
+    inline JS typed in an events sheet, stored as `inlineCode` in the
+    project). **Owner (2026-10-03): "leave t alone" [sic] — leave it alone.**
+    No migration, no deprecation, no upstream UI change; game-code files are
+    documented as the path the AI uses. Rationale recorded in `Phase15.md` §2:
+    the two are complementary, not competing — a JS code event is positional
+    (runs inside the scene's event flow, with `runtimeScene` and an optional
+    object list), a game-code file is module-level code loaded before the scene
+    runs.
+12. `[D15-11]` **Chat uniqueness while the pane is open**: opening the
+    game-code tab closes the standalone Ask AI tab, so exactly one chat UI
+    exists. **Owner (2026-10-03): yes** — "probably best solution".
+13. `[D15-12]` **Classic scripts with folder-derived globals, not ES
+    modules** (individual script tags cannot use `import`/`export`, and
+    modules cannot be unloaded on hot reload). Each file assigns into a
+    namespace derived from its folder, so `character/spawn.js` writes
+    `GameCode.character.spawn`, and each file creates its namespace
+    defensively so load order never has to be perfect. **Owner (2026-10-03):
+    yes, conditional on it working with the GD engine** — "as long as it works
+    with GD engine then it's a great solution". That condition is now a tested
+    acceptance criterion `[A15-8]` in `Phase15.md` §4 (callable from another
+    game-code file *and* from a scene's JS code event in a real preview), not
+    an assumption.
+14. `[D15-13]` **Deletion hard-reloads** — a removed script cannot be unloaded
+    from a running page (`GDJS/Runtime/debugger-client/hot-reloader.ts:484-497`
+    only warns), so `delete_game_code_file` triggers a hard reload. **Owner
+    (2026-10-03): yes** — "if this is a limitation then we have to roll with
+    it and use hard reload upon script deletion".
+
+**All 13 decisions are answered.** Not started: no code written for Phase 15.
+The upstream touchpoint budget is four files, each listed in `Phase15.md` §3
+(steps 15.4 and 15.5) and to be recorded in the worklog when the phase runs.
+
+## Task 20 — audit100226 implementation session (2026-10-02)
+
+1. **Commit both 2026-10-02 sessions together** — uncommitted: the audit
+   fixes (nine) plus this session's ~40. Highlights worth a look in review:
+   the Qdrant backend is now a real backend instead of upload-only; a project
+   mutation lock serializes chat and MCP tool execution; the eval harness now
+   scores the EventScript the local writer accepts instead of the hosted
+   backend's serialized French vocabulary; and the extension `create_*` tools
+   sanitize names and refuse reserved lifecycle names.
+2. **Three existing tests pinned buggy behavior and were corrected** rather
+   than worked around — the RAG lexical AND-only test, the router's
+   unknown-provider test, and the tool-schema advertisement test. Worth a
+   look in the diff since they change assertions, not just code.
+3. **Desktop QA for the electron-main fixes** (no test runner there by project
+   rule): a double toggle of the MCP server starts exactly one endpoint; the
+   snapshot restore refuses a non-release URL and no longer destroys the
+   collection on a slow import; a resource URL containing a colon or a reserved
+   device name is sanitized; reloading the editor window while MCP is enabled
+   makes the next call fail fast instead of hanging ~150 s.
+4. **Behavior change to confirm**: a long chat tool (a preview wait, a
+   sub-agent) now holds the project mutation lock, so an MCP call issued at
+   that moment waits for it instead of interleaving. The client-side MCP
+   timeout still answers the external caller, so nothing hangs — but it is a
+   deliberate serialization worth one manual pass.

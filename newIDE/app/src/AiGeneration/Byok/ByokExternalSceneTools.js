@@ -267,14 +267,6 @@ const makeAddExternalEventsTool = (): ByokExtraTool => ({
         )}`
       );
     }
-    if (!project.hasExternalEventsNamed(name)) {
-      project.insertNewExternalEvents(name, project.getExternalEventsCount());
-    }
-
-    const externalEvents = project.getExternalEvents(name);
-    if (associatedScene) {
-      externalEvents.setAssociatedLayout(associatedScene);
-    }
 
     const eventBatches = readEventBatches(args);
     const eventScript =
@@ -284,15 +276,27 @@ const makeAddExternalEventsTool = (): ByokExtraTool => ({
         'Pass either event_batches or event_script, not both — the batches are anchored changes, the script rewrites the whole sheet.'
       );
     }
-    // The script is validated BEFORE the sheet is created or associated:
-    // a parse failure after the insert left an empty sheet behind while
-    // reporting didModifyProject:false (audit011026 B-TOOL-3). NOTE: a
-    // missing mode defaults to "replace" (destructive) — the schema
-    // description says so explicitly (audit011026 B-TOOL-8).
+    // Everything that can fail is checked BEFORE the sheet is created or
+    // associated: a failure after the insert left an empty sheet (and a new
+    // scene association) behind while reporting didModifyProject:false,
+    // which breaks the approval/dirty gating and makes the model's retry
+    // find the sheet already created (audit011026 B-TOOL-3; the ordering
+    // was still wrong after that fix — audit 2026-10-02 REG-2).
+    // NOTE: a missing mode defaults to "replace" (destructive) — the
+    // schema description says so explicitly (audit011026 B-TOOL-8).
     const mode = args.mode === 'insert' ? 'insert' : 'replace';
     if (eventScript) {
       const invalidScript = validateByokEventScript(project, eventScript);
       if (invalidScript) return makeFailure(invalidScript);
+    }
+
+    if (!project.hasExternalEventsNamed(name)) {
+      project.insertNewExternalEvents(name, project.getExternalEventsCount());
+    }
+
+    const externalEvents = project.getExternalEvents(name);
+    if (associatedScene) {
+      externalEvents.setAssociatedLayout(associatedScene);
     }
     const newOrChangedAiGeneratedEventIds: Set<string> = new Set();
     if (eventBatches.length > 0) {

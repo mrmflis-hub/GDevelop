@@ -38,6 +38,7 @@ import {
   isByokExtensionToolShadowedByRegistry,
 } from './ByokExtensionTools';
 import { takeByokProjectSnapshot } from './ByokFork';
+import { runExclusiveByokProjectMutation } from './ByokMutationLock';
 import {
   getByokAdvertisedToolNames,
   getByokDispatchableToolNames,
@@ -163,6 +164,10 @@ export const BYOK_REPEATED_TOOL_CALL_LOOP_ERROR_CODE =
  */
 const NON_RETRYABLE_BYOK_ERROR_CODES: Set<string> = new Set([
   'byok-context-full',
+  // The budget object is never replenished, so Retry re-entered the loop,
+  // re-hit the exhausted budget and re-marked the identical error on every
+  // click — a dead button that only re-persisted state (audit100226 LOOP-6).
+  'byok-turn-budget-exhausted',
 ]);
 
 /** The tool names the loop may actually dispatch to the executor. */
@@ -719,6 +724,7 @@ export const createByokOrchestrator = (
       : composedPrompt;
     systemPromptSnapshot = prompt;
     systemPromptSnapshotHasProject = hasProject;
+    systemPromptSnapshotNotesIdentifier = notesIdentifier;
     return prompt;
   };
 
@@ -943,6 +949,35 @@ export const createByokOrchestrator = (
         )
       );
     }
+  };
+
+  /**
+   * The transcript's protocol rule: every assistant tool_call needs a
+   * matching tool output, or strict endpoints reject every later replay of
+   * the chat with a 400 — and Retry replays the same broken transcript, so
+   * the chat is bricked until the user starts over (the audit011026
+   * B-CORE-2 brick class).
+   *
+   * Every path that dispatches calls is expected to answer them, but a
+   * future unprotected `await` between the assistant message and the
+   * outputs would silently reintroduce that failure. This sweep runs at
+   * the end of every batch and answers ONLY the calls still missing one,
+   * so it can never duplicate an output.
+   */
+  const answerPendingToolCalls = (
+    functionCalls: Array<AiRequestMessageAssistantFunctionCall>,
+    message: string
+  ): void => {
+    const answeredCallIds = new Set<string>();
+    for (const transcriptMessage of getOutput()) {
+      if (transcriptMessage.type === 'function_call_output') {
+        answeredCallIds.add(transcriptMessage.call_id);
+      }
+    }
+    const pendingCalls = functionCalls.filter(
+      functionCall => !answeredCallIds.has(functionCall.call_id)
+    );
+    appendNotExecutedToolOutputs(pendingCalls, message);
   };
 
   /**
@@ -1245,6 +1280,7 @@ export const createByokOrchestrator = (
     const droppedAfterStopCalls: Array<AiRequestMessageAssistantFunctionCall> = [];
     let stoppedAtCall: AiRequestMessageAssistantFunctionCall | null = null;
 
+    loopGuard.beginBatch();
     for (const functionCall of functionCalls) {
       if (stoppedAtCall) {
         droppedAfterStopCalls.push(functionCall);
@@ -1262,6 +1298,9 @@ export const createByokOrchestrator = (
         correctedCalls.push(functionCall);
         continue;
       }
+      // The fingerprint is recorded HERE, after the guard's verdict but
+      // BEFORE the approval gate; the executed-recording below replaces it
+      // once the call really runs (audit100226 TOOL-7).
       proceedingCalls.push(functionCall);
     }
     return {
@@ -1366,7 +1405,18 @@ export const createByokOrchestrator = (
       // While the user decides, they are not witnessing a stall: holding
       // the watchdog (the approval request itself was the last activity).
       if (watchdog) watchdog.holdForApproval();
-      const approved = await onRequestEditApproval(modifyingCalls);
+      let approved = false;
+      try {
+        approved = await onRequestEditApproval(modifyingCalls);
+      } catch (error) {
+        // A rejecting approval prompt (a closed dialog, an unmounted
+        // container) must not orphan the batch's tool_calls: see
+        // answerPendingToolCalls below.
+        console.error(
+          'BYOK orchestrator: the edit approval request failed:',
+          error
+        );
+      }
       if (watchdog) {
         watchdog.releaseApproval();
         watchdog.notifyActivity('approval-released');
@@ -1378,6 +1428,7 @@ export const createByokOrchestrator = (
           proceedingCalls,
           'The assistant was stopped before running this tool call. Send a new message to continue.'
         );
+        loopGuard.restoreBatch();
         persistUpdate();
         return false;
       }
@@ -1386,6 +1437,9 @@ export const createByokOrchestrator = (
           proceedingCalls,
           'The user refused this edit. Ask them how to proceed before trying again.'
         );
+        // A refused batch executed nothing, so its fingerprints must not
+        // count toward the stuck-loop thresholds (audit100226 TOOL-7).
+        loopGuard.restoreBatch();
         markSuspended();
         return false;
       }
@@ -1416,75 +1470,125 @@ export const createByokOrchestrator = (
       return true;
     }
 
-    const executedResults: Array<EditorFunctionCallResult> = [];
-    let createdSceneNames: Array<string> = [];
-    let createdProject: any = null;
+    // Mutation door (audit100226 UP-11): this whole execution section — the
+    // intercepted tools, the extensions reload and the editor batch — runs
+    // exclusively against the project, so an MCP call (which takes the same
+    // lock) can never interleave gd.* changes with a chat round. The model
+    // request before it and the approval prompt are OUTSIDE the lock, so a
+    // chat never blocks MCP while the model is thinking.
+    const {
+      executedResults,
+      createdSceneNames,
+      createdProject,
+    } = await runExclusiveByokProjectMutation(
+      async (): Promise<{|
+        executedResults: Array<EditorFunctionCallResult>,
+        createdSceneNames: Array<string>,
+        createdProject: any,
+      |}> => {
+        const results: Array<EditorFunctionCallResult> = [];
+        let sceneNames: Array<string> = [];
+        let newProject: any = null;
 
-    if (watchdog) watchdog.notifyActivity('tool-executing');
-    for (const extraToolCall of extraToolCalls) {
-      // Per-call activity: one extra tool can legitimately run for minutes
-      // (a sub-agent's whole child loop, a resource download, a profiler
-      // wait) — a single batch-level ping would let the watchdog post
-      // false "no activity" stall notices while tools are working.
-      if (watchdog) watchdog.notifyActivity('tool-executing');
-      const result = await runExtraToolCall(extraToolCall);
-      if (result) executedResults.push(result);
-    }
-
-    // The extension authoring tools regenerate the editor's view of the
-    // extensions ONCE for the whole batch (the v18 lesson) — not after
-    // every single call.
-    await flushByokExtensionRegeneration(getProject(), {
-      reloadEventsFunctionsExtensions: options.reloadEventsFunctionsExtensions,
-      reloadEventsFunctionsExtensionMetadata:
-        options.reloadEventsFunctionsExtensionMetadata,
-    });
-
-    // Tool failures are not thrown: a failed editor function becomes a
-    // `function_call_output` with success:false and the error text, and the
-    // loop continues so the model can correct itself — exactly like the
-    // server-side loop. A crash of the executor itself (outside the per-call
-    // containment) is contained the same way, so the transcript always ends
-    // with an output for every dispatched call.
-    if (editorFunctionCalls.length > 0) {
-      const executor = getExecutor();
-      if (!executor) {
-        appendNotExecutedToolOutputs(
-          editorFunctionCalls,
-          'The editor is not ready to run this tool call. Send a new message to retry.'
-        );
-      } else {
-        try {
-          // Same per-call rationale as the extra-tool loop: one editor
-          // batch can wait on a preview, a test run or an approval.
+        if (watchdog) watchdog.notifyActivity('tool-executing');
+        for (const extraToolCall of extraToolCalls) {
+          // Per-call activity: one extra tool can legitimately run for minutes
+          // (a sub-agent's whole child loop, a resource download, a profiler
+          // wait) — a single batch-level ping would let the watchdog post
+          // false "no activity" stall notices while tools are working.
           if (watchdog) watchdog.notifyActivity('tool-executing');
-          const execution = await executor(
-            editorFunctionCalls.map(functionCall => ({
-              name: functionCall.name,
-              arguments: functionCall.arguments,
-              call_id: functionCall.call_id,
-            })),
-            {
-              aiRequestId: aiRequest.id,
-              getRelatedAiRequestLastMessages: () =>
-                getLastMessagesFromAiRequestOutput(getOutput()),
-            }
-          );
-          appendExecutedBatchOutputs(execution.results, editorFunctionCalls);
-          executedResults.push(...execution.results);
-          createdSceneNames = execution.createdSceneNames;
-          createdProject = execution.createdProject;
+          const result = await runExtraToolCall(extraToolCall);
+          if (result) results.push(result);
+        }
+
+        // The extension authoring tools regenerate the editor's view of the
+        // extensions ONCE for the whole batch (the v18 lesson) — not after
+        // every single call. The reload is an editor side effect: a project
+        // with a broken generated extension can make it throw, and an
+        // exception escaping here would leave the editor calls of this batch
+        // without their tool outputs (see answerPendingToolCalls).
+        try {
+          await flushByokExtensionRegeneration(getProject(), {
+            reloadEventsFunctionsExtensions:
+              options.reloadEventsFunctionsExtensions,
+            reloadEventsFunctionsExtensionMetadata:
+              options.reloadEventsFunctionsExtensionMetadata,
+          });
         } catch (error) {
-          console.error('BYOK orchestrator: tool execution crashed:', error);
-          appendNotExecutedToolOutputs(
-            editorFunctionCalls,
-            `The tool execution crashed: ${
-              error instanceof Error ? error.message : String(error)
-            }`
+          console.error(
+            'BYOK orchestrator: the extensions reload after the batch failed:',
+            error
           );
         }
+
+        // Tool failures are not thrown: a failed editor function becomes a
+        // `function_call_output` with success:false and the error text, and the
+        // loop continues so the model can correct itself — exactly like the
+        // server-side loop. A crash of the executor itself (outside the per-call
+        // containment) is contained the same way, so the transcript always ends
+        // with an output for every dispatched call.
+        if (editorFunctionCalls.length > 0) {
+          const executor = getExecutor();
+          if (!executor) {
+            appendNotExecutedToolOutputs(
+              editorFunctionCalls,
+              'The editor is not ready to run this tool call. Send a new message to retry.'
+            );
+          } else {
+            try {
+              // Same per-call rationale as the extra-tool loop: one editor
+              // batch can wait on a preview, a test run or an approval.
+              if (watchdog) watchdog.notifyActivity('tool-executing');
+              const execution = await executor(
+                editorFunctionCalls.map(functionCall => ({
+                  name: functionCall.name,
+                  arguments: functionCall.arguments,
+                  call_id: functionCall.call_id,
+                })),
+                {
+                  aiRequestId: aiRequest.id,
+                  getRelatedAiRequestLastMessages: () =>
+                    getLastMessagesFromAiRequestOutput(getOutput()),
+                }
+              );
+              appendExecutedBatchOutputs(
+                execution.results,
+                editorFunctionCalls
+              );
+              results.push(...execution.results);
+              sceneNames = execution.createdSceneNames;
+              newProject = execution.createdProject;
+            } catch (error) {
+              console.error(
+                'BYOK orchestrator: tool execution crashed:',
+                error
+              );
+              appendNotExecutedToolOutputs(
+                editorFunctionCalls,
+                `The tool execution crashed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              );
+            }
+          }
+        }
+
+        return {
+          executedResults: results,
+          createdSceneNames: sceneNames,
+          createdProject: newProject,
+        };
       }
-    }
+    );
+
+    // The protocol safety net: anything dispatched above without an output
+    // (a path that returned early, or an await that threw past its own
+    // containment) is answered here so the persisted transcript can never
+    // replay as an invalid request.
+    answerPendingToolCalls(
+      proceedingCalls,
+      'This tool call did not complete. Send a new message to continue.'
+    );
 
     persistUpdate();
     if (watchdog) watchdog.notifyActivity('tool-output-posted');
@@ -1623,8 +1727,11 @@ export const createByokOrchestrator = (
         }
         try {
           const args = JSON.parse(item.arguments);
-          if (args && typeof args.skillName === 'string') {
-            loadedSkills.push(args.skillName);
+          // load_skill's schema and handler use `name`, not `skillName`:
+          // reading the wrong key left "Loaded skills" permanently empty
+          // after a compaction (audit100226 TOOL-5).
+          if (args && typeof args.name === 'string') {
+            loadedSkills.push(args.name);
           }
         } catch (error) {
           // Unparsable arguments: skip.
@@ -1684,6 +1791,14 @@ export const createByokOrchestrator = (
     }
     if (typeof maxTokens === 'number') {
       summarizerOptions.maxTokens = maxTokens;
+    }
+    // The summarizer is a real request against the user's key: without the
+    // loop's cancellation handle, pressing Stop left it running to
+    // completion plus its retries (and a rate-limit wait), contradicting
+    // the client's "you stop paying the moment you press Stop" contract
+    // (audit100226 LOOP-5).
+    if (activeCancellation) {
+      summarizerOptions.cancellation = activeCancellation;
     }
     const response = await sendByokChatCompletionWithRetries({
       baseUrl,

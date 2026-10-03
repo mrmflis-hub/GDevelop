@@ -2,6 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const crypto = require('crypto');
+const {
+  writeByokFileAtomically,
+} = require('../../app/src/AiGeneration/Byok/ByokAtomicWriteCore');
 
 // BYOK RAG index files (Phase 13.7/13.8): the desktop side of the RAG
 // storage. The in-process index lives as one JSON file (base64 vectors) in
@@ -43,10 +46,12 @@ const isSafeRagFileName = fileName => {
 // temp + same-volume rename keeps the old file intact until the new one is
 // fully on disk.
 const writeByokRagFileAtomically = (folderPath, fileName, content) => {
-  const finalPath = path.join(folderPath, fileName);
-  const temporaryPath = path.join(folderPath, `${fileName}.tmp-${process.pid}`);
-  fs.writeFileSync(temporaryPath, content, 'utf8');
-  fs.renameSync(temporaryPath, finalPath);
+  // The shared core owns the unique temp name (audit100226 ELEC-19: the old
+  // fixed `<file>.tmp-<pid>` let two concurrent downloads to the fixed
+  // bundle name publish each other's buffer).
+  writeByokFileAtomically(fs, folderPath, fileName, content, () =>
+    crypto.randomBytes(8).toString('hex')
+  );
 };
 
 const writeByokRagFile = (userDataPath, fileName, content) => {

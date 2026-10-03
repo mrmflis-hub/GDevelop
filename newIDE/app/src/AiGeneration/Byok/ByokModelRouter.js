@@ -254,6 +254,20 @@ export const resolveByokModelTarget = ({
     const provider = settings.providers.find(
       entry => entry.id === chatSelection.providerId
     );
+    // The chat pinned a provider that no longer exists (it was deleted in
+    // Preferences; the selection outlives it inside the saved chat file).
+    // Falling back to the GLOBAL endpoint with the dead provider's model
+    // name sent the user's request to an endpoint that never knew that
+    // model — the same failure B-UI-9 fixed for routing profiles, which
+    // chat selections were not covered for (audit100226 UI-4). Fall
+    // through to normal profile/global resolution instead.
+    if (!provider && chatSelection.providerId) {
+      return resolveByokModelTarget({
+        settings,
+        chatSelection: null,
+        callKind,
+      });
+    }
     return applyProviderModelSettings(settings, {
       providerId: provider ? provider.id : '',
       endpointUrl: provider ? provider.endpointUrl : settings.endpointUrl,

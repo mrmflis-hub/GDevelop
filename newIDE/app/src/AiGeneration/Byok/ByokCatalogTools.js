@@ -667,6 +667,14 @@ export const listByokEffects = (
     .filter(metadata => doesEffectMatchFilter(metadata, filter))
     .map(compactEffectMetadata);
 
+/**
+ * How many effects one `list_effects` call returns. The unfiltered stock
+ * catalog is at/over the tool-output cap, so the list is capped explicitly
+ * with an honest total rather than cut mid-JSON by the generic cap
+ * (audit100226 TOOL-4).
+ */
+export const BYOK_EFFECTS_LIST_CAP = 30;
+
 const makeListEffectsTool = (): ByokExtraTool => ({
   name: 'list_effects',
   modifiesProject: false,
@@ -677,13 +685,31 @@ const makeListEffectsTool = (): ByokExtraTool => ({
     }
     const filter =
       typeof args.filter === 'string' && args.filter ? args.filter : null;
-    const effects = listByokEffects(project, filter);
+    const allEffects = listByokEffects(project, filter);
+    // The full stock catalog (~46 effects with their property schemas)
+    // serialized to ≈21-22k chars, at/over the 20k tool cap: the array was
+    // cut mid-JSON and the usage note — which explains how to feed
+    // changed_effects — was lost with it (audit100226 TOOL-4). Capped
+    // explicitly, with an honest count so the model can narrow with
+    // `filter` instead of guessing.
+    const effects = allEffects.slice(0, BYOK_EFFECTS_LIST_CAP);
+    const truncated = allEffects.length > effects.length;
     return {
       output: {
         success: true,
         effects,
-        note:
-          'These "type" strings and property defaults are what change_object_properties_effects and change_scene_properties_layers_effects_groups expect in changed_effects (effect_type + changed_properties property_name/new_value).',
+        totalEffectCount: allEffects.length,
+        truncated,
+        ...(truncated
+          ? {
+              note: `Showing the first ${effects.length} of ${
+                allEffects.length
+              } effects. Pass a filter ("2d", "3d", "object") to narrow the list, or ask for a specific effect by name. These "type" strings and property defaults are what change_object_properties_effects and change_scene_properties_layers_effects_groups expect in changed_effects (effect_type + changed_properties property_name/new_value).`,
+            }
+          : {
+              note:
+                'These "type" strings and property defaults are what change_object_properties_effects and change_scene_properties_layers_effects_groups expect in changed_effects (effect_type + changed_properties property_name/new_value).',
+            }),
       },
       didModifyProject: false,
     };

@@ -182,11 +182,21 @@ describe('advertisement and dispatchability', () => {
     });
 
     expect(withProject).toEqual(BYOK_CORE_TOOL_NAMES);
-    expect(withoutProject).toEqual([
-      ...BYOK_CORE_TOOL_NAMES,
-      ...BYOK_NO_PROJECT_TOOL_NAMES,
-    ]);
+    // The union, deduped: a tool named by both sets (read_doc_page, which
+    // is core now and still listed as project-independent) must not be
+    // advertised twice — a duplicate `tools` entry is rejected by strict
+    // endpoints (audit100226 TOOL-11).
+    expect(withoutProject).toEqual(
+      Array.from(
+        new Set([...BYOK_CORE_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES])
+      )
+    );
+    expect(new Set(withoutProject).size).toBe(withoutProject.length);
     expect(withoutProject).toContain('initialize_project');
+    // read_doc_page is advertised with a project open too: the retrieval
+    // map, the search_knowledge description and every docs-min chunk teach
+    // it, so the prompt must offer it in the common case.
+    expect(withProject).toContain('read_doc_page');
     // The non-core catalog stays dispatchable, just not advertised.
     expect(withProject).not.toContain('list_effects');
     expect(getByokDispatchableToolNames()).toContain('list_effects');

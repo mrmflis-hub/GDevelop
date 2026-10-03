@@ -281,6 +281,14 @@ export const BYOK_CORE_TOOL_NAMES: Array<string> = [
   'load_skill',
   'search_docs',
   'read_doc',
+  // The wiki drill-down exit. It is project-independent, and three prompt
+  // surfaces teach it unconditionally (the retrieval map, the
+  // search_knowledge description, and every docs-min chunk's "Full page:
+  // read_doc_page(...)"). Advertising it only in the no-project set meant
+  // the common docs-lookup case invited a call whose schema was NOT in the
+  // turn's tools array, contradicting the prompt's own "only call the tools
+  // listed below" (audit100226 TOOL-11).
+  'read_doc_page',
   // The meta-tool of the tiered advertisement (13.5).
   'search_tools',
   // The knowledge/grep search (13.7).
@@ -332,7 +340,15 @@ export const getByokAdvertisedToolNames = (options: {|
   hasOpenedProject: boolean,
 |}): Array<string> => {
   if (options.hasOpenedProject) return BYOK_CORE_TOOL_NAMES.slice();
-  return [...BYOK_CORE_TOOL_NAMES, ...BYOK_NO_PROJECT_TOOL_NAMES];
+  // Deduped: a tool in BOTH sets would be advertised twice, and a
+  // duplicate entry in a request's `tools` array is rejected by strict
+  // endpoints (`read_doc_page` moved into the core set while this list
+  // still named it — audit100226 TOOL-11).
+  const advertised = new Set([
+    ...BYOK_CORE_TOOL_NAMES,
+    ...BYOK_NO_PROJECT_TOOL_NAMES,
+  ]);
+  return Array.from(advertised);
 };
 
 const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
@@ -417,7 +433,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
           'Optional: how deep to show sub-events of the selected events.'
         ),
         max_chars: numberProperty(
-          'Optional: maximum length of the returned source (default 30000).'
+          'Optional: maximum length of the returned source (default 12000, clamped to 2000-30000).'
         ),
       },
       required: ['scene_name'],
@@ -1961,7 +1977,19 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
       'Read live details of the preview this chat launched: the paused state and current scene (getStatus) plus the instances and variables (a targeted refresh). Never guesses from pixels, never touches the project.',
     parameters: {
       type: 'object',
-      properties: {},
+      properties: {
+        scene_name: {
+          type: 'string',
+          description:
+            'Optional: read only this scene. Strongly recommended on a game with several scenes or many instances — the full dump is capped and cut mid-JSON.',
+        },
+        variable_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional: read only these variables (e.g. ["score", "lives"]). Omit to get every variable of the scene(s).',
+        },
+      },
       required: [],
     },
   },

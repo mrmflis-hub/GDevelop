@@ -407,7 +407,17 @@ export const makeByokRuntimeTools = (): Array<ByokExtraTool> => {
         };
       }
       const session = getOrCreatePreviewSession(runtimeDeps);
-      const result = await session.inspectState();
+      // The schema advertised scene_name / variable_paths and the handler
+      // ignored them: a narrow query answered with the full multi-scene
+      // dump, which the tool cap then cut mid-JSON (audit100226 TOOL-3).
+      const sceneName =
+        typeof args.scene_name === 'string' && args.scene_name
+          ? args.scene_name
+          : null;
+      const variablePaths = Array.isArray(args.variable_paths)
+        ? args.variable_paths.filter(path => typeof path === 'string')
+        : null;
+      const result = await session.inspectState({ sceneName, variablePaths });
       if (!result.success) {
         return { output: result, didModifyProject: false };
       }

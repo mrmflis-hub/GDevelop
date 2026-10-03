@@ -58,11 +58,24 @@ describe('searchByokRagChunksLexically (the RAG-off fallback)', () => {
     expect(searchByokRagChunksLexically(makeChunks(), '  ')).toEqual([]);
   });
 
-  it('requires every term of a multi-word query to hit somewhere', () => {
+  it('ranks a full multi-word match above a partial one', () => {
     const hits = searchByokRagChunksLexically(makeChunks(), 'play sound', 5);
     expect(hits.map(hit => hit.chunk.title)).toContain('PlaySound');
+    expect(hits[0].chunk.title).toBe('PlaySound');
+    // A query where only one term occurs still answers (partial matches are
+    // ranked below every full match) rather than returning nothing: RAG is
+    // off by default, so lexical is the mode most users are in, and an
+    // AND-only pass answered `success: true` with zero hits for any
+    // paraphrase or inflection (audit100226 RAG-5).
+    const partial = searchByokRagChunksLexically(
+      makeChunks(),
+      'play zzzword',
+      5
+    );
+    expect(partial.length).toBeGreaterThan(0);
+    // A term matching nothing anywhere still yields nothing.
     expect(
-      searchByokRagChunksLexically(makeChunks(), 'play zzzword', 5)
+      searchByokRagChunksLexically(makeChunks(), 'zzzword qqqword', 5)
     ).toEqual([]);
   });
 });

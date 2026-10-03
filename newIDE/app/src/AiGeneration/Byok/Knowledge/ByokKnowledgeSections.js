@@ -168,7 +168,7 @@ const HYBRID_GROUNDING_SECTION_TEXT = `- Every screenshot comes with a textual s
 // Phase 11 authoring reach: the surfaces beyond scenes the agent can now
 // read/write, and how they combine. Phase 12 added the discovery stores
 // and the runtime steering.
-const AUTHORING_REACH_SECTION_TEXT = `- External events (read_external_events_source/add_external_events) are reusable event sheets: author them once, then include them from scenes — ask the user to add the "Include external events" event by hand (EventScript cannot express an include, and no tool creates one yet).
+const AUTHORING_REACH_SECTION_TEXT = `- External events (read_external_events_source/add_external_events) are reusable event sheets: author them once, then include them from scenes — write \`link "<ExternalEventsSheetName>"\` in the scene's EventScript (the parser builds the "Include external events" event, and the local writer round-trips it).
 - External layouts (describe/put_external_layout_instances) hold reusable sets of instances — the spawn-point mechanic. Fill one, then spawn it at runtime with "Create objects from external layout".
 - Effects: list_effects gives the exact effect_type strings and defaults — never guess an effect type; pick it there and pass its defaults through changed_properties.
 - Sprites: describe_sprite_frames first, then change_sprite_frames with typed operations (frames, points, collision masks).

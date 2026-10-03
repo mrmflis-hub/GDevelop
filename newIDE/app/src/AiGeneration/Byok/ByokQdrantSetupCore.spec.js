@@ -5,6 +5,7 @@ const {
   buildByokQdrantConfigYaml,
   getByokQdrantPlatform,
   getByokQdrantReleaseInfo,
+  isAllowedByokQdrantSnapshotUrl,
   makeByokQdrantPaths,
   runByokQdrantSetup,
   runByokQdrantSnapshotRestore,
@@ -242,7 +243,8 @@ describe('runByokQdrantSnapshotRestore (Phase 14.4, D14-3)', () => {
     const stages = [];
     const outcome = await runByokQdrantSnapshotRestore({
       baseUrl: 'http://127.0.0.1:6333',
-      snapshotUrl: 'https://example.com/snapshot.snap',
+      snapshotUrl:
+        'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/snapshot.snap',
       expectedDimensions: 384,
       deps,
       onStage: stage => stages.push(stage),
@@ -266,14 +268,18 @@ describe('runByokQdrantSnapshotRestore (Phase 14.4, D14-3)', () => {
     expect(deleteIndex).toBeGreaterThanOrEqual(0);
     expect(uploadIndex).toBeGreaterThan(deleteIndex);
     const upload = requests[uploadIndex];
-    expect(upload.body).toEqual({ url: 'https://example.com/snapshot.snap' });
+    expect(upload.body).toEqual({
+      url:
+        'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/snapshot.snap',
+    });
   });
 
   it('refuses to run against an unhealthy Qdrant', async () => {
     const requests: Array<any> = [];
     const outcome = await runByokQdrantSnapshotRestore({
       baseUrl: 'http://127.0.0.1:6333',
-      snapshotUrl: 'https://example.com/snapshot.snap',
+      snapshotUrl:
+        'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/snapshot.snap',
       expectedDimensions: 384,
       deps: {
         isHealthy: async () => false,
@@ -293,7 +299,8 @@ describe('runByokQdrantSnapshotRestore (Phase 14.4, D14-3)', () => {
   it('fails cleanly when the upload itself errors', async () => {
     const outcome = await runByokQdrantSnapshotRestore({
       baseUrl: 'http://127.0.0.1:6333',
-      snapshotUrl: 'https://example.com/snapshot.snap',
+      snapshotUrl:
+        'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/snapshot.snap',
       expectedDimensions: 384,
       deps: {
         isHealthy: async () => true,
@@ -313,7 +320,8 @@ describe('runByokQdrantSnapshotRestore (Phase 14.4, D14-3)', () => {
   it('fails when the restored collection stays empty (verifying)', async () => {
     const outcome = await runByokQdrantSnapshotRestore({
       baseUrl: 'http://127.0.0.1:6333',
-      snapshotUrl: 'https://example.com/snapshot.snap',
+      snapshotUrl:
+        'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/snapshot.snap',
       expectedDimensions: 384,
       verifyTimeoutMs: 5,
       pollIntervalMs: 1,
@@ -331,7 +339,8 @@ describe('runByokQdrantSnapshotRestore (Phase 14.4, D14-3)', () => {
   it('fails when the vector dimensions do not match the embedder', async () => {
     const outcome = await runByokQdrantSnapshotRestore({
       baseUrl: 'http://127.0.0.1:6333',
-      snapshotUrl: 'https://example.com/snapshot.snap',
+      snapshotUrl:
+        'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/snapshot.snap',
       expectedDimensions: 384,
       deps: makeRestoreDeps([], {
         '/collections/gdevelop-byok': {
@@ -347,5 +356,89 @@ describe('runByokQdrantSnapshotRestore (Phase 14.4, D14-3)', () => {
       expect(outcome.stage).toBe('verifying');
       expect(outcome.error).toContain('768');
     }
+  });
+});
+
+describe('isAllowedByokQdrantSnapshotUrl (ELEC-17)', () => {
+  const allowed =
+    'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/byok-rag.json';
+
+  it('accepts the official GDevelop release asset', () => {
+    expect(isAllowedByokQdrantSnapshotUrl(allowed)).toBe(true);
+  });
+
+  it('refuses http, foreign hosts, cloud metadata and non-string values', () => {
+    expect(
+      isAllowedByokQdrantSnapshotUrl(allowed.replace('https:', 'http:'))
+    ).toBe(false);
+    expect(
+      isAllowedByokQdrantSnapshotUrl(
+        'https://evil.example.com/mrmflis-hub/GDevelop/releases/download/x.json'
+      )
+    ).toBe(false);
+    expect(
+      isAllowedByokQdrantSnapshotUrl('http://169.254.169.254/latest/meta-data')
+    ).toBe(false);
+    expect(
+      isAllowedByokQdrantSnapshotUrl(
+        'https://github.com/other/repo/releases/download/x.json'
+      )
+    ).toBe(false);
+    expect(isAllowedByokQdrantSnapshotUrl('not a url')).toBe(false);
+    expect(isAllowedByokQdrantSnapshotUrl(null)).toBe(false);
+    expect(isAllowedByokQdrantSnapshotUrl(undefined)).toBe(false);
+  });
+});
+
+describe('runByokQdrantSnapshotRestore: refuses a hostile URL (ELEC-17)', () => {
+  it('refuses before any drop or fetch happens', async () => {
+    const calls: Array<Object> = [];
+    const result = await runByokQdrantSnapshotRestore({
+      baseUrl: 'http://127.0.0.1:6333',
+      snapshotUrl: 'http://169.254.169.254/latest/meta-data',
+      deps: {
+        isHealthy: async () => {
+          calls.push({ method: 'isHealthy' });
+          return true;
+        },
+        requestJson: async (method: string, requestPath: string) => {
+          calls.push({ method, requestPath });
+          return {};
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.stage).toBe('validating');
+    // Nothing was dropped and nothing was fetched.
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('runByokQdrantSnapshotRestore: a client timeout keeps the collection (RAG-3)', () => {
+  it('does not drop the collection when the client gave up first', async () => {
+    const calls: Array<Object> = [];
+    const timedOutError: any = new Error(
+      'The request timed out after 300000 ms'
+    );
+    timedOutError.clientTimedOut = true;
+    const result = await runByokQdrantSnapshotRestore({
+      baseUrl: 'http://127.0.0.1:6333',
+      snapshotUrl:
+        'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/x.json',
+      deps: {
+        isHealthy: async () => true,
+        requestJson: async (method: string, requestPath: string) => {
+          calls.push({ method, requestPath });
+          if (requestPath.includes('snapshots/upload')) throw timedOutError;
+          return { result: { points_count: 0 } };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.clientTimedOut).toBe(true);
+    // Exactly ONE delete: the pre-upload one the restore always does. The
+    // failure path used to run a SECOND drop, deleting data out from under
+    // a server-side import still in progress (audit100226 RAG-3).
+    expect(calls.filter(call => call.method === 'DELETE')).toHaveLength(1);
   });
 });

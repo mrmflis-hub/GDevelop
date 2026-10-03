@@ -46,7 +46,10 @@ export type ByokPreviewSession = {|
   |}) => Array<ByokPreviewLogEntry>,
   getLogStats: () => {| bufferedCount: number, droppedCount: number |},
   getNewErrors: () => Array<string>,
-  inspectState: () => Promise<{|
+  inspectState: (options?: {|
+    sceneName?: ?string,
+    variablePaths?: ?Array<string>,
+  |}) => Promise<{|
     success: boolean,
     message?: string,
     state?: Object,
@@ -103,17 +106,37 @@ const isUnavoidableLibraryWarning = (log: {|
  * read defensively — the payload is produced by the runtime's
  * circular-safe serializer, whose exact fields evolve with the engine.
  */
-export const reduceByokRuntimeDump = (dump: any): Object => {
+export const reduceByokRuntimeDump = (
+  dump: any,
+  options?: {|
+    /** Keep only this scene (the model's `scene_name` filter). */
+    sceneName?: ?string,
+    /** Keep only these variable paths (the model's `variable_paths`). */
+    variablePaths?: ?Array<string>,
+  |}
+): Object => {
   const scenes: Array<Object> = [];
   if (!dump || typeof dump !== 'object') return { scenes };
 
+  const sceneFilter = options && options.sceneName ? options.sceneName : null;
+  const variablePaths =
+    options && options.variablePaths && options.variablePaths.length > 0
+      ? options.variablePaths
+      : null;
   const sceneStack =
     dump._sceneStack && Array.isArray(dump._sceneStack._stack)
       ? dump._sceneStack._stack
       : [];
   for (const scene of sceneStack) {
     if (!scene || typeof scene !== 'object') continue;
+    const sceneName =
+      typeof scene._name === 'string' ? scene._name : '(unnamed scene)';
+    if (sceneFilter && sceneName !== sceneFilter) continue;
     const instances: { [objectName: string]: Array<Object> } = {};
+    // Per-scene list of the object groups that were cut, with their real
+    // totals. Kept OUT of `instances` so a caller iterating that map always
+    // gets arrays (audit100226 TOOL-9).
+    const truncatedInstanceGroups: Array<Object> = [];
     const items: any =
       scene._instances &&
       scene._instances.items &&
@@ -124,24 +147,83 @@ export const reduceByokRuntimeDump = (dump: any): Object => {
       const objectInstances = Array.isArray(items[objectName])
         ? items[objectName]
         : [];
-      instances[objectName] = objectInstances.map(instance => ({
-        name: typeof instance.name === 'string' ? instance.name : objectName,
-        x: typeof instance.x === 'number' ? instance.x : null,
-        y: typeof instance.y === 'number' ? instance.y : null,
-        zOrder: typeof instance.zOrder === 'number' ? instance.zOrder : null,
-      }));
+      // Instance-heavy scenes serialized to ~120k chars, which the 20k tool
+      // cap then cut MID-JSON — possibly without the scene the model asked
+      // for, and with no tool-level truncated flag (audit100226 TOOL-9).
+      const keptInstances = objectInstances
+        .slice(0, BYOK_RUNTIME_INSTANCES_KEPT)
+        .map(instance => ({
+          name: typeof instance.name === 'string' ? instance.name : objectName,
+          x: typeof instance.x === 'number' ? instance.x : null,
+          y: typeof instance.y === 'number' ? instance.y : null,
+          zOrder: typeof instance.zOrder === 'number' ? instance.zOrder : null,
+        }));
+      instances[objectName] = keptInstances;
+      if (objectInstances.length > keptInstances.length) {
+        // Honest about what was left out rather than a silent cut.
+        truncatedInstanceGroups.push({
+          objectName,
+          shown: keptInstances.length,
+          total: objectInstances.length,
+        });
+      }
     }
     scenes.push({
-      name: typeof scene._name === 'string' ? scene._name : '(unnamed scene)',
+      name: sceneName,
       instances,
-      variables: scene._variables || {},
+      truncatedInstanceGroups,
+      variables: pickByokRuntimeVariables(
+        scene._variables || {},
+        variablePaths
+      ),
     });
   }
 
   return {
     scenes,
-    globalVariables: dump._variables || {},
+    globalVariables: pickByokRuntimeVariables(
+      dump._variables || {},
+      variablePaths
+    ),
   };
+};
+
+/**
+ * How many instances of one object a runtime dump lists per scene.
+ * Instance-heavy scenes serialized to ~120k characters, which the 20k tool
+ * cap then cut MID-JSON — possibly without the scene the model asked for,
+ * and with no tool-level truncated flag (audit100226 TOOL-9). Each cut group
+ * is reported in the scene's `truncatedInstanceGroups`.
+ */
+export const BYOK_RUNTIME_INSTANCES_KEPT = 50;
+
+/**
+ * The scene/global variables the model asked for, or all of them when it
+ * named none. `variable_paths` was advertised in the schema but the handler
+ * ignored it, so a narrow query answered with the full multi-scene dump
+ * (audit100226 TOOL-3).
+ */
+const pickByokRuntimeVariables = (
+  variables: any,
+  variablePaths: ?Array<string>
+): Object => {
+  if (!variablePaths) return variables;
+  if (!variables || typeof variables !== 'object') return {};
+  const picked: Object = {};
+  for (const path of variablePaths) {
+    const segments = path.split('.');
+    if (segments.length === 0) continue;
+    let source: any = variables;
+    for (const segment of segments) {
+      if (!source || typeof source !== 'object') {
+        source = null;
+        break;
+      }
+      source = source[segment];
+    }
+    picked[path] = source === undefined ? null : source;
+  }
+  return picked;
 };
 
 /** How many pushed runtime messages are kept for late subscribers. */
@@ -496,7 +578,7 @@ export const createByokPreviewSession = (options: {|
       return errors;
     },
 
-    inspectState: async () => {
+    inspectState: async inspectOptions => {
       if (!isRunning) {
         return {
           success: false,
@@ -520,7 +602,8 @@ export const createByokPreviewSession = (options: {|
         return {
           success: true,
           state: reduceByokRuntimeDump(
-            response && response.payload ? response.payload : null
+            response && response.payload ? response.payload : null,
+            inspectOptions
           ),
         };
       } catch (error) {

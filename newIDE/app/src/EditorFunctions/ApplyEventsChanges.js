@@ -843,21 +843,33 @@ export const applyEventsChanges = (
         // Clear target event actions and replace with generated event(s) actions
         const targetEvent = getEventByPath(sceneEvents, op.path);
         const targetActions = getEventActions(targetEvent);
-        if (targetActions) {
-          targetActions.clear();
-          const eventsToInsert = op.eventsToInsert;
-          if (eventsToInsert && !eventsToInsert.isEmpty()) {
-            for (let i = 0; i < eventsToInsert.getEventsCount(); i++) {
-              const sourceEvent = eventsToInsert.getEventAt(i);
-              const sourceActions = getEventActions(sourceEvent);
-              if (sourceActions) {
-                copyInstructions(
-                  sourceActions,
-                  targetActions,
-                  targetActions.size()
-                );
-              }
-            }
+        const eventsToInsert = op.eventsToInsert;
+        const pathForLog = op.path.join('.');
+        // Both guards BEFORE the clear: a replacement that carries no
+        // actions (a comment, a group) used to wipe the target's actions and
+        // still report the change as applied (audit100226 UP-13).
+        if (!targetActions) {
+          errors.push(
+            `Replace-all-actions for path [${pathForLog}] skipped: this event has no actions.`
+          );
+          return;
+        }
+        if (!eventsToInsert || eventsToInsert.isEmpty()) {
+          errors.push(
+            `Replace-all-actions for path [${pathForLog}] skipped: no events to take the new actions from.`
+          );
+          return;
+        }
+        targetActions.clear();
+        for (let i = 0; i < eventsToInsert.getEventsCount(); i++) {
+          const sourceEvent = eventsToInsert.getEventAt(i);
+          const sourceActions = getEventActions(sourceEvent);
+          if (sourceActions) {
+            copyInstructions(
+              sourceActions,
+              targetActions,
+              targetActions.size()
+            );
           }
         }
         applied++;
@@ -866,40 +878,40 @@ export const applyEventsChanges = (
         const targetEvent = getEventByPath(sceneEvents, op.path);
         const eventsToInsert = op.eventsToInsert;
         const targetConditions = getEventConditions(targetEvent);
-        if (targetConditions) {
+        // Same guard as replaceAllActions: never clear on a replacement that
+        // carries no conditions (audit100226 UP-13).
+        if (targetConditions && eventsToInsert && !eventsToInsert.isEmpty()) {
           targetConditions.clear();
-          if (eventsToInsert && !eventsToInsert.isEmpty()) {
-            for (let i = 0; i < eventsToInsert.getEventsCount(); i++) {
-              const sourceEvent = eventsToInsert.getEventAt(i);
-              const sourceConditions = getEventConditions(sourceEvent);
-              if (sourceConditions) {
-                copyInstructions(
-                  sourceConditions,
-                  targetConditions,
-                  targetConditions.size()
-                );
-              }
+          for (let i = 0; i < eventsToInsert.getEventsCount(); i++) {
+            const sourceEvent = eventsToInsert.getEventAt(i);
+            const sourceConditions = getEventConditions(sourceEvent);
+            if (sourceConditions) {
+              copyInstructions(
+                sourceConditions,
+                targetConditions,
+                targetConditions.size()
+              );
             }
           }
         }
 
         // Also replace while conditions if both are While events
         const targetWhileConditions = getEventWhileConditions(targetEvent);
-        if (targetWhileConditions) {
+        if (
+          targetWhileConditions &&
+          eventsToInsert &&
+          !eventsToInsert.isEmpty()
+        ) {
           targetWhileConditions.clear();
-          if (eventsToInsert && !eventsToInsert.isEmpty()) {
-            for (let i = 0; i < eventsToInsert.getEventsCount(); i++) {
-              const sourceEvent = eventsToInsert.getEventAt(i);
-              const sourceWhileConditions = getEventWhileConditions(
-                sourceEvent
+          for (let i = 0; i < eventsToInsert.getEventsCount(); i++) {
+            const sourceEvent = eventsToInsert.getEventAt(i);
+            const sourceWhileConditions = getEventWhileConditions(sourceEvent);
+            if (sourceWhileConditions) {
+              copyInstructions(
+                sourceWhileConditions,
+                targetWhileConditions,
+                targetWhileConditions.size()
               );
-              if (sourceWhileConditions) {
-                copyInstructions(
-                  sourceWhileConditions,
-                  targetWhileConditions,
-                  targetWhileConditions.size()
-                );
-              }
             }
           }
         }

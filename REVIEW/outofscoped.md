@@ -137,3 +137,103 @@ The permanent record for all of the above is in `worklog.md`
   the family documented below. Still open.
 - O3 (npm install prunes the libGD test alias), O5 (prompt budget accept
   or slim), O14-displacement and O14-prose-typos remain open unchanged.
+
+## 2026-10-02 — audit100226 triage (see REVIEW/audit100226.md for detail)
+
+Fixed and REMOVED from this backlog (2026-10-02, second session; full
+inventory and reasoning in `audit100226.md` Part 6): the Qdrant backend is no
+longer upload-only (RAG-1), stale points are removed on a shrinking corpus
+(RAG-2), the snapshot restore no longer drops the collection on a client
+timeout (RAG-3), lexical search answers paraphrases instead of zero hits
+(RAG-5), the persisted-load latch no longer blocks a mid-session enable, the
+minified-docs accessor is memoized and the lexical pass uses a precomputed
+lowercase view, response validation covers content/arguments shapes, Stop
+aborts the compaction call, the turn-budget error is non-retryable, the loop
+guard rolls back an unexecuted batch and detects alternating cycles, the two
+runtime-inspection tools honor their advertised filters and cap their dump,
+`list_effects` is capped with an honest total, the preserved block reads the
+right skill argument, `read_events_source`'s `max_chars` matches the
+implementation, `read_doc_page` is advertised whenever the prompt teaches it
+(and the advertisement is deduped), a chat deleted mid-save can no longer be
+resurrected, a failed file listing can no longer wipe every image sidecar, a
+chat selection naming a removed provider falls through to normal routing,
+removing a provider no longer clears the shared legacy key slot, the models
+cache is scoped per provider, the MCP queue releases its slot at task start, a
+timed-out MCP call is cancelled rather than executed late, MCP activity entries
+are bounded and whitelisted, `update_project_notes` is refused in MCP read-only
+mode, the MCP server start is mutexed, the snapshot URL is validated server-side,
+model-chosen resource names reject ADS colons and reserved device names,
+atomic-write temp names are unique per call and cleaned up on failure, a
+reloaded renderer is dropped from the ready senders, a project mutation lock
+serializes chat and MCP tool execution, the extension create tools sanitize
+names and refuse reserved lifecycle names, the event-replacement paths verify
+content before clearing, and a mutating function that throws still reports the
+mutation.
+
+The following remain open, with their reasons.
+
+- `[A1002-PROMPT-3/4]` `[open]` — The prompt-to-registry guard only extracts
+  call-shaped tokens (`Name(`), so every BARE tool mention escapes its check,
+  and it scans only the composed (partly degraded) prompt, so the
+  historically most defect-dense text (the EventScript pack) is never
+  scanned. Widening it means deciding which bare identifiers are tool names,
+  which needs a curated token list rather than a substring pass.
+- `[A1002-SCRIPT-2]` `[open]` — The eval harness sends a generic 2-message chat
+  with neither the BYOK system prompt nor any tool schemas, while its scorers
+  require argument names (`create_if_missing`, `brush_position`,
+  `children_to_add`) the model was never shown — so authoring-reach tasks are
+  near-unpassable except by training prior. Fixing it properly means the eval
+  becomes a full BYOK loop (tools, approval, persistence), which is a much
+  larger harness than the current scorer-only design.
+- `[A1002-PROMPT-5/6/7]` `[open]` — Prompt-text polish: the EventScript pack
+  teaches 7 of the 8 placement relations; four docblocks drifted during earlier
+  refactors; and the prompt budget sits above the 8-10k aim with identifiable
+  duplication. The budget item needs an owner call (see O5 above).
+- `[A1002-RAG-6/7/8]` `[open]` — Three retrieval-quality items: a runtime with
+  a good index but a failed embedder load is never retried (semantic search
+  stays off for the session); the RAG-off lexical corpus is built WITHOUT the
+  user's opt-in docs folder, so their files are invisible until a full build;
+  and user-docs chunks are titled by bare file name, so same-named files in
+  different folders are indistinguishable and their ids are unstable across
+  rebuilds.
+- `[A1002-RAG-9/10/11]` `[open]` — Loaded embedders are never evicted (switching
+  embedders keeps two models resident); the first search after a restart pays
+  the corpus build inline in the agent loop; and the chunker's overlap tail can
+  start mid-word or mid-fence.
+- `[A1002-UI-6/7/8/9/10]` `[open]` — Five persistence/UI polish items: a failed
+  file move can leave the old chat file to be adopted as a duplicate entry;
+  quarantined files and the index count against the 200 MB quota while never
+  being evicted; a chat whose images were all evicted keeps a stale sidecar;
+  `ChatMessages`' memo is defeated by inline closures so the whole transcript
+  re-renders on each store notification; and a provider with no per-model block
+  sends an empty model name to its Test button.
+- `[A1002-MCP-3/4/6/8/9]` `[open]` — Five low MCP items: a cancellation is
+  routed by "currently focused window" rather than the window that received the
+  request; a POST whose body arrives after a disable still forwards on the
+  captured state; an unknown tool name answers an isError result where the spec
+  wants a -32602 protocol error; the activity dedupe key can collapse two
+  distinct same-millisecond calls; and legacy JSON-RPC batch clients still hang
+  on a >=400 answer. The window-routing ones live in Electron main, which has no
+  test runner by project rule — they need the pure-CJS extraction pass the
+  other MCP findings got before they can be pinned by a spec.
+- `[A1002-ELEC-21/22]` `[open]` — An unhandled rejection from the preview-close
+  tracker, and the RAG bundle info/download channels accepting any https host
+  from the renderer (no credentials attached, sha256 verified, capped).
+- `[A1002-UP-14/15/16]` `[open]` — Three low upstream items: the
+  `replace_event_but_keep_existing_sub_events` wrapper leaks on a throw; the
+  replace paths still enqueue a delete when the generated events are empty;
+  and `create_scene` persists an unvalidated `background_color` (a named color
+  becomes NaN and is written into the project).
+- `[A1002-CACHE-7/8]` `[open]` — The RAG status card deserializes the whole
+  multi-MB index to read four manifest fields, and the persisted-index recovery
+  builds the corpus once to hash it and then rebuilds the identical corpus for
+  the lexical cache.
+- `[A1002-SCRIPT-3/4/5]` `[open]` — The eval harness still discards judge token
+  usage, the shared 24-query RAG eval set has no docs-min queries (so a
+  regression confined to the two largest corpus grades passes the gate), and
+  the minified-docs plan inventory still sorts with a locale-dependent
+  comparator.
+
+Unchanged from before this session: the O4 flake family, O3 (npm install prunes
+the libGD test alias), O5 (prompt budget accept or slim), O14-displacement and
+O14-prose-typos.

@@ -47,6 +47,7 @@ import {
   BYOK_GLOBAL_TURN_BUDGET,
   getByokSettings,
   type ByokSettings,
+  type ByokSharedTurnBudget,
 } from './ByokTypes';
 import {
   patchByokCapabilityRecord,
@@ -80,6 +81,8 @@ import {
   findByNameokExtraTool,
   type ByokExtraToolCollaborators,
 } from './ByokExtraTools';
+import { flushByokExtensionRegeneration } from './ByokExtensionTools';
+import { runExclusiveByokProjectMutation } from './ByokMutationLock';
 import { isByokExtensionToolShadowedByRegistry } from './ByokExtensionTools';
 import { makeDefaultByokImageStore } from './ByokImageContent';
 import {
@@ -428,17 +431,26 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           : [];
         for (const provider of settings.providers) {
           try {
-            const models = getCachedByokModels(provider.endpointUrl);
+            // Scoped by provider id: two providers can share one endpoint
+            // URL with different keys and see different model lists
+            // (audit100226 CACHE-4).
+            const models = getCachedByokModels(
+              provider.endpointUrl,
+              provider.id
+            );
             if (models) {
               modelsByProviderId[provider.id] = models.map(model => model.id);
               continue;
             }
             const storedKey = await loadByokKey(provider.keyRef);
             if (storedKey.status !== 'ok') continue;
-            const fetched = await refreshByokModels({
-              baseUrl: provider.endpointUrl,
-              apiKey: storedKey.key,
-            });
+            const fetched = await refreshByokModels(
+              {
+                baseUrl: provider.endpointUrl,
+                apiKey: storedKey.key,
+              },
+              provider.id
+            );
             modelsByProviderId[provider.id] = fetched.map(model => model.id);
           } catch (error) {
             // A provider that cannot be reached right now just contributes no
@@ -604,7 +616,12 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           const currentChat = getByokChat(chat.id);
           if (!currentChat) return;
           const selection = getByokChatModelSelection(currentChat) || {
-            providerId: '',
+            // The RESOLVED target's provider, not '' (the global endpoint):
+            // picking an effort on a chat that had no model selection
+            // pinned the empty provider id, silently re-routing every
+            // later call of that chat to the global endpoint with this
+            // profile's model (audit 2026-10-02 UI-1).
+            providerId: target.providerId,
             modelName: target.modelName || settings.modelName,
             reasoningEffort: 'default',
           };
@@ -768,18 +785,36 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
   React.useEffect(
     () => {
       let internalCallCounter = 0;
+      // The MCP host mutates the project OUTSIDE any chat, so nothing
+      // else marks it dirty: without this the editor keeps saying "no
+      // unsaved changes" and every edit an external agent makes is lost
+      // when the project is closed (audit 2026-10-02 UP-9). The chat path
+      // marks it in onFunctionCallsExecuted; the MCP path has to do it
+      // itself, for both result kinds (registry + intercepted tools).
+      const markUnsavedIfModified = (
+        results: $ReadOnlyArray<{ +didModifyProject?: boolean, ... }>
+      ): void => {
+        const didModify = results.some(result => !!result.didModifyProject);
+        if (didModify) triggerUnsavedChanges();
+      };
       const executeRegistryTool = async (
         name: string,
         argsJson: string,
         callId: string
       ) => {
-        const execution = await executeByokFunctionCalls(
-          [{ name, arguments: argsJson, call_id: callId }],
-          {
-            aiRequestId: 'byok-mcp',
-            getRelatedAiRequestLastMessages: () => null,
-          }
+        // Mutation door: the chat orchestrator takes the same lock around
+        // its tool batches, so an MCP call and a chat round can never
+        // interleave gd.* changes on the project (audit100226 UP-11).
+        const execution = await runExclusiveByokProjectMutation(() =>
+          executeByokFunctionCalls(
+            [{ name, arguments: argsJson, call_id: callId }],
+            {
+              aiRequestId: 'byok-mcp',
+              getRelatedAiRequestLastMessages: () => null,
+            }
+          )
         );
+        markUnsavedIfModified(execution.results);
         return (
           execution.results[0] || {
             status: 'finished',
@@ -862,7 +897,37 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
         executeExtraTool: async (name, args) => {
           const extraTool = findByNameokExtraTool(name);
           if (!extraTool) throw new Error(`Unknown tool: ${name}`);
-          return extraTool.run(args, makeExtraToolCollaborators());
+          const collaborators = makeExtraToolCollaborators();
+          // Mutation door (UP-11): the chat orchestrator takes the same lock
+          // around its tool batches, so an MCP call and a chat round can
+          // never interleave gd.* changes on the project.
+          const result = await runExclusiveByokProjectMutation(async () => {
+            const toolResult = await extraTool.run(args, collaborators);
+            // The extension-authoring tools only mark a module-level
+            // accumulator; the chat orchestrator flushes it once per batch.
+            // Over MCP nothing did, so functions/behaviors created by an
+            // external agent stayed unusable in events until some unrelated
+            // chat batch happened to flush (audit100226 UP-10). The reload
+            // mutates the editor's view too, so it belongs inside the lock.
+            // A failing reload is an editor side effect, not a tool failure:
+            // it must not turn a successful tool result into an error.
+            try {
+              await flushByokExtensionRegeneration(getByokLiveProject(), {
+                reloadEventsFunctionsExtensions:
+                  collaborators.reloadEventsFunctionsExtensions,
+                reloadEventsFunctionsExtensionMetadata:
+                  collaborators.reloadEventsFunctionsExtensionMetadata,
+              });
+            } catch (error) {
+              console.error(
+                'BYOK MCP host: the extensions reload after the tool failed:',
+                error
+              );
+            }
+            return toolResult;
+          });
+          markUnsavedIfModified([result]);
+          return result;
         },
         getExtraTool: name => findByNameokExtraTool(name),
         isExtraToolShadowedByRegistry: name =>
@@ -924,6 +989,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       byokFileMetadataRef,
       getProjectPreviewLauncher,
       eventsFunctionsExtensionsState,
+      triggerUnsavedChanges,
     ]
   );
 
@@ -1190,6 +1256,14 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
       // connection, its usage tracker, and one global model-turn budget
       // with the parent loop, and they build their own read-only executor
       // (the scout's run_script must not be able to modify anything).
+      // The budget object is created ONCE here and handed to BOTH the
+      // sub-agent runner and the parent orchestrator below: passing a
+      // fresh literal to the children made the pool independent, so a
+      // parent plus its children could spend 2 × the documented budget
+      // (audit 2026-10-02 LOOP-3).
+      const sharedTurnBudget: ByokSharedTurnBudget = {
+        remaining: BYOK_GLOBAL_TURN_BUDGET,
+      };
       const subAgentRunner = createByokSubAgentRunner({
         connection: {
           baseUrl: byokSettings.endpointUrl,
@@ -1226,7 +1300,7 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
             runScriptReadOnly,
           }),
         usageTracker,
-        sharedTurnBudget: { remaining: BYOK_GLOBAL_TURN_BUDGET },
+        sharedTurnBudget: sharedTurnBudget,
         getSettings: getLiveSettings,
         getApiKeyForProvider: getByokApiKeyForProvider,
         onCapabilityUpdate: writeCapabilityPatch,
@@ -1343,6 +1417,8 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
         },
         usageTracker,
         subAgentRunner,
+        // The SAME budget object the sub-agents draw from (see above).
+        sharedTurnBudget,
         onSceneEventsModifiedOutsideEditor,
         // ---- Phase 9: routing, capabilities, watchdog, suggestions ----
         getSettings: getLiveSettings,

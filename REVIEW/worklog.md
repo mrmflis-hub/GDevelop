@@ -4133,3 +4133,471 @@ on record.
     `electron-app/app/ByokMcpServer.js`.
   - Docs: `REVIEW/audit011026.md`, `REVIEW/outofscoped.md`,
     `REVIEW/usertasks.md`, `AGENTS.md`, `REVIEW/worklog.md` (this entry).
+
+## 2026-10-02 — Research session: how JS code in games is stored at runtime and merged at build (owner question, read-only)
+
+**Date:** 2026-10-02.
+
+**Description of actions:** Answered the owner's question about the JS
+pipeline of built GDevelop games (no code changed). Mapped with 4
+read-only Explore subagents + direct source verification of every
+load-bearing claim. Findings: (1) "JavaScript code" events
+(`JsCodeEvent`, defined in GDJS not Core — `GDJS/GDJS/Events/Builtin/`)
+store the user code ONLY as the `inlineCode` multiline string inside the
+serialized project (`SerializeTo`, JsCodeEvent.cpp:43-49); at IDE runtime
+it lives in the libGD WASM project model, edited via
+`setInlineCode()` in the events-sheet Monaco renderer
+(`newIDE/app/src/EventsSheet/EventsTree/Renderers/JsCodeEvent.js`).
+(2) At preview/export the GDJS code generator wraps it as
+`<ns>.userFunc0x… = function GDJSInlineCode(runtimeScene, objects) {…}`
+emitted outside the scene's main events function, called at its event
+position (CommonInstructionsExtension.cpp:1148-1205); per-scene events
+code is written as `code0.js`, `code1.js`, … one file per layout
+(ExporterHelper.cpp:1372-1389), and each scene's generated namespace
+self-registers as `gdjs['<mangledName>Code']` which `RuntimeScene`
+resolves at runtime via `gdjs[sceneData.mangledName + 'Code']`
+(runtimescene.ts:356). (3) Events-based extensions' JS is generated to
+strings by `gd.EventsFunctionsExtensionCodeGenerator` on every
+load/preview (`newIDE/app/src/EventsFunctionsExtensionsLoader/index.js`),
+written to a temp dir by `LocalEventsFunctionCodeWriter` (IndexedDB /
+service worker in browser builds) and registered as include files on the
+instruction metadata. (4) The build (`gd.Exporter.exportWholePixiProject`,
+`GDJS/GDJS/IDE/Exporter.cpp:57-207`) collects: engine libs
+(`AddLibsInclude`), used extensions' include files
+(`UsedExtensionsFinder`, Core/GDCore/IDE/Events/UsedExtensionsFinder.cpp),
+the generated `code<N>.js`, and `data.js` (= `gdjs.projectData = {…};
+gdjs.runtimeGameOptions = {…}`, ExporterHelper.cpp:362-365) — NO
+concatenation/bundler: everything is copied as separate files and each
+becomes one `<script src>` tag substituted for `<!-- GDJS_CODE_FILES -->`
+in `GDJS/Runtime/index.html` (`CompleteIndexFile`,
+ExporterHelper.cpp:1140-1162); load order = script-tag order, data.js
+last. Desktop/Cordova reuse the same www/app tree
+(`mainWindow.loadFile('app/index.html')`). No single-file/inline export
+exists. There is no `libs_bundle` folder and no `callbacks.js` anywhere
+in this tree (repo-wide grep empty) — user JS-event code lands inside the
+`code<N>.js` of its scene, engine libs stay individual files.
+
+**Bugs found:** none (read-only session).
+
+**Issues found:** the common mental model of a `libs_bundle`/`callbacks.js`
+bundle does not match this codebase — merging is purely per-file copying
+plus ordered `<script>` tags. Recorded here so future BYOK work (e.g.
+debugger tools or code-introspection features) doesn't assume a bundle.
+
+**Files worked on (all read-only):** `GDJS/GDJS/Events/Builtin/JsCodeEvent.{h,cpp}`,
+`GDJS/GDJS/Extensions/Builtin/CommonInstructionsExtension.cpp`,
+`GDJS/GDJS/Events/CodeGeneration/{EventsCodeGenerator,EventsFunctionsExtensionCodeGenerator,MetadataDeclarationHelper,LayoutCodeGenerator}.cpp`,
+`GDJS/GDJS/IDE/{Exporter,ExporterHelper}.cpp`,
+`GDJS/Runtime/index.html`, `GDJS/Runtime/runtimescene.ts`,
+`Core/GDCore/IDE/Events/UsedExtensionsFinder.cpp`,
+`newIDE/app/src/EventsSheet/EventsTree/Renderers/JsCodeEvent.js`,
+`newIDE/app/src/EventsFunctionsExtensionsLoader/**`,
+`newIDE/app/src/ExportAndShare/LocalExporters/**`, `REVIEW/worklog.md`
+(this entry).
+
+Triage: no OOS, no deferred, no UT.
+
+## 2026-10-02 — Planning session: BYOK game-code-on-disk feature (decisions + structuring only, no code)
+
+**Date:** 2026-10-02.
+
+**Description of actions:** The owner asked (a) how JS in games is stored at
+runtime and merged at build (answered in the preceding session) and (b) for a
+plan to let BYOK write real JavaScript game code in Monaco, bundled to files
+on disk like the build does, with edits hot-reloaded. Owner constraints for
+this phase: planning only, no implementation; and the BYOK discipline —
+modify as little GDevelop code as possible, keep our files separate, route
+around originals rather than rewrite them, so upstream updates land cleanly.
+Five read-only Explore subagents mapped (1) BYOK's existing JS/authoring
+surface, (2) the preview + hot-reload pipeline, (3) file-as-source-of-truth
+mechanisms in GDevelop, (4) Monaco and BYOK UI surfaces, (5) the recorded
+upstream-touchpoint patterns. Load-bearing claims verified directly.
+
+Key findings (all verified in source):
+- **A zero-upstream bundling mechanism already exists.** `javascript`
+  resources (`ResourcesList/ResourceSource.js:111-119`,
+  `Core/GDCore/Project/ResourcesContainer.h:575-580`) referenced by
+  `PlatformExtension::AddSourceFile()` + `SourceFileMetadata{resourceName,
+  includePosition: first|last}` (`Core/GDCore/Extensions/PlatformExtension.h:238`,
+  `Core/GDCore/Extensions/Metadata/SourceFileMetadata.h:15-54`). The IDE
+  already exposes it ("Extra source files (experimental)",
+  `EventsFunctionsExtensionEditor/OptionsEditorDialog/ExtensionDependenciesEditor.js:238-303`).
+  At export, `UsedExtensionsFinder::AddUsedExtension` harvests
+  `GetAllSourceFiles()` (Core/GDCore/IDE/Events/UsedExtensionsFinder.cpp:26-28),
+  `ResourceExposer.cpp:186-192` exposes the JS resource, and
+  `ExportIndexFile` (GDJS/GDJS/IDE/ExporterHelper.cpp:739-784, 1132-1165)
+  copies it to the export root and emits an ordered `<script src>` tag
+  (first/last). Constraint: source files only ship when the declaring
+  extension is USED by the project (same IDE warning at
+  ExtensionDependenciesEditor.js:307-314).
+- **Hot reload already exists and needs no upstream change.** The exporter
+  serializes `runtimeGameOptions.scriptFiles` = ordered `{path, hash}` pairs
+  (ExporterHelper.cpp:499-516, hash map from
+  `EventsFunctionsExtensionsProvider.js:50-57` via `setIncludeFileHash`).
+  The runtime `HotReloader` diffs by path: ADDED files are loaded, CHANGED
+  files re-injected when the hash differs, REMOVED files only warned about
+  (no unload — a delete needs a hard reload)
+  (GDJS/Runtime/debugger-client/hot-reloader.ts:454-498, initial snapshot at
+  :68-75). Note: `scriptFiles` is built from `includesFiles` only, so
+  extension source files do NOT get hash entries — BYOK must supply its own
+  `scriptFiles` in the `hotReload` payload. BYOK already owns a debugger
+  websocket client (ByokPreviewSession / ByokDebuggerTools).
+- **A project-folder file watcher already exists.** chokidar in
+  `newIDE/electron-app/app/LocalFilesystemWatcher.js:21-60` → IPC
+  `project-file-changed` with relative paths, debounced 200 ms, ignoring the
+  game file + autosave (`LocalFileResourcesWatcher.js:51-80`). Collision to
+  decide about: that consumer does `removeAllListeners('project-file-changed')`
+  on cleanup (:83), so a second BYOK listener is not safe as-is.
+- **Premise correction for the plan:** nothing needs to be pulled out of the
+  libGD WASM heap. GDevelop already treats JS as files (resource kind
+  `javascript`, path relative to the project folder); the project model holds
+  only the registry entry. That removes the bidirectional heap↔disk sync,
+  which was the expensive part of the owner's original sketch.
+- BYOK today cannot author JS code events at all; the `extend-with-js` skill
+  claims the EventScript writer accepts them while
+  `Knowledge/ByokEventScriptPack.js:56` and the parser say otherwise
+  (pre-existing doc contradiction, pre-dates this session).
+- Monaco: ONE wrapper (`CodeEditor/index.js`, lazy `react-monaco-editor`,
+  workers from `public/external/monaco-editor-min`), two current users
+  (JsCodeEvent renderer, GameplayTestEditor). A game-code panel would be a new
+  editor kind in `MainFrame/index.js`'s `editorKindToRenderer` — the standard
+  ~2-line touchpoint (BYOK already added the `'ask-ai'` kind the same way).
+- Patterns to imitate: pure core shared renderer+Electron
+  (`ByokQdrantSetupCore.js`), leaf-module delegation
+  (`EditorFunctions/index.js` → `EditorFunctions/InstanceTools.js:3435-3447`),
+  `Byok*.js` exporting `registerByok*(ipcMain, app)` with flat kebab channels
+  `byok-<feature>-<verb>`, seam hook `useByokChatSeam`.
+
+**Bugs found:** none (planning-only session, no code written).
+
+**Issues found:** (1) the `extend-with-js` skill's JS-code-event claim is false
+and this feature supersedes the workaround anyway — fix the skill text when
+the feature lands; (2) `removeAllListeners('project-file-changed')` in
+`LocalFileResourcesWatcher.js:83` is a single-consumer design that a BYOK
+auto-reload listener would collide with.
+
+**Files worked on (all read-only):**
+`GDJS/GDJS/IDE/{Exporter,ExporterHelper}.cpp`,
+`GDJS/Runtime/debugger-client/hot-reloader.ts`, `GDJS/Runtime/runtimescene.ts`,
+`GDJS/Runtime/index.html`, `Core/GDCore/IDE/Events/UsedExtensionsFinder.cpp`,
+`Core/GDCore/Extensions/PlatformExtension.h`,
+`Core/GDCore/Extensions/Metadata/SourceFileMetadata.h`,
+`Core/GDCore/Project/ResourcesContainer.h`,
+`newIDE/app/src/AiGeneration/Byok/**`,
+`newIDE/app/src/EventsFunctionsExtensionEditor/OptionsEditorDialog/ExtensionDependenciesEditor.js`,
+`newIDE/app/src/ProjectsStorage/LocalFileStorageProvider/LocalFileResourcesWatcher.js`,
+`newIDE/app/src/ResourcesList/ResourceSource.js`,
+`newIDE/app/src/CodeEditor/index.js`,
+`newIDE/app/src/ExportAndShare/LocalExporters/LocalPreviewLauncher/index.js`,
+`newIDE/app/src/ExportAndShare/BrowserExporters/BrowserSWPreviewLauncher/index.js`,
+`newIDE/electron-app/app/LocalFilesystemWatcher.js`,
+`newIDE/app/src/MainFrame/index.js`, `newIDE/app/src/EditorFunctions/index.js`,
+`newIDE/app/src/MainFrame/Toolbar/index.js`,
+`newIDE/app/src/MainFrame/EditorContainers/HomePage/HomePageMenu.js`,
+`newIDE/app/src/MainFrame/EditorTabs/EditorTabsHandler.js`,
+`newIDE/app/src/UI/EditorMosaic/index.js`, `newIDE/app/src/UI/TreeView/index.js`,
+`newIDE/app/src/SceneEditor/MosaicEditorsDisplay/index.js`,
+`newIDE/app/src/AiGeneration/AskAiEditorContainer.js`,
+`newIDE/app/src/AiGeneration/Byok/useByokChatSeam.js`,
+`REVIEW/Phase15.md` (NEW), `REVIEW/usertasks.md` (decision record),
+`REVIEW/worklog.md` (this entry).
+
+**Continuation (same session, after the owner's answers):** the owner answered
+all ten structuring decisions and expanded D15-7 into a full IDE pane (Monaco
+read+write, file tree rooted at the game-code folder only, top tab,
+tree | editor | Ask AI chat) and D15-9 into "a button above the settings
+button" — which resolves, per a follow-up agent sweep plus the owner's
+confirmation ("I meant the homepage vertical bar and menu burger"), to the
+home page vertical button list at
+`MainFrame/EditorContainers/HomePage/HomePageMenu.js:155-167` (there is no
+settings button in the editor toolbar; Preferences is only on the app menu and
+that list). Wrote `REVIEW/Phase15.md` — 6 steps (core/store → carrier
+extension bundling → tools+prompt byok-v12 → hot reload → the pane →
+verification), a four-file upstream touchpoint budget, 7 phase-gate ACs, and
+the explicit not-in-phase list. Decisions recorded canonically in
+`usertasks.md` under "Phase 15 owner decisions". At the close of 2026-10-02,
+five items were still with the owner: D15-3a (load order inside the
+domain-first taxonomy), D15-10 (what to do about the pre-existing
+`JsCodeEvent` inline JS feature — explained in chat), D15-11 (chat uniqueness
+when the pane is open), and D15-12/D15-13 (module model, deletion reload).
+All five were answered on 2026-10-03 — see the next entry.
+
+Triage: no OOS; no deferred; UT — Phase 15 owner decisions recorded in
+`usertasks.md` (five open at this point, all closed 2026-10-03).
+
+---
+
+## 2026-10-02 — Full BYOK audit, second pass (audit100226), fixes applied
+
+**Date:** 2026-10-02.
+**Type:** owner-ordered full audit ("run a full audit of the BYOK
+implementation, caching, tools for any improvements and fixes").
+
+### Description of actions
+
+Ten read-only audit subagents in two waves (≤5 per wave), each given the
+`audit011026.md` record so no closed finding was re-reported: wave 1 — caching,
+tool layer, agent loop, RAG, persistence/UI; wave 2 — MCP, Electron handlers,
+prompt+scripts, upstream-called files, and regression-hunting on the previous
+session's fixes. The orchestrator then verified every critical/high claim against
+the source before acting.
+
+Nine findings were **fixed with tests**; the rest were triaged. Two of the
+highest-value findings are regressions introduced by the previous session's own
+fixes (the prompt-cache invalidation key; the `add_external_events` ordering),
+which is why this pass was worth running after a "63 findings closed" audit.
+
+Fixed:
+- **A1002-CACHE-1 (high, regression of B-CORE-3)** — `systemPromptSnapshotNotesIdentifier`
+  was compared but never stored, so with a project open the system prompt was
+  recomposed every round and a mid-chat note write busted the provider prefix
+  cache from position zero (Phase 14.1 defeated).
+- **A1002-CACHE-2 (medium)** — the "byte-identical across rounds" spec was
+  vacuous: it flipped a flag from the executor mock, but
+  `update_project_notes` is intercepted and never reaches the executor.
+- **A1002-LOOP-1 (high)** — an exception escaping the extension-regeneration
+  flush or a rejecting approval prompt orphaned the batch's `tool_calls`,
+  persisting a transcript strict endpoints 400 forever (the B-CORE-2 brick
+  class). Contained both awaits **and** added an `answerPendingToolCalls` sweep
+  at the end of every batch.
+- **A1002-LOOP-2 (high)** — compaction could not fire in a single mega-turn
+  build chat (both cut points were user-turn based, the chat bailed at
+  `turnsStart === 0`) and dead-ended at the non-retryable `byok-context-full`.
+  Added a round-based fallback boundary; the tool-output-only pass keeps every
+  protocol pair intact.
+- **A1002-LOOP-3 (medium)** — parent and sub-agents each minted their own
+  150-turn budget; one shared object now serves both.
+- **A1002-TOOL-1 (medium, regression of B-TOOL-3)** —
+  `add_external_events` created and associated the sheet before validating the
+  script, while the fix's own comment claimed the opposite.
+- **A1002-ELEC-15 (high, data integrity)** — `downloadFile` failures resolved
+  `{ok:false}` and were treated as success, registering resources pointing at
+  files that were never written.
+- **A1002-UI-1 (high)** — picking an effort on a chat with no model selection
+  pinned `providerId: ''`, re-routing the chat to the global endpoint.
+- **A1002-UP-9 / UP-10 (high)** — the MCP path never marked the project dirty
+  (every external-agent edit silently lost on close) and never flushed the
+  extensions reload (created functions unusable over MCP).
+
+Every fix was regression-guarded by reverting it and confirming the new test
+goes red. Two first-draft tests turned out vacuous (the reload test could not
+reach its scenario; the original CACHE-2 spec never invoked the code) and were
+rewritten to reach the real path with explicit non-vacuity assertions.
+
+### Bugs found
+
+See `REVIEW/audit100226.md` (Part 1) for the full list with evidence. The
+fixed ones are listed above; the highest-severity open ones are the Qdrant
+backend being upload-only (`qdrantSearch` never wired, so restart silently
+degrades to lexical while the card reports healthy) and the eval scorers
+rewarding the hosted backend's French instruction vocabulary that the local
+event writer refuses.
+
+### Issues found
+
+- Two prior "gates green" claims were not green in substance: the prompt-cache
+  spec was vacuous, and the B-TOOL-3 `add_external_events` ordering comment
+  described an order the code did not implement. Recorded in the audit doc.
+- The O4 flake family continues: full runs on 2026-10-02 failed exactly one
+  DIFFERENT untouched suite each time (`useByokChatSeam.spec.js` in the
+  baseline run, `ByokSettingsTab.spec.js` in the final run); both pass
+  standalone. Sixth+ members of the documented family.
+- Jest baseline quirk re-confirmed: raw `npx jest` fails in this checkout
+  (`self is not defined`); `npm test --` is required.
+
+### Files worked on
+
+`REVIEW/audit100226.md` (new), `REVIEW/outofscoped.md`, `REVIEW/worklog.md`,
+`newIDE/app/src/AiGeneration/Byok/ByokOrchestrator.js`,
+`.../ByokOrchestrator.spec.js`, `.../ByokCompactor.js`, `.../ByokCompactor.spec.js`,
+`.../ByokExternalSceneTools.js`, `.../ByokResourceTools.js`,
+`.../ByokResourceTools.spec.js`, `.../useByokChatSeam.js`.
+
+### Triage
+
+New entries in `outofscoped.md` (the open A1002 items, ordered by value);
+the fixed ones were removed from the backlog per the remove-when-fixed rule.
+No new `deferred` entries. New `usertasks` Task 19 below.
+
+## 2026-10-03 — Phase 15 decisions closed: game code on disk (planning only)
+
+**Date:** 2026-10-03.
+
+**Description of actions:** The owner answered the five remaining Phase 15
+structuring decisions; no code was written. Recorded in `Phase15.md` §2 and
+canonically in `usertasks.md` ("Phase 15 owner decisions — presented
+2026-10-02, completed 2026-10-03"). All 13 decisions are now answered and the
+phase status line says so.
+
+- `[D15-3a]` **answered** — groupings stay coherent by what the files refer to
+  (owner's examples: `character/`, `enemy/`, `floor/`, `lava/`), alphabetical
+  within each grouping; tier 1 = root files + `core/`, tier 2 = other
+  groupings alphabetically; `main.js` is a boot convention, not a load
+  position. Added `[D15-3b]`: because the grouping name is also the runtime
+  namespace (D15-12), the taxonomy is a contract — the AI creates a grouping
+  before adding the first file of a new kind, so the folders cannot drift into
+  arbitrary buckets. `ByokGameCodeCore.js` now also owns the folder→namespace
+  mapping and the defensive namespace-creation lines.
+- `[D15-10]` **answered** — "leave it alone". The pre-existing
+  `JsCodeEvent` inline JS feature stays exactly as upstream ships it: no
+  migration, no deprecation, no upstream UI change. Recorded the reasoning,
+  which matters for future sessions: a JS code event is *positional* (runs
+  inside the scene's event flow with `runtimeScene` plus an optional object
+  list), a game-code file is module-level code loaded before the scene runs,
+  so the two are complementary rather than competing.
+- `[D15-11]` **answered** — yes: opening the game-code tab closes the
+  standalone Ask AI tab (the `openAskAi` close-then-reopen pattern,
+  `newIDE/app/src/MainFrame/index.js:1107-1161`), so exactly one chat UI
+  exists.
+- `[D15-12]` **answered** — yes, conditional: "as long as it works with GD
+  engine then it's a great solution". The condition is now a *tested*
+  acceptance criterion rather than an assumption: new `[A15-8]` in
+  `Phase15.md` §4 requires a file assigning `GameCode.character.spawn` to be
+  callable both from another game-code file and from a scene's JS code event
+  in a real preview. Each file creates its namespace defensively so load
+  order never has to be perfect.
+- `[D15-13]` **answered** — yes: "if this is a limitation then we have to roll
+  with it and use hard reload upon script deletion". `delete_game_code_file`
+  hard-reloads; documented as a runtime limitation
+  (`GDJS/Runtime/debugger-client/hot-reloader.ts:484-497` warns but cannot
+  unload), not a product choice.
+
+Also confirmed earlier in this round: D15-9's reading — the owner meant the
+home page vertical bar / menu burger list, which is now recorded as
+owner-confirmed in both documents.
+
+**Bugs found:** none (documentation-only session).
+
+**Issues found:** none new. The known `extend-with-js` skill contradiction and
+the `removeAllListeners('project-file-changed')` single-consumer design both
+remain open by design — the first is scheduled for step 15.3, the second is
+inside the four-file upstream touchpoint budget of step 15.4.
+
+**Files worked on:** `REVIEW/Phase15.md` (created 2026-10-02, updated this
+session), `REVIEW/usertasks.md` (decision record), `REVIEW/worklog.md` (this
+entry).
+
+Triage: no OOS, no deferred, UT — none open: the Phase 15 decision set is
+closed and the remaining owner work is unchanged (Tasks 16–19, of which 19
+is a new audit100226 backlog). Phase 15 itself is **not started**; it awaits
+an explicit owner order to implement, which per the roadmap convention means
+stepping through `Phase15.md` §3 in order.
+---
+
+## 2026-10-02 — audit100226 implementation session (every remaining finding)
+
+**Date:** 2026-10-02.
+**Type:** owner order — "implement all fixes and your recommended improvements
+to all your findings and suggestions".
+
+### Description of actions
+
+Implemented the **~40 open findings** the audit had triaged (the same session
+had already fixed nine). Work was batched by subsystem so each area was read
+once and changed coherently: RAG, the agent loop, the tool layer,
+persistence/UI, MCP, Electron main, upstream editor files, and
+prompt/scripts. Two read-only subagents prepared precise implementation specs
+for the Electron and upstream batches first (they read many files I would
+otherwise have had to open myself); all code was written here so the style
+rules stayed consistent.
+
+New shared machinery: `ByokMutationLock.js` (the project mutation lock, with
+its own spec) and `ByokAtomicWriteCore.js` (the unique-name atomic write, plain
+CJS so Electron main and Jest share it, 5 tests).
+
+Highlights, by severity:
+
+- **Qdrant is no longer upload-only.** The store gained `search` and `inspect`;
+  the search engine takes the semantic path with a remote dep and a null local
+  index; restart recovery gained a Qdrant branch; the rebuild and the status
+  card follow the server. The remote branch had **zero** tests before, which is
+  why the gap survived a 63-finding audit — it now has five.
+- **Lexical retrieval answers paraphrases.** The lexical half is no longer
+  AND-only, and a prefix match rescues inflections. RAG is off by default, so
+  this is the mode most users are in, and an AND-only pass answered
+  `success: true` with zero hits whenever the wording differed by one word.
+- **The eval harness stopped scoring a format the tool refuses.** The ten
+  event-logic scorers grepped for the hosted backend's serialized French
+  instruction vocabulary, which BYOK's local writer rejects — so the harness
+  failed every answer in the only format the real tool accepts and passed
+  answers it would reject. They now score the EventScript the writer accepts,
+  and the three task prompts that steered into the stale format were reworded.
+- **A project mutation lock** now serializes the chat's tool batches against
+  MCP calls (three doors, FIFO, exception-safe; the chat never holds it across
+  a model request or an approval).
+- **Chat and MCP no longer lose or interleave edits**: a chat deleted mid-save
+  can no longer be resurrected; a failed file listing can no longer wipe every
+  image sidecar; a mutating function that throws still reports the mutation, so
+  the unsaved mark is not skipped.
+- **Tool-layer honesty**: the two runtime-inspection tools now honor the
+  `scene_name` / `variable_paths` they advertised and ignored (and cap their
+  dump with an honest per-group truncation report); `list_effects` is capped
+  with a real total; the preserved block reads the right skill argument;
+  `read_doc_page` is advertised whenever three prompt surfaces and every
+  docs-min chunk already teach it (and the advertisement is deduped, since a
+  duplicate `tools` entry is rejected by strict endpoints).
+- **Security-shaped fixes**: the snapshot URL is validated server-side before
+  any download/drop/fetch (https + the GDevelop release path prefix); the
+  snapshot restore no longer drops the collection on a client timeout while the
+  server may still be importing; model-chosen resource names now reject NTFS
+  ADS colons and reserved Windows device names; atomic-write temp names are
+  unique per call and cleaned up on failure.
+- **Authoring reach**: all four `create_*` extension tools now apply
+  `gd.Project.getSafeName` and refuse reserved lifecycle names. The existing
+  spec was itself using `doStepPreEvents` as an ordinary example — a name the
+  editor would have refused.
+
+### Bugs found
+
+None new beyond the audit list, but the audit findings themselves had two
+notable consequences worth recording:
+
+- Several existing tests **pinned buggy behavior** and had to be corrected to
+  state the fixed contract: the RAG lexical AND-only test, the router's
+  "unknown provider falls back to the global endpoint AND keeps the dead
+  model's name" test, the tool-schema advertisement test (literal set
+  concatenation), and the extension spec that used a reserved lifecycle name
+  as an ordinary example.
+- The eval-harness spec asserted the stale serialized shape as the *good*
+  answer, so it actively protected the wrong contract.
+
+### Issues found
+
+- Bash heredocs kept mangling backslashes and embedded newlines into the eval
+  script (`'\\n'`, `\\s`, `\\b`) through three rounds of `python - <<'PYEOF'`;
+  the reliable route was writing the patch script with the Write tool and
+  running it. Recorded because it will recur.
+- The O4 flake family continues: full runs on 2026-10-02 each failed exactly
+  one DIFFERENT untouched suite (`useByokChatSeam.spec.js` in the baseline,
+  `ByokSettingsTab.spec.js`, `ByokRagSearch.spec.js`, `DescribeInstances.spec.js`
+  across this session's runs), every one passing standalone with all its tests
+  green. Seventh+ members of the documented family.
+- The prompt budget moved further above the 8-10k aim (12.5k with the newly
+  core-advertised `read_doc_page`), still far under the 15k hard cap.
+
+### Files worked on
+
+`REVIEW/audit100226.md`, `REVIEW/outofscoped.md`, `REVIEW/worklog.md`,
+`AGENTS.md`, and in `newIDE/app/src`: `AiGeneration/Byok/ByokMutationLock.js`+
+`.spec.js` (new), `ByokAtomicWriteCore.js`+`.spec.js` (new),
+`AiGeneration/Byok/Mcp/ByokMcpToolHost.js`, `Mcp/ByokMcpTools.js`+`.spec.js`,
+`Rag/ByokRagSearch.js`+`.spec.js`, `Rag/ByokRagStorage.js`+`.spec.js`,
+`Rag/ByokRagBuildService.js`, `Rag/ByokQdrantSetupCore.js`+`.spec.js`,
+`ByokOrchestrator.js`+`.spec.js`, `ByokCompactor.js`+`.spec.js`,
+`ByokLoopGuards.js`+`.spec.js`, `ByokClient.js`, `ByokExtensionTools.js`+`.spec.js`,
+`ByokExternalSceneTools.js`, `ByokResourceTools.js`+`.spec.js`,
+`ByokRuntimeTools.js`, `ByokDebuggerTools.js`, `ByokPreviewSession.js`,
+`ByokCatalogTools.js`, `ByokToolSchema.js`+`.spec.js`,
+`ByokMinifiedDocs.js`, `ByokChatStore.js`, `ByokChatPersistence.js`,
+`ByokChatStorageBackends.js`, `ByokModelRouter.js`+`.spec.js`,
+`ByokModelsCache.js`, `ByokSettingsTab.js`, `ByokSettingsTab.spec.js`,
+`useByokChatSeam.js`+`.spec.js`, `Knowledge/ByokKnowledgeSections.js`,
+`evals/ByokEvalHarness.spec.js`, `EditorFunctions/ApplyEventsChanges.js`,
+`EditorFunctions/EditorFunctionCallRunner.js`, `scripts/run-byok-evals.js`,
+`scripts/byok-eval-task-prompts.js`; and in `newIDE/electron-app/app`:
+`ByokChatFiles.js`, `ByokRagFiles.js`, `ByokQdrant.js`, `ByokMcpServer.js`.
+
+### Triage
+
+`outofscoped.md` rewritten: every fixed item removed, the ~25 still open kept
+with their reasons. No new `deferred` entries. New `usertasks` Task 20.

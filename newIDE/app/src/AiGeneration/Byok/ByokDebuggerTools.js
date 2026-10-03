@@ -79,13 +79,26 @@ const makeReadRuntimeDetailsTool = (): ByokExtraTool => ({
       });
       const dumpPayload =
         dumpResponse && dumpResponse.payload ? dumpResponse.payload : null;
+      // The same narrowing inspect_runtime_state accepts: without it an
+      // instance-heavy game serialized to ~120k chars and the 20k tool cap
+      // cut it mid-JSON (audit100226 TOOL-9).
+      const sceneName =
+        typeof args.scene_name === 'string' && args.scene_name
+          ? args.scene_name
+          : null;
+      const variablePaths = Array.isArray(args.variable_paths)
+        ? args.variable_paths.filter(path => typeof path === 'string')
+        : null;
       return {
         output: {
           success: true,
           status: statusPayload,
-          state: reduceByokRuntimeDump(dumpPayload),
+          state: reduceByokRuntimeDump(dumpPayload, {
+            sceneName,
+            variablePaths,
+          }),
           note:
-            'Live details of the preview launched by this chat (paused state from getStatus, instances and variables from a targeted refresh).',
+            'Live details of the preview launched by this chat (paused state from getStatus, instances and variables from a targeted refresh). Pass scene_name to read one scene and variable_paths to read specific variables.',
         },
         didModifyProject: false,
       };

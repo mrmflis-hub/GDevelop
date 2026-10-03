@@ -41,8 +41,16 @@ const isValidMinifiedDocPage = (raw: any): boolean =>
 
 /**
  * Every valid page of the artifact, in its stable (path-sorted) order.
+ *
+ * Memoized: the artifact is immutable generated data, and re-validating +
+ * re-copying all 601 pages (2.3 MB) happened on EVERY accessor call — once
+ * per `read_doc_page` tool call and once per corpus build (audit100226
+ * CACHE-5). The cache is dropped whenever `pagesOverride` changes.
  */
-export const getByokMinifiedDocPages = (): Array<ByokMinifiedDocPage> =>
+let validPagesCache: ?Array<ByokMinifiedDocPage> = null;
+let validPagesCacheSource = null;
+
+const buildValidPages = (): Array<ByokMinifiedDocPage> =>
   (pagesOverride || minifiedDocPages)
     .filter(isValidMinifiedDocPage)
     .map(page => ({
@@ -53,6 +61,16 @@ export const getByokMinifiedDocPages = (): Array<ByokMinifiedDocPage> =>
       body: page.body,
       tags: page.tags,
     }));
+
+export const getByokMinifiedDocPages = (): Array<ByokMinifiedDocPage> => {
+  const source = pagesOverride || minifiedDocPages;
+  if (validPagesCache && validPagesCacheSource === source) {
+    return validPagesCache;
+  }
+  validPagesCache = buildValidPages();
+  validPagesCacheSource = source;
+  return validPagesCache;
+};
 
 /** The categories (top-level wiki folders, plus `general`), sorted. */
 export const listByokMinifiedDocCategories = (): Array<string> =>

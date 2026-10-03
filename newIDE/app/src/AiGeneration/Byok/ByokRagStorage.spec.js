@@ -371,3 +371,114 @@ describe('createByokRagQdrantStore: audit011026 fixes', () => {
     expect(upsert.body.points.map((point: any) => point.id)).toEqual([1, 2]);
   });
 });
+
+describe('createByokRagQdrantStore: the server-side search (audit100226 RAG-1)', () => {
+  // The backend was upload-only: `qdrantSearch` was declared and consumed
+  // by the search engine but never provided, so after a restart Qdrant
+  // users silently degraded to lexical while the card reported healthy.
+  it('queries the collection and rebuilds hits from the payloads', async () => {
+    const { transport, requests, respondWith } = makeRecordingTransport();
+    respondWith(request => {
+      if (request.path.endsWith('/points/search')) {
+        return {
+          result: [
+            {
+              score: 0.87,
+              payload: {
+                id: 'docs:0:0',
+                source: 'docs',
+                title: 'Scenes',
+                tags: ['docs'],
+                text: 'A scene holds objects.',
+              },
+            },
+            // A malformed point must be dropped, not crash the search.
+            { score: 0.5, payload: null },
+          ],
+        };
+      }
+      return { result: {} };
+    });
+    const store = createByokRagQdrantStore({ transport });
+    expect(store.search).toBeDefined();
+
+    if (!store.search) throw new Error('the Qdrant store has no search');
+    const hits = await store.search(new Float32Array([0.1, 0.2, 0.3]), 5);
+
+    const searchRequest: any = requests.find(request =>
+      request.path.endsWith('/points/search')
+    );
+    expect(searchRequest.method).toBe('POST');
+    expect(searchRequest.body.limit).toBe(5);
+    expect(searchRequest.body.with_payload).toBe(true);
+    expect(searchRequest.body.vector.length).toBe(3);
+    expect(hits.length).toBe(1);
+    expect(hits[0].chunk.id).toBe('docs:0:0');
+    expect(hits[0].score).toBe(0.87);
+    expect(hits[0].match).toBe('vector');
+  });
+
+  it('reports ready only when the collection actually holds points', async () => {
+    const { transport, respondWith } = makeRecordingTransport();
+    respondWith(request => {
+      if (request.path === `/collections/${BYOK_RAG_QDRANT_COLLECTION}`) {
+        return { result: { status: 'green' } };
+      }
+      if (request.path.endsWith('/points/count')) {
+        return { result: { count: 4026 } };
+      }
+      return { result: {} };
+    });
+    const store = createByokRagQdrantStore({ transport });
+    if (!store.inspect) throw new Error('the Qdrant store has no inspect');
+    expect(await store.inspect()).toEqual({ ready: true, pointCount: 4026 });
+  });
+
+  it('reports not-ready for an empty or non-green collection', async () => {
+    const { transport, respondWith } = makeRecordingTransport();
+    respondWith(request => {
+      if (request.path === `/collections/${BYOK_RAG_QDRANT_COLLECTION}`) {
+        return { result: { status: 'green' } };
+      }
+      if (request.path.endsWith('/points/count'))
+        return { result: { count: 0 } };
+      return { result: {} };
+    });
+    const store = createByokRagQdrantStore({ transport });
+    if (!store.inspect) throw new Error('the Qdrant store has no inspect');
+    expect(await store.inspect()).toEqual({ ready: false, pointCount: 0 });
+  });
+
+  it('RAG-2: deletes the points a SHRINKING corpus no longer has', async () => {
+    const { transport, requests, respondWith } = makeRecordingTransport();
+    respondWith(request => {
+      // The collection already holds 10 points; the new corpus has 2.
+      if (request.path.endsWith('/points/count'))
+        return { result: { count: 10 } };
+      return { result: {} };
+    });
+    const store = createByokRagQdrantStore({ transport });
+    await store.saveIndex(await makeTestIndex());
+
+    const deleteRequest: any = requests.find(request =>
+      request.path.endsWith('/points/delete')
+    );
+    expect(deleteRequest).toBeTruthy();
+    // Point ids are chunk positions + 1, so ids 3..10 are the stale tail.
+    expect(deleteRequest.body.points).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it('issues no delete when the corpus grew (nothing is stale)', async () => {
+    const { transport, requests, respondWith } = makeRecordingTransport();
+    respondWith(request => {
+      if (request.path.endsWith('/points/count'))
+        return { result: { count: 1 } };
+      return { result: {} };
+    });
+    const store = createByokRagQdrantStore({ transport });
+    await store.saveIndex(await makeTestIndex());
+    expect(
+      requests.find(request => request.path.endsWith('/points/delete'))
+    ).toBeFalsy();
+  });
+});
