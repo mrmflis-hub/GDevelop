@@ -55,7 +55,6 @@ export type ByokPromptContext = {|
   // True when the generated engine reference catalog could be loaded: the
   // engine cheat-sheet section then points to search_reference.
   engineReferenceAvailable: boolean,
-  // True when the curated docs subset is available offline.
   // The project's persisted notes (null when the project has none yet).
   projectNotes: ?ByokProjectNotes,
   // The user's global custom instructions (verbatim, may be empty).
@@ -151,8 +150,8 @@ Completion rules: claim done ONLY after verifying your work — a screenshot, a 
 Skills: before building a game from a request, load_skill("build-workflow") and follow its pipeline. When a task needs JavaScript or custom objects/behaviors/functions, load_skill("extend-with-js").`;
 
 const EVENT_SCRIPT_CORE_SECTION_TEXT = `- Read before writing: call read_events_source on the scene and write your batches from what it shows.
-- EventScript syntax: one event per indented block — \`if Timer(2, "SpawnTimer") and once:\` (conditions joined with "and", "not" inverts, Or(...), once), \`always:\`, \`else:\`, \`else if ...:\`, \`while Cond():\`, \`repeat 5 times:\`, \`for each Player:\`, \`for each child in Inventory value Item:\`, \`group "Name":\`, \`comment "text"\`. Actions are the indented lines of a block, one call per line: \`Delete(Player)\`, \`await Wait(1)\`, \`SetNumberVariable(Score, =, +1)\`. Quoted strings use double quotes, empty body is \`pass\`.
-- Target your edits: use the \`# event-N.M\` ids from read_events_source as placement_target_event_id (e.g. "event-2.1"), with placement relations like insert_at_end, insert_and_replace_event, replace_entire_event_and_sub_events, insert_as_sub_event, delete_event. For replace relations, echo the target's current source in expected_event_source: the edit is refused when the target changed since you read it.`;
+- EventScript syntax: the full header and action vocabulary is in the always-on EventScript block below — one event per indented block, conditions joined with "and", actions indented under their block, one call per line. Empty body is \`pass\`.
+- Target your edits: use the \`# event-N.M\` ids from read_events_source as placement_target_event_id (e.g. "event-2.1"), with placement relations like insert_at_end, insert_and_replace_event, replace_entire_event_and_sub_events, replace_event_but_keep_existing_sub_events, insert_as_sub_event, delete_event. For replace relations, echo the target's current source in expected_event_source: the edit is refused when the target changed since you read it.`;
 
 const SCRIPT_SECTION_TEXT = `- For 5 or more related operations, or any arithmetic/geometry computation (positions, sizes, counts), write one run_script instead of many tool calls: the script calls the tools as async functions and computes in JavaScript.
 - Every tool call inside a script must be awaited, one at a time. A refused approval means nothing in the script ran.`;
@@ -174,8 +173,7 @@ const AUTHORING_REACH_SECTION_TEXT = `- External events (read_external_events_so
 - Sprites: describe_sprite_frames first, then change_sprite_frames with typed operations (frames, points, collision masks).
 - Real files: import_project_resources brings images/audio/fonts into the project (URL or local path), then reference them by name (set_frame_image, create_or_replace_object…).
 - Discovery (Phase 12): search_object_asset_store finds ready-made objects (public/free), search_resource_store finds audio and fonts with direct urls — and create_or_replace_object with search_terms INSTALLS the best asset match by itself.
-- Runtime (Phase 12): read_runtime_details, control_runtime and profile_runtime see and steer the preview this chat launched (pause it, dump its state, profile a slow scene). They never touch the project itself.
-- The tools this section names that are not in the core list above are all discoverable with search_tools — their full schemas come back in one call.`;
+- Runtime (Phase 12): read_runtime_details, control_runtime and profile_runtime see and steer the preview this chat launched (pause it, dump its state, profile a slow scene). They never touch the project itself.`;
 
 // --- The Phase 13.5 retrieval map + task catalog ----------------------------
 

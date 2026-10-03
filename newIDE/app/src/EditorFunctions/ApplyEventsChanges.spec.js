@@ -1137,6 +1137,57 @@ describe('applyEventsChanges', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('UP-15: an empty replacement does NOT delete the target event', () => {
+    setupInitialSceneEvents([
+      'BuiltinCommonInstructions::Standard',
+      'BuiltinCommonInstructions::Repeat',
+      'BuiltinCommonInstructions::While',
+    ]);
+
+    // The model generated nothing. The replace relations used to enqueue
+    // their DELETE anyway, so the targeted event was destroyed and replaced
+    // by nothing (and replace_event_but_keep_existing_sub_events took its
+    // sub-events with it) while the error only mentioned an empty insertion.
+    const eventOperations: Array<AiGeneratedEventChange> = [
+      makeChange({
+        operationName: 'replace_entire_event_and_sub_events',
+        operationTargetEvent: 'event-1',
+        generatedEvents: `[]`,
+      }),
+      makeChange({
+        operationName: 'replace_event_but_keep_existing_sub_events',
+        operationTargetEvent: 'event-2',
+        generatedEvents: JSON.stringify([]),
+      }),
+    ];
+
+    const result = applyEventsChanges(
+      project,
+      sceneEventsList,
+      eventOperations,
+      fakeGeneratedEventId
+    );
+
+    console.log(
+      'DEBUG applied=',
+      result.applied,
+      'errors=',
+      JSON.stringify(result.errors),
+      'types=',
+      JSON.stringify(getEventTypes(sceneEventsList))
+    );
+    // Nothing was destroyed: the scene is exactly as it was.
+    expect(getEventTypes(sceneEventsList)).toEqual([
+      'BuiltinCommonInstructions::Standard',
+      'BuiltinCommonInstructions::Repeat',
+      'BuiltinCommonInstructions::While',
+    ]);
+    expect(result.applied).toBe(0);
+    expect(result.errors.length).toBe(2);
+    expect(result.errors[0]).toContain('are empty');
+    expect(result.errors[1]).toContain('are empty');
+  });
+
   it('should replace event but keep existing sub-events with replace_event_but_keep_existing_sub_events', () => {
     sceneEventsList.clear();
     // Create a Group event with sub-events

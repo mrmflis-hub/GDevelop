@@ -85,6 +85,9 @@ const activityAggregate = [];
 // Mirrors ByokMcpToolHost.js: argsPreview is JSON.stringify(args).slice(0,
 // 200), `at` is an ISO timestamp, durationMs is a Date.now() delta.
 const MAX_ACTIVITY_ARGS_PREVIEW_LENGTH = 200;
+// The call id minted by the renderer host ("mcp-<n>"): short by
+// construction, bounded here like every other mirrored string.
+const MAX_ACTIVITY_CALL_ID_LENGTH = 64;
 const MAX_ACTIVITY_TOOL_LENGTH = 200;
 const MAX_ACTIVITY_TIMESTAMP_LENGTH = 40;
 
@@ -116,6 +119,16 @@ const isValidActivityEntry = entry => {
   }
   if (!ACTIVITY_OUTCOMES.has(entry.outcome)) return false;
   if (typeof entry.didModifyProject !== 'boolean') return false;
+  // Optional, but bounded like every other string: it is the dedupe key of
+  // the cross-window merge (audit100226 MCP-8).
+  if (
+    entry.callId !== undefined &&
+    (typeof entry.callId !== 'string' ||
+      entry.callId.length === 0 ||
+      entry.callId.length > MAX_ACTIVITY_CALL_ID_LENGTH)
+  ) {
+    return false;
+  }
   // NaN / Infinity survive structured clone across IPC.
   return (
     typeof entry.durationMs === 'number' &&
@@ -127,7 +140,11 @@ const isValidActivityEntry = entry => {
 const recordActivityEntry = entry => {
   // A whitelisted copy: unknown extra keys on the IPC payload must not
   // reach the aggregate the settings card renders (audit100226 MCP-5).
+  // callId IS whitelisted: without it the mirrored copy of a local entry
+  // gets a different dedupe key than the local one, so the settings card
+  // would show every call twice (audit100226 MCP-8).
   activityAggregate.push({
+    callId: entry.callId,
     at: entry.at,
     tool: entry.tool,
     argsPreview: entry.argsPreview,
@@ -211,6 +228,31 @@ const respondForwardTimeout = (state, internalId) => {
   );
 };
 
+const CANCEL_NOTIFICATION_METHOD = 'notifications/cancelled';
+
+/**
+ * Which renderer a notification goes to.
+ *
+ * A cancellation names the request it cancels (`params.requestId`), and that
+ * request was forwarded to ONE window — the one holding the tool host that
+ * is actually running it. Sending the cancellation to the currently focused
+ * window instead meant the cancel mark landed in a renderer that knows
+ * nothing about the call, and the tool kept running (audit100226 MCP-3).
+ * A cancellation whose request is not in flight (already answered, or never
+ * seen) falls back to the focused window, which is the old behavior.
+ */
+const pickSenderForNotification = (state, parsedMessage) => {
+  if (parsedMessage.method === CANCEL_NOTIFICATION_METHOD) {
+    const cancelledRequestId =
+      parsedMessage.params && parsedMessage.params.requestId;
+    for (const entry of state.pending.values()) {
+      if (entry.jsonRpcId !== cancelledRequestId) continue;
+      if (entry.sender) return entry.sender;
+    }
+  }
+  return pickReadySender();
+};
+
 const forwardToRenderer = (state, parsedMessage, rawMessage, res) => {
   const sender = pickReadySender();
   if (!sender) {
@@ -234,6 +276,10 @@ const forwardToRenderer = (state, parsedMessage, rawMessage, res) => {
     res,
     timer,
     jsonRpcId: parsedMessage.id,
+    // Remember which window received this call: the cancellation of an
+    // in-flight call must reach THAT renderer, not whichever window happens
+    // to be focused when the cancel arrives (audit100226 MCP-3).
+    sender,
   });
   sender.send('byok-mcp-request', { requestId: internalId, rawMessage });
 };
@@ -270,7 +316,7 @@ const handlePostMessage = (state, rawBody, res) => {
     // and the serialized queue blocked (audit011026 B-MCP-1). Fire and
     // forget: requestId -1 can never collide with the monotonic forward
     // ids, and the renderer never responds to a notification anyway.
-    const sender = pickReadySender();
+    const sender = pickSenderForNotification(state, parsedMessage);
     if (sender) {
       sender.send('byok-mcp-request', { requestId: -1, rawMessage });
     }
@@ -337,9 +383,18 @@ const handleHttpRequest = (req, res) => {
     return;
   }
   if (req.method === 'POST' && req.url === '/mcp') {
-    readBodyWithCap(req, res, rawBody =>
-      handlePostMessage(state, rawBody, res)
-    );
+    readBodyWithCap(req, res, rawBody => {
+      // `state` was captured when the request ARRIVED, but the body streams
+      // in afterwards. A disable during that window sets serverState to null
+      // and closes the server, while the keep-alive socket survives — so the
+      // captured state is stale and a mutating tool would still run although
+      // the endpoint is off (audit100226 MCP-4). Re-check the identity.
+      if (serverState !== state) {
+        respondEmpty(res, 403);
+        return;
+      }
+      handlePostMessage(state, rawBody, res);
+    });
     return;
   }
   if (req.method === 'GET' && req.url === '/health') {

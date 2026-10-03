@@ -135,6 +135,19 @@ export const resetByokRagEmbedderCache = (): void => {
 };
 
 /**
+ * Drop every cached embedder but the one still in use. Each entry pins a
+ * Transformers.js pipeline — tens of megabytes of WASM — so switching
+ * embedders in the settings used to keep two models resident for the rest of
+ * the session (audit100226 RAG-9). A search already holding the old embedder
+ * keeps its own reference, so this is safe to call right after a rebuild.
+ */
+export const releaseByokRagEmbeddersExcept = (keptEmbedderId: string): void => {
+  for (const embedderId of Array.from(cacheByEmbedderId.keys())) {
+    if (embedderId !== keptEmbedderId) cacheByEmbedderId.delete(embedderId);
+  }
+};
+
+/**
  * The deterministic hashing embedder used by the test suite: maps each word
  * to a bucket of a fixed-dimension vector (the bag-of-words hashing trick)
  * and normalizes — cosine similarity then approximates term overlap. It

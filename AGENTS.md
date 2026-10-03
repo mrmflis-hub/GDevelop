@@ -646,4 +646,49 @@ manual in the same session and say so in the worklog.
   `outofscoped.md`; dispositions in `audit100226.md` Part 6. Owner
   follow-ups: usertasks Task 20.
 
-*Last updated: 2026-10-02.*
+- **outofscoped CLOSURE session 2026-10-03 (owner-ordered "implement all
+  outofscoped.md items", uncommitted):** `outofscoped.md` is now **empty** —
+  every entry implemented, tested and verified, and the eight-member "one
+  random suite flakes per full run" family (O4) is **root-caused, not worked
+  around**. It was one cross-file React leak: `useByokChatSeam.spec.js`
+  mounted trees it never unmounted, their async effects re-rendered the dead
+  tree after the file ended against the NEXT file's mocks, and the uncaught
+  throw **crashed the whole worker process** — which is why a different
+  arbitrary suite failed each run. Now fixed at three levels (renderer
+  unmounting in `afterEach`, a reset-immune hook stub, and an event-loop drain
+  in `setupTests.js`'s `afterAll`), with a **deterministic two-file
+  reproduction** recorded in the spec; each layer verified to hold alone. Also
+  closed: O3 (the libGD test alias pruned by `npm install` — the "already
+  present" flag was computed BEFORE the restore, so the script still hit the
+  network and exited 1), the two preview-launcher nits, and every still-open
+  `A1002-` finding — RAG-6/7/8/9/10/11 + CACHE-7/8, UI-6/7/8/9/10,
+  UP-14/15/16, ELEC-21/22, MCP-3/4/6/8/9, PROMPT-3/4/5/6/7, SCRIPT-2/3/4/5 and
+  O14-prose-typos. Three items became **measured by-design dispositions in
+  `deferred.md`** rather than code changes: the prompt budget (12,582
+  tokens, accepted on the owner's instruction to use the recommendation; the
+  budget spec now prints the six largest sections and schemas whenever it
+  warns), the docs-min displacement (the shared RAG eval set grew 24 → 30 with
+  six docs-min queries; 93% top-3 against a ≥70% gate, and the two misses are
+  the displacement returning better answers), and the minification contract
+  (now states explicitly that upstream prose typos stay verbatim). The prompt
+  guard now catches **bare** snake_case tool mentions (it only matched
+  `Name(`, so nearly all tool teaching escaped it) and scans every knowledge
+  section at FULL size (the EventScript pack was never scanned — it degrades
+  out of the composed prompt). The eval harness now sends the REAL BYOK prompt
+  and tool schemas; it used to send neither, so its scorers checked argument
+  names the model had never seen. **Traps hit and recorded:** several files
+  are CRLF, so an `\n`-anchored revert silently matched nothing and produced
+  a vacuous test (UP-15 was rewritten with a verified-revert helper); CRA's
+  `resetMocks: true` strips implementations given to a `jest.fn` factory, and
+  `mockRestore()` clears a console spy's recorded calls (two more vacuous
+  tests); and the new `afterAll` drain had to capture the REAL `setTimeout`,
+  because a fake-timer suite (`UseLongTouch.spec.js`) otherwise timed it out.
+  Three fixes were proven non-vacuous by reverting them and watching the new
+  test go red. One audit finding (`PROMPT-6` item 3, `max_chars`) was a
+  **false positive** — the feature is implemented in
+  `EditorFunctions/index.js`; the audit only searched the BYOK tree. Gates:
+  237 suites / ~2,725 tests + 1 pre-existing skip, lint 0/0, Flow 0, prettier
+  clean (app + electron-app); two consecutive full runs green. Owner
+  follow-ups: usertasks Task 21.
+
+*Last updated: 2026-10-03.*

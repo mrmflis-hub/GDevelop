@@ -1049,3 +1049,47 @@ describe('ByokSettingsTab: benchmark snapshot (audit011026 B-TOOL-1)', () => {
     );
   });
 });
+
+describe('resolveByokProviderTestModelName (audit100226 UI-10)', () => {
+  // Lazy, like the other helpers above: a static import would load
+  // PreferencesContext before the matchMedia polyfill has run.
+  const { resolveByokProviderTestModelName } = require('./ByokSettingsTab');
+
+  const makeProvider = (modelSettings: Array<Object>) => ({
+    id: 'provider-1',
+    name: 'Provider 1',
+    endpointUrl: 'https://api.example.com/v1',
+    keyRef: 'provider-1',
+    modelSettings,
+  });
+
+  it('uses the provider own first model when one is configured', () => {
+    expect(
+      resolveByokProviderTestModelName(
+        makeProvider([
+          {
+            modelName: 'my-model',
+            temperature: null,
+            maxTokens: null,
+            contextWindowTokens: null,
+          },
+        ]),
+        [{ id: 'other-model' }]
+      )
+    ).toBe('my-model');
+  });
+
+  it('falls back to a fetched model when none is configured', () => {
+    // The card exists with an empty modelSettings from the moment it is
+    // added; the user may have only ever clicked "Fetch models".
+    expect(
+      resolveByokProviderTestModelName(makeProvider([]), [
+        { id: 'fetched-model' },
+      ])
+    ).toBe('fetched-model');
+  });
+
+  it('reports "no model" instead of an empty request', () => {
+    expect(resolveByokProviderTestModelName(makeProvider([]), [])).toBe('');
+  });
+});

@@ -5180,6 +5180,31 @@ See errors; verify event contents if needed.`
 };
 
 /**
+ * Whether a `background_color` argument is a color `rgbOrHexToHexNumber` can
+ * actually parse: a `r;g;b` triple of 0-255 numbers, or a `#rrggbb` hex.
+ * A named color ("red") parses to NaN, which `hexNumberToRGBArray` silently
+ * turns into black — so an unusable value must be refused, not persisted
+ * (audit100226 UP-16).
+ */
+export const isValidSceneBackgroundColor = (value: string): boolean => {
+  const trimmed = value.trim();
+  const rgbParts = trimmed.split(';');
+  if (rgbParts.length === 3) {
+    return rgbParts.every(part => {
+      const parsed = Number(part.trim());
+      return (
+        trimmed.length > 0 &&
+        /^\s*\d+\s*$/.test(part) &&
+        Number.isInteger(parsed) &&
+        parsed >= 0 &&
+        parsed <= 255
+      );
+    });
+  }
+  return /^#?[0-9a-fA-F]{6}$/.test(trimmed);
+};
+
+/**
  * Creates a new, empty scene
  */
 const createScene: EditorFunction = {
@@ -5225,6 +5250,16 @@ const createScene: EditorFunction = {
     const firstSceneSuffix = is_first_scene
       ? ' Also set as the first (startup) scene.'
       : '';
+
+    // The color is validated BEFORE anything is created: rgbOrHexToHexNumber
+    // returns NaN for a named color ("red"), hexNumberToRGBArray turns that
+    // into 0, and the scene was persisted as black while reporting success
+    // (audit100226 UP-16).
+    if (background_color && !isValidSceneBackgroundColor(background_color)) {
+      return makeGenericFailure(
+        `Invalid background_color "${background_color}": use "#rrggbb" or "r;g;b" (each 0-255).`
+      );
+    }
 
     if (project.hasLayoutNamed(scene_name)) {
       const scene = project.getLayout(scene_name);
@@ -5873,15 +5908,29 @@ const changeScenePropertiesLayersEffectsGroups: EditorFunction = {
             `Renamed scene "${oldName}" to "${newSceneName}" (events and references updated).`
           );
         } else if (isFuzzyMatch(propertyName, 'backgroundColor')) {
-          const colorAsRgb = hexNumberToRGBArray(rgbOrHexToHexNumber(newValue));
-          scene.setBackgroundColor(colorAsRgb[0], colorAsRgb[1], colorAsRgb[2]);
-          changes.push(
-            `Set scene background color to ${rgbColorToHex(
+          // Same rule as create_scene: an unparseable color became black and
+          // was reported as a successful change (audit100226 UP-16).
+          if (!isValidSceneBackgroundColor(newValue)) {
+            warnings.push(
+              `Ignored "backgroundColor": "${newValue}" is not a color. Use "#rrggbb" or "r;g;b".`
+            );
+          } else {
+            const colorAsRgb = hexNumberToRGBArray(
+              rgbOrHexToHexNumber(newValue)
+            );
+            scene.setBackgroundColor(
               colorAsRgb[0],
               colorAsRgb[1],
               colorAsRgb[2]
-            )}.`
-          );
+            );
+            changes.push(
+              `Set scene background color to ${rgbColorToHex(
+                colorAsRgb[0],
+                colorAsRgb[1],
+                colorAsRgb[2]
+              )}.`
+            );
+          }
         } else if (isFuzzyMatch(propertyName, 'gameResolutionWidth')) {
           const newWidth = parseInt(newValue);
           project.setGameResolutionSize(

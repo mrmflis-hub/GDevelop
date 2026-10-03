@@ -7,9 +7,11 @@ import {
 /**
  * The EventScript grammar pack (Phase 7.3): the full authoring reference of
  * the EventScript language `add_scene_events` accepts, with worked examples.
- * The 15-line operational core lives in the core sections (always on); this
- * full pack is degradable knowledge — it degrades to its first line under
- * context pressure, and stays reachable as the `eventscript-authoring`
+ * The always-on surface is TWO pieces, not one: the `eventscript-core` core
+ * section (how to target the scene) and the NON-degradable
+ * `eventscript-pinned` block (the headers, actions and canonical examples).
+ * This full pack is degradable knowledge — it degrades to its first line
+ * under context pressure, and stays reachable as the `eventscript-authoring`
  * skill. The spec test-links every example to the Phase 5 parser: each one
  * must parse, so the pack and the parser can never drift apart.
  */
@@ -48,7 +50,8 @@ const GRAMMAR_REFERENCE = `## Structure
 
 ## Placement (how add_scene_events targets the scene)
 - One batch = one object with: event_script, placement_relation, placement_target_event_id, expected_event_source.
-- placement_relation: insert_at_end | insert_before_event | insert_after_event | insert_as_sub_event | insert_and_replace_event | replace_entire_event_and_sub_events | delete_event.
+- placement_relation: insert_at_end | insert_before_event | insert_after_event | insert_as_sub_event | insert_and_replace_event | replace_entire_event_and_sub_events | replace_event_but_keep_existing_sub_events | delete_event.
+- The three replace relations differ in what happens to the target's sub-events: replace_entire_event_and_sub_events drops them, replace_event_but_keep_existing_sub_events re-attaches them to the first replacement event, insert_and_replace_event replaces the event itself.
 - For the replace relations, echo the target's current source (from read_events_source) in expected_event_source: the edit is refused when the target changed since you read it.
 - Sub-events deeper than what read_events_source shows are collapsed as \`# ...\` markers: to edit them, target their nearest visible parent.
 

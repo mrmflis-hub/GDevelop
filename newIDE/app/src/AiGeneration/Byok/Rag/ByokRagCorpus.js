@@ -26,6 +26,32 @@ export const BYOK_RAG_CHUNK_TARGET_TOKENS = 400;
 export const BYOK_RAG_CHUNK_OVERLAP_TOKENS = 50;
 
 /**
+ * The overlap a next chunk starts with: the last `overlapChars` characters of
+ * the previous chunk, moved FORWARD to the next boundary so the next chunk
+ * never opens mid-word or mid-fence (audit100226 RAG-11). A raw
+ * `slice(-overlapChars)` cut a word in half and, when the chunk ended inside a
+ * fenced block, produced a chunk starting with orphan code that never had its
+ * ``` opener — the model then read it as prose.
+ */
+const makeOverlapTail = (chunk: string, overlapChars: number): string => {
+  if (overlapChars <= 0) return '';
+  // An odd number of fence markers means the chunk ended INSIDE a fenced
+  // block: carrying any of its tail forward would open the next chunk
+  // mid-fence, with code the model reads as prose.
+  if (countFenceMarkers(chunk) % 2 !== 0) return '';
+  const rawTail = chunk.slice(-overlapChars);
+  // Drop everything up to and including the first whitespace of the tail:
+  // that is the partial word the raw slice started in the middle of.
+  const firstBreak = rawTail.search(/\s/);
+  if (firstBreak < 0) return '';
+  return rawTail.slice(firstBreak + 1);
+};
+
+/** How many ``` / ~~~ fence markers a text carries. */
+const countFenceMarkers = (text: string): number =>
+  (text.match(/^\s*(?:```|~~~)/gm) || []).length;
+
+/**
  * Split a text into overlapping chunks of ~BYOK_RAG_CHUNK_TARGET_TOKENS:
  * on paragraph boundaries when possible, on sentence boundaries otherwise,
  * hard-split as the last resort. Fenced code blocks are atomic units — a
@@ -131,7 +157,7 @@ export const chunkByokRagText = (
   for (const unit of units) {
     if (current && current.length + unit.length + 1 > targetChars) {
       chunks.push(current);
-      const tail = current.slice(-overlapChars);
+      const tail = makeOverlapTail(current, overlapChars);
       current = tail ? `${tail} ${unit}` : unit;
       continue;
     }
@@ -309,7 +335,14 @@ export type ByokRagDocsFolderReader = {|
   readFile: (filePath: string) => Promise<string>,
 |};
 
-/** The opt-in local documentation folder, chunked like the bundled docs. */
+/**
+ * The opt-in local documentation folder, chunked like the bundled docs.
+ * Chunks are titled (and identified) by their path RELATIVE to the chosen
+ * folder, not by the bare file name (audit100226 RAG-8): two `notes.md` in
+ * different subfolders were indistinguishable in the results, and the id
+ * embedded the running chunk count, so every id shifted when any earlier file
+ * grew by one chunk.
+ */
 export const buildByokRagUserDocsChunks = async (
   folderPath: string,
   reader: ByokRagDocsFolderReader
@@ -332,18 +365,87 @@ export const buildByokRagUserDocsChunks = async (
       continue;
     }
     if (!content.trim()) continue;
-    const fileName = file.split(/[\\/]/).pop() || file;
+    const relativePath = makeUserDocsRelativePath(folderPath, file);
     chunks.push(
       ...buildChunksForDocument(
         'user-docs',
-        chunks.length,
-        fileName,
+        relativePath,
+        relativePath,
         ['user-docs'],
-        `${fileName}\n\n${content}`
+        `${relativePath}\n\n${content}`
       )
     );
   }
   return chunks;
+};
+
+/**
+ * `C:\docs\notes.md` against a `C:\docs` folder → `notes.md`, and against a
+ * `C:\` folder → `docs/notes.md`. Always `/`-separated and never containing a
+ * `:` (the id separator) or a backslash (which would escape the id).
+ */
+const makeUserDocsRelativePath = (folderPath: string, file: string): string => {
+  const normalizedFolder = folderPath.replace(/[\\/]+$/, '');
+  const normalizedFile = file.replace(/\\/g, '/');
+  const normalizedFolderAsPosix = normalizedFolder.replace(/\\/g, '/');
+  const lowerFile = normalizedFile.toLowerCase();
+  const lowerFolder = normalizedFolderAsPosix.toLowerCase();
+  const isUnderFolder =
+    lowerFile.startsWith(lowerFolder) &&
+    normalizedFile.charAt(normalizedFolderAsPosix.length) === '/';
+  if (!isUnderFolder) {
+    // The reader handed back an unrelated path: fall back to the file name
+    // rather than baking an absolute path into a chunk id.
+    return normalizedFile.split('/').pop() || normalizedFile;
+  }
+  return normalizedFile.slice(normalizedFolderAsPosix.length + 1);
+};
+
+/**
+ * The docs-folder reader of the desktop build (the injected interface is the
+ * one above; this is the only production implementation of it). It lives here,
+ * next to the corpus that consumes it, because BOTH the full build and the
+ * lexical fallback need it: the fallback used to build without the user's
+ * folder, so their files were invisible until they built an index
+ * (audit100226 RAG-7).
+ */
+export const makeByokRagDocsFolderReader = async (): Promise<ByokRagDocsFolderReader> => {
+  const optionalRequire = require('../../../Utils/OptionalRequire').default;
+  const fs = optionalRequire('fs');
+  const path = optionalRequire('path');
+  // fs/path are available in the desktop renderer (nodeIntegration). The
+  // historical `electron.remote` requirement could never be satisfied — it
+  // was removed in Electron 14 — which silently turned the reader into a
+  // no-op and indexed zero user files (audit011026 B-RAG-3).
+  if (!fs || !path) {
+    return {
+      listMarkdownFiles: async () => [],
+      readFile: async () => '',
+    };
+  }
+  return {
+    listMarkdownFiles: async (folderToWalk: string) => {
+      const walk = (folder: string): Array<string> => {
+        try {
+          const entries = fs.readdirSync(folder, { withFileTypes: true });
+          const files: Array<string> = [];
+          for (const entry of entries) {
+            const entryPath = path.join(folder, entry.name);
+            if (entry.isDirectory()) {
+              files.push(...walk(entryPath));
+            } else if (entry.name.toLowerCase().endsWith('.md')) {
+              files.push(entryPath);
+            }
+          }
+          return files;
+        } catch (error) {
+          return [];
+        }
+      };
+      return walk(folderToWalk);
+    },
+    readFile: async (filePath: string) => fs.readFileSync(filePath, 'utf8'),
+  };
 };
 
 /**

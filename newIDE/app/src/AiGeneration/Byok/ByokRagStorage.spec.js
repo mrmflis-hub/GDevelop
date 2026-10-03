@@ -92,6 +92,46 @@ describe('createByokRagInProcessStore (the storage contract: in-process)', () =>
     const store = createByokRagInProcessStore(backend);
     await expect(store.loadIndex()).resolves.toBe(null);
   });
+
+  it('CACHE-7: reads the manifest sidecar without loading the index', async () => {
+    const backend = makeMemoryBackend();
+    const store = createByokRagInProcessStore(backend);
+    const serialized = await makeTestIndex();
+    await store.saveIndex(serialized);
+
+    const manifest = await (store.readManifest: any)();
+    expect(manifest).not.toBe(null);
+    expect(manifest.chunkCount).toBe(2);
+    expect(manifest.corpusHash).toBe('abc123');
+    expect(manifest.embedderId).toBe('hashing-test-embedder');
+
+    // The whole point: reading the manifest must not deserialize the index.
+    // The status card used to base64-decode every vector of a multi-MB file
+    // over IPC just to show four numbers.
+    backend.files.set('index.json', 'THIS IS NOT AN INDEX');
+    expect(await (store.readManifest: any)()).not.toBe(null);
+  });
+
+  it('CACHE-7: reports no manifest before anything is stored, and clears it', async () => {
+    const backend = makeMemoryBackend();
+    const store = createByokRagInProcessStore(backend);
+    expect(await (store.readManifest: any)()).toBe(null);
+
+    await store.saveIndex(await makeTestIndex());
+    await store.clear();
+    // A sidecar left behind would report a built index that no longer exists.
+    expect(await (store.readManifest: any)()).toBe(null);
+  });
+
+  it('CACHE-7: ignores a corrupted sidecar instead of throwing', async () => {
+    const backend = makeMemoryBackend();
+    backend.files.set('index.manifest.json', '{not json');
+    const store = createByokRagInProcessStore(backend);
+    await expect((store.readManifest: any)()).resolves.toBe(null);
+
+    backend.files.set('index.manifest.json', JSON.stringify({ nope: true }));
+    await expect((store.readManifest: any)()).resolves.toBe(null);
+  });
 });
 
 const makeRecordingTransport = (): {|

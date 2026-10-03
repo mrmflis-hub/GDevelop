@@ -167,12 +167,48 @@ describe('ByokMcpStdioAdapterCore: audit011026 fixes', () => {
     expect(text).toContain('413');
   });
 
-  it('B-MCP-11: stays silent for notifications and batch arrays', () => {
+  it('B-MCP-11: stays silent for notifications', () => {
+    // Corrected by audit100226 MCP-9: a batch array of id-bearing requests
+    // is NOT silent any more — see the test below. Notifications still are:
+    // a notification has nothing to wait for.
     expect(
       core.buildHttpFailureText({ jsonrpc: '2.0', method: 'x' }, 400)
     ).toBe(null);
-    expect(core.buildHttpFailureText([{ jsonrpc: '2.0', id: 1 }], 400)).toBe(
-      null
+    expect(
+      core.buildHttpFailureText([{ jsonrpc: '2.0', method: 'x' }], 400)
+    ).toBe(null);
+    expect(core.buildHttpFailureText([], 400)).toBe(null);
+    expect(core.buildHttpFailureText(null, 400)).toBe(null);
+  });
+});
+
+describe('ByokMcpStdioAdapterCore: batch clients (audit100226 MCP-9)', () => {
+  const core = require('./ByokMcpStdioAdapterCore');
+
+  it('answers the first id-bearing member of a rejected batch', () => {
+    // A legacy JSON-RPC client posts an ARRAY. The server answers 400 with a
+    // single error object whose id is null; the array has no top-level id, so
+    // nothing reached stdout and the client hung forever waiting for the ids
+    // it had put inside the array.
+    const text = core.buildHttpFailureText(
+      [
+        { jsonrpc: '2.0', id: 11, method: 'tools/list' },
+        { jsonrpc: '2.0', id: 12, method: 'tools/call' },
+      ],
+      400
     );
+    expect(text).toContain('"id":11');
+    expect(text).toContain('400');
+  });
+
+  it('skips the notifications of a batch to find an id', () => {
+    const text = core.buildHttpFailureText(
+      [
+        { jsonrpc: '2.0', method: 'notifications/initialized' },
+        { jsonrpc: '2.0', id: 21, method: 'tools/list' },
+      ],
+      400
+    );
+    expect(text).toContain('"id":21');
   });
 });

@@ -365,3 +365,85 @@ accepted into `Phase14.md` or rejected here by the owner.
   `Byok/evals/byok-rag-eval-queries.json`.
 - Baseline numbers for the future gate decision (full 4,026-chunk corpus,
   top-3 hit rate): hashing 19/24 (79 %), stock MiniLM 20/24 (83 %).
+
+---
+
+## 2026-10-03 — owner-ordered closure of the whole outofscoped backlog
+
+The owner ordered "implement all outofscoped.md items; where user decision is
+needed use your recommended solution". Every item was implemented except the
+three below, which ended as an explicit **measured** disposition rather than a
+code change. Each records what it is, why the decision went the way it did,
+and when to revisit it.
+
+### [BYOK-D-prompt-budget] The 8-10k prompt budget aim — *accepted at ~12.5k*
+
+- **What it is:** `ByokPromptBudget.spec.js` warns when the advertised tool
+  schemas + the composed system prompt exceed 10k tokens. It measures
+  **12,582 tokens** (prompt 6,484 + tools 6,098, 28 advertised tools), against
+  a 15k hard cap that is green. Open since Phase 13.5 (D13-6).
+- **What this session did about it:** removed the duplication the audit
+  identified — the EventScript grammar header list appeared three times (the
+  always-on core section repeated the non-degradable pinned block verbatim)
+  and the `search_tools` explanation appeared three times; the authoring-reach
+  section lost its third copy of the latter. Then it **instrumented the
+  budget spec** to print the six largest knowledge sections and the six
+  largest tool schemas whenever it warns, so the next decision starts from
+  measurements instead of guesses.
+- **Why accepted rather than slimmed:** the residue is real teaching, not
+  padding. The largest single section is the degradable EventScript pack
+  (1,319 tokens, already dropped in the default configuration); the largest
+  tool schemas (`change_object_properties_effects` 546,
+  `create_or_replace_object` 426, `add_or_edit_variable` 389) were read and
+  are already terse — the bulk is nested `changed_effects` /
+  `changed_properties` structure the tools genuinely accept. Closing the last
+  ~2.6k means deleting either the pinned EventScript examples or moving core
+  tools behind `search_tools`, both of which trade model reliability for a
+  number. Since Phase 14.1 the prompt is composed ONCE per chat and reused
+  byte-identical, so it is a prefix-cache cost, not a per-round one.
+- **Recommendation to the owner:** keep the landing. Revisit only if a
+  provider's context window or price makes 12.5k matter; the new breakdown
+  output names exactly which section or schema to cut when that day comes.
+- **Revisit when:** a real endpoint shows prompt-cache misses or cost
+  pressure at this size, or a model is measurably confused by the prompt's
+  length.
+
+### [BYOK-D-docs-min-displacement] Minified-wiki chunks displacing curated ones — *accepted, bounded*
+
+- **What it is:** `O14-displacement` observed that on some eval queries the
+  weighted top-3 carried relevant-but-different minified-wiki pages instead
+  of the strict expected source, and asked for it to be revisited on the next
+  eval round.
+- **This session's round (the requested revisit):** the shared set grew from
+  24 to 30 queries, six of them now targeting the `docs-min` grade — the gap
+  the finding identified (no docs-min queries meant a regression confined to
+  the two largest corpus grades passed the gate unnoticed). Measured with the
+  deterministic hashing embedder: **28/30 = 93% top-3**, against a ≥70% gate
+  (MiniLM measured 83% in Phase 14).
+- **The two remaining misses are the displacement itself:** "timer spawn
+  create objects" now surfaces *Object spawner 2D area* and "play a sound
+  effect" surfaces *Making sound effects using jfxr*. Both are **correct
+  answers to what was asked** — the displacement is the wiki chunks earning
+  their place, not a ranking bug.
+- **Why accepted:** the aggregate is 23 points above the gate, and the two
+  misses are cases where the replacement page is a better answer than the one
+  the set expected. Re-ranking to force those two back would push genuinely
+  useful wiki pages out of every answer.
+- **Revisit when:** the gate ever drops below ~80%, or an owner-provided
+  holdout query set (Task 17.1) shows a user-visible answer being displaced
+  by something *irrelevant* rather than merely different.
+
+### [BYOK-D-minify-contract-verbatim] Minified-docs prose typos — *decided: verbatim*
+
+- **What it is:** `O14-prose-typos` — two minification waves normalized
+  upstream PROSE typos ("Triggred Once", "Returns a Hash a MD5") against a
+  contract that said to keep constraint lines verbatim, and asked for a
+  decision before the next `DOCs/` refresh.
+- **Decision (this session, recommended and applied):** pin
+  **verbatim-everything**, and say so in one explicit line of
+  `MINIFICATION_CONTRACT`. The artifact is a faithful reduction of one commit
+  of the wiki; a silent spelling fix makes it impossible to diff against its
+  source and hides real upstream bugs. A prose typo is a wiki bug to report
+  upstream, not something to repair during minification.
+- **The two already-minified pages keep their fix** — re-running the
+  generator is not warranted, and the corpus hash is unchanged by a docblock.

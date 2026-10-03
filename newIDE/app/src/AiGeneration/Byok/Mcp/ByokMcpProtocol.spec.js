@@ -362,3 +362,65 @@ describe('handleByokMcpMessage — malformed input', () => {
     expect(withoutId).toEqual({ kind: 'notification' });
   });
 });
+
+describe('handleByokMcpMessage: unknown tool names (audit100226 MCP-6)', () => {
+  const callToolMessage = (name: string) => ({
+    jsonrpc: '2.0',
+    id: 5,
+    method: 'tools/call',
+    params: { name, arguments: {} },
+  });
+
+  it('answers an unknown tool with -32602, not a successful isError result', async () => {
+    // Every other unknown (method, prompt, resource) already answered a
+    // protocol error; the tool name was the outlier, and a client could not
+    // tell a failed call from a successful one holding an error payload.
+    const callTool: any = jest.fn();
+    callTool.mockResolvedValue({ content: [] });
+    const handlers = makeHandlers({
+      callTool,
+      hasTool: (name: string) => name === 'read_scene_events',
+    });
+
+    const outcome = await handleByokMcpMessage(
+      callToolMessage('no_such_tool'),
+      handlers
+    );
+
+    if (outcome.kind !== 'response') throw new Error('expected a response');
+    expect(outcome.response.result).toBeUndefined();
+    expect(outcome.response.error.code).toBe(BYOK_MCP_ERROR_INVALID_PARAMS);
+    expect(outcome.response.error.message).toContain('no_such_tool');
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('still calls a tool the host knows', async () => {
+    const handlers = makeHandlers({
+      hasTool: (name: string) => name === 'read_scene_events',
+    });
+
+    const outcome = await handleByokMcpMessage(
+      callToolMessage('read_scene_events'),
+      handlers
+    );
+
+    if (outcome.kind !== 'response') throw new Error('expected a response');
+    expect(outcome.response.error).toBeUndefined();
+    expect(outcome.response.result.content).toHaveLength(1);
+    expect(handlers.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the previous behavior when the host cannot tell', async () => {
+    // hasTool is optional (older hosts): without it, an unknown name keeps
+    // reaching the tool layer, which answers an isError result.
+    const handlers = makeHandlers();
+
+    const outcome = await handleByokMcpMessage(
+      callToolMessage('whatever'),
+      handlers
+    );
+
+    if (outcome.kind !== 'response') throw new Error('expected a response');
+    expect(handlers.callTool).toHaveBeenCalledTimes(1);
+  });
+});

@@ -104,6 +104,34 @@ describe('ByokEventScriptPack: audit011026 pins', () => {
     expect(text).toContain('insert_at_end');
   });
 
+  it('teaches ALL the event-level placement relations the writer accepts (audit100226 PROMPT-5)', () => {
+    const packSection = getByokKnowledgeSections().find(
+      section => section.id === 'eventscript-pack'
+    );
+    if (!packSection) throw new Error('The EventScript pack is not registered');
+    const text = packSection.build(
+      makeByokPromptContext({ toolNames: [], hasOpenedProject: true })
+    );
+
+    // The pack taught 7 of the 8 event-level relations:
+    // replace_event_but_keep_existing_sub_events was missing, so a model
+    // editing an event while keeping its children had no vocabulary for it
+    // and fell back to the destructive relation.
+    const eventLevelRelations = [
+      'insert_at_end',
+      'insert_before_event',
+      'insert_after_event',
+      'insert_as_sub_event',
+      'insert_and_replace_event',
+      'replace_entire_event_and_sub_events',
+      'replace_event_but_keep_existing_sub_events',
+      'delete_event',
+    ];
+    for (const relation of eventLevelRelations) {
+      expect(text).toContain(relation);
+    }
+  });
+
   it('round-trips the Create worked example through the real writer pipeline', () => {
     // The pack used to teach Create(Player, "Player", 100, 200, "Base
     // layer") — five arguments for a four-parameter action; it parsed, but

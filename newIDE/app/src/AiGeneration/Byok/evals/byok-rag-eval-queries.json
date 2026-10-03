@@ -22,5 +22,11 @@
   { "query": "time delta frame rate movement", "expectedSource": "example" },
   { "query": "hud score display menus", "expectedSource": "skill" },
   { "query": "puzzle grid game", "expectedSource": "skill" },
-  { "query": "top down shooter enemies", "expectedSource": "skill" }
+  { "query": "top down shooter enemies", "expectedSource": "skill" },
+  { "query": "pathfinding behavior grid navigation", "expectedSource": "docs-min", "expectedHint": "Grid-based pathfinding" },
+  { "query": "animate a value over time tween", "expectedSource": "docs-min", "expectedHint": "Tween behavior" },
+  { "query": "p2p multiplayer event handling", "expectedSource": "docs-min", "expectedHint": "Advanced p2p event handling" },
+  { "query": "prefab custom objects", "expectedSource": "docs-min", "expectedHint": "Custom Objects" },
+  { "query": "drag object with mouse", "expectedSource": "docs-min", "expectedHint": "Draggable Object Behavior" },
+  { "query": "extract events to a function", "expectedSource": "docs-min", "expectedHint": "Extract Events to a Function" }
 ]

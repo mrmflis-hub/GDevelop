@@ -5,6 +5,13 @@ const crypto = require('crypto');
 const {
   writeByokFileAtomically,
 } = require('../../app/src/AiGeneration/Byok/ByokAtomicWriteCore');
+// The same pure-CJS core the Qdrant module uses for its snapshot URL, so the
+// renderer-built bundle URLs are re-checked in THIS process before any
+// request leaves it (audit100226 ELEC-22).
+const {
+  isAllowedByokRagBundleApiUrl,
+  isAllowedByokRagBundleDownloadUrl,
+} = require('../../app/src/AiGeneration/Byok/Rag/ByokQdrantSetupCore');
 
 // BYOK RAG index files (Phase 13.7/13.8): the desktop side of the RAG
 // storage. The in-process index lives as one JSON file (base64 vectors) in
@@ -226,6 +233,15 @@ const registerByokRagFileHandlers = (ipcMain, app) => {
     deleteByokRagFile(app.getPath('userData'), fileName)
   );
   ipcMain.handle('byok-rag-bundle-info', async (event, apiUrl) => {
+    // The URL comes from the renderer and is dereferenced by this process:
+    // only the official GDevelop releases API may be asked (audit100226
+    // ELEC-22). Checked here, before any request.
+    if (!isAllowedByokRagBundleApiUrl(apiUrl)) {
+      return {
+        ok: false,
+        error: 'Refused: unexpected prebuilt-index API URL.',
+      };
+    }
     try {
       return { ok: true, releases: await fetchByokRagBundleReleases(apiUrl) };
     } catch (error) {
@@ -238,6 +254,12 @@ const registerByokRagFileHandlers = (ipcMain, app) => {
     }
   });
   ipcMain.handle('byok-rag-bundle-download', async (event, downloadUrl) => {
+    if (!isAllowedByokRagBundleDownloadUrl(downloadUrl)) {
+      return {
+        ok: false,
+        error: 'Refused: unexpected prebuilt-index download URL.',
+      };
+    }
     try {
       const downloaded = await downloadVerifiedByokRagBundle(
         app.getPath('userData'),

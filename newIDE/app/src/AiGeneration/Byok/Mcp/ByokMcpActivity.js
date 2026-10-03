@@ -17,9 +17,16 @@ import {
 /**
  * The identity of an entry across the local ring and the main aggregate: an
  * entry this window recorded is mirrored to main, so it comes back once more.
+ *
+ * The call id leads, because everything else can repeat: two DISTINCT calls
+ * sharing tool, arguments, outcome, duration and millisecond produced the
+ * same key, so the second entry was silently dropped and never displayed
+ * (audit100226 MCP-8). Entries without one (older mirrors, hand-built
+ * fixtures) fall back to the descriptive fields.
  */
 const makeByokMcpActivityKey = (entry: ByokMcpActivityEntry): string =>
   [
+    entry.callId || '',
     entry.at,
     entry.tool,
     entry.argsPreview,

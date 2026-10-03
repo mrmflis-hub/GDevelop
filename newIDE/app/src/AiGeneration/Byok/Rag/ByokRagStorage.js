@@ -32,6 +32,13 @@ export type ByokRagStore = {|
   kind: 'in-process' | 'qdrant',
   saveIndex: (index: ByokRagSerializedIndex) => Promise<void>,
   loadIndex: () => Promise<?ByokRagStoredIndex>,
+  /**
+   * The index manifest WITHOUT loading the index. The status card needs four
+   * numbers, and deserializing a multi-MB index (base64-decoding and checking
+   * every vector) to read them made every settings-tab refresh read the whole
+   * file over IPC (audit100226 CACHE-7). Null when nothing is stored.
+   */
+  readManifest?: () => Promise<?ByokRagManifest>,
   /** The server-side semantic search (Qdrant only — audit100226 RAG-1). */
   search?: (
     queryVector: Float32Array,
@@ -85,6 +92,27 @@ export const importByokRagBundleIntoStore = async (
 };
 
 const INDEX_FILE_NAME = 'index.json';
+// The manifest written next to the index so the status card can read four
+// numbers without deserializing the whole index (audit100226 CACHE-7). It is
+// a CACHE, never the source of truth: a missing or stale sidecar falls back to
+// reading the index itself, so an older index file still reports correctly.
+const MANIFEST_FILE_NAME = 'index.manifest.json';
+
+/** Read + validate the manifest sidecar, or null when there is none. */
+const readManifestSidecar = async (
+  backend: ByokRagFilesBackend
+): Promise<?ByokRagManifest> => {
+  const content = await backend.readFile(MANIFEST_FILE_NAME);
+  if (!content) return null;
+  try {
+    const parsed = JSON.parse(content);
+    if (!parsed || typeof parsed.builtAt !== 'string') return null;
+    if (typeof parsed.chunkCount !== 'number') return null;
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+};
 
 /** The in-process store: the serialized index in one file. */
 export const createByokRagInProcessStore = (
@@ -92,6 +120,7 @@ export const createByokRagInProcessStore = (
 ): ByokRagStore => ({
   kind: 'in-process',
   saveIndex: async index => {
+    await backend.writeFile(MANIFEST_FILE_NAME, JSON.stringify(index.manifest));
     await backend.writeFile(INDEX_FILE_NAME, JSON.stringify(index));
   },
   loadIndex: async () => {
@@ -105,8 +134,10 @@ export const createByokRagInProcessStore = (
       return null;
     }
   },
+  readManifest: async () => readManifestSidecar(backend),
   clear: async () => {
     await backend.deleteFile(INDEX_FILE_NAME);
+    await backend.deleteFile(MANIFEST_FILE_NAME);
   },
 });
 

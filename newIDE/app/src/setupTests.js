@@ -54,3 +54,33 @@ jest.setTimeout(10000);
 // Jest will automatically use the mock implementations from the __mocks__ folders
 jest.mock('./Utils/BackgroundSerializer.worker');
 jest.mock('./ResourcesList/ResourcePreview/Resource3DPreview.worker');
+
+// A React tree that a spec leaves mounted keeps its effects alive: the async
+// ones (history loading, model choice loading, ...) resolve later and call a
+// state setter on that dead-but-still-mounted tree. A full run is a single
+// process (--maxWorkers=1), so the pending callback fires while a LATER test
+// file is running — and that file's mocks are already installed. The render
+// then runs against the wrong mocks and throws inside an unrelated suite,
+// which is how this surfaced as "one different suite fails per full run and
+// passes standalone". (useByokChatSeam.spec.js was the offender, and its
+// uncaught exception could take the whole worker process down.)
+//
+// Draining the event loop in afterAll — before the environment is torn down
+// and while THIS file's mocks are still installed — contains such a leak to
+// the file that caused it instead of letting it surface somewhere else.
+//
+// The REAL setTimeout is captured here, at load: a suite that installs fake
+// timers (UseLongTouch.spec.js does) replaces the global one, and a drain
+// waiting on a fake timer that nobody advances never resolves — the hook
+// would then time out and fail that suite, which is the very failure mode
+// this net exists to prevent.
+const realSetTimeout = setTimeout;
+
+afterAll(async () => {
+  // Several turns: React's scheduler hands work over through a MessageChannel
+  // (jsdom) or setImmediate (node), and one fired callback can schedule the
+  // next one.
+  for (let turn = 0; turn < 3; turn++) {
+    await new Promise(resolve => realSetTimeout(resolve, 0));
+  }
+});

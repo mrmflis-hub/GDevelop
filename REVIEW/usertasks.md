@@ -1268,3 +1268,43 @@ The upstream touchpoint budget is four files, each listed in `Phase15.md` §3
    that moment waits for it instead of interleaving. The client-side MCP
    timeout still answers the external caller, so nothing hangs — but it is a
    deliberate serialization worth one manual pass.
+
+## Task 21 — outofscoped closure session (2026-10-03)
+
+1. **Commit review covers three sessions now** (uncommitted): the audit011026
+   completion, the audit100226 implementation, and this one — roughly 70
+   files. The headline of THIS session is the flake: the documented
+   "one random suite flakes per full run" family (eight members across three
+   sessions) had a single root cause — a cross-file React leak in
+   `useByokChatSeam.spec.js` that could crash the whole worker process — and
+   is now root-caused, fixed at three levels, and has a **deterministic
+   two-file reproduction** recorded in the spec. Worth reviewing that spec
+   and `setupTests.js` first.
+2. **A decision was taken on your behalf, as instructed** (the prompt-budget
+   aim). My recommendation was to accept the ~12.5k landing rather than cut
+   real teaching to hit an advisory number, and to instrument the budget spec
+   to print the six largest sections and schemas every time it warns so the
+   next call has data. Reasoning and numbers in `deferred.md`
+   (`[BYOK-D-prompt-budget]`). Override it if you disagree — the levers are
+   listed there.
+3. **Two existing tests asserted the OLD, buggy contract and were updated**,
+   not worked around: the MCP `useByokMcpServer` unknown-tool test (a
+   `tools/call` with no host used to answer a successful response with
+   `isError`, now answers `-32602`, which is what the MCP spec asks for), and
+   the stdio adapter's "stays silent for batch arrays" test (a legacy
+   JSON-RPC batch client used to hang forever on a ≥400 answer). Both changes
+   are behavior improvements, but they change assertions.
+4. **Electron-main fixes still need desktop QA** (no test runner there by
+   project rule): an MCP cancellation now reaches the window that received
+   the request; disabling the MCP endpoint mid-request answers 403 instead of
+   forwarding; the RAG bundle info/download channels refuse any host but
+   `api.github.com` / `github.com`; closing a preview whose window is
+   already destroyed no longer rejects.
+5. **Desktop QA for the upstream and Electron guards**: an unparseable
+   `create_scene` background color is refused without creating the scene; an
+   empty event replacement no longer deletes the target event.
+6. **Worth knowing:** the eval harness now sends the REAL BYOK system prompt
+   and tool schemas. It was sending a generic two-message chat with neither,
+   so its scorers were checking argument names the model had never seen — a
+   whole class of authoring-reach tasks was near-unpassable. Any historical
+   eval numbers are therefore not comparable with future ones.

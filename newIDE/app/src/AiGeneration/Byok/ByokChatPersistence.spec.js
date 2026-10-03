@@ -265,6 +265,64 @@ describe('ByokChatPersistence: the file store', () => {
     expect(metas[0].fileName).not.toBe(firstName);
   });
 
+  it('UI-6: a FAILED file move never leaves a duplicate of the same chat', async () => {
+    const backend = makeMemoryBackend();
+    // The move rejects the way the real IPC backend does when the main
+    // process could not rename the file (locked, folder moved).
+    const moveFile = backend.moveFile;
+    backend.moveFile = async (fromFileName: string, toFileName: string) => {
+      if (backend.failMoves) {
+        throw new Error('EPERM: the file is in use');
+      }
+      return moveFile(fromFileName, toFileName);
+    };
+    backend.failMoves = false;
+
+    const store = createByokChatFileStore(backend, () => null);
+    await store.saveChat(makeChat());
+    const firstName = (await store.listChatMetas())[0].fileName;
+
+    backend.failMoves = true;
+    await store.saveChat(makeChat({ updatedAt: '2026-09-30T09:00:00.000Z' }));
+
+    // Reconciliation used to adopt the leftover file as a SECOND entry for
+    // the same chat, so the Recents rail showed it twice and one copy was
+    // orphaned forever. The chat now simply keeps its current file name.
+    const metas = await store.listChatMetas();
+    expect(metas).toHaveLength(1);
+    expect(metas[0].fileName).toBe(firstName);
+    const chatFiles = Array.from(backend.raw.keys()).filter(fileName =>
+      fileName.endsWith('.md')
+    );
+    expect(chatFiles).toEqual([firstName]);
+  });
+
+  it('UI-6: a rename whose move fails keeps one file and stays renamable', async () => {
+    const backend = makeMemoryBackend();
+    const moveFile = backend.moveFile;
+    backend.moveFile = async (fromFileName: string, toFileName: string) => {
+      if (backend.failMoves) throw new Error('EPERM');
+      return moveFile(fromFileName, toFileName);
+    };
+    backend.failMoves = true;
+
+    const store = createByokChatFileStore(backend, () => null);
+    await store.saveChat(makeChat());
+    await store.renameChat('byok-test-chat', 'A brand new title');
+
+    const metas = await store.listChatMetas();
+    expect(metas).toHaveLength(1);
+    const chatFiles = Array.from(backend.raw.keys()).filter(fileName =>
+      fileName.endsWith('.md')
+    );
+    expect(chatFiles).toHaveLength(1);
+    // The title is what the user asked for, even though the file could not
+    // be renamed — the transcript content still carries it (the display name
+    // adds the last-interaction date by convention).
+    const loaded = await store.loadChat('byok-test-chat');
+    expect(loaded && loaded.title).toContain('A brand new title');
+  });
+
   it('moves a corrupt file aside and never lets it block the list', async () => {
     const backend = makeMemoryBackend();
     const store = createByokChatFileStore(backend, () => null);
@@ -337,6 +395,37 @@ describe('ByokChatPersistence: the file store', () => {
     // The loaded chat re-registers the image under its original id.
     const loaded = await store.loadChat('byok-test-chat');
     expect(loaded).not.toBe(null);
+  });
+
+  it('UI-8: deletes the sidecar when a chat no longer references any image', async () => {
+    const image = registerByokImage({
+      dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
+      width: 64,
+      height: 64,
+    });
+    const chatWithImage = makeChat({
+      output: [
+        {
+          type: 'function_call_output',
+          call_id: 'call-1',
+          output: '{"success":true}',
+          images: [image.id],
+        },
+      ],
+    });
+
+    const backend = makeMemoryBackend();
+    const store = createByokChatFileStore(backend, () => image);
+    await store.saveChat(chatWithImage);
+    expect(backend.raw.has('byok-test-chat.images.json')).toBe(true);
+
+    // The images went away (a quota eviction, or a compaction dropping the
+    // references). The stale sidecar used to stay forever — the orphan sweep
+    // spares the sidecar of a chat that still exists, and the quota eviction
+    // only runs while over cap — so its bytes counted against the quota.
+    const storeWithoutImages = createByokChatFileStore(backend, () => null);
+    await storeWithoutImages.saveChat(chatWithImage);
+    expect(backend.raw.has('byok-test-chat.images.json')).toBe(false);
   });
 
   it('collects only the image entries the transcript references', () => {
@@ -473,6 +562,49 @@ describe('ByokChatPersistence: the file store', () => {
     expect(remaining).toHaveLength(1);
     // The OLDEST chat was evicted.
     expect(remaining[0].id).toBe('byok-big-1');
+  });
+
+  it('UI-7: quarantined files are evicted too, so the quota can be met', async () => {
+    const backend = makeMemoryBackend();
+    const store = createByokChatFileStore(backend, () => null);
+    await store.saveChat(makeChat({ id: 'byok-kept' }));
+
+    // Unparseable leftovers: they count against the quota from the first
+    // check, but neither eviction loop iterates them (they are not index
+    // entries), so the folder stayed over cap forever.
+    const quarantinedBytes = 'x'.repeat(4000);
+    await backend.writeFile('corrupt-old-chat.md', quarantinedBytes);
+    await backend.writeFile('corrupt-other-chat.md', quarantinedBytes);
+
+    const beforeQuota = (await store.getStorageUsage()).totalBytes;
+    await store.enforceQuota(200);
+
+    // No live chat was touched: the first chat is newer than the leftovers
+    // by index order but the chat loop only runs when the non-chat files are
+    // not enough — here they are, so the transcript survives.
+    expect(backend.raw.has('corrupt-old-chat.md')).toBe(false);
+    expect(backend.raw.has('corrupt-other-chat.md')).toBe(false);
+    expect((await store.getStorageUsage()).totalBytes).toBeLessThanOrEqual(200);
+    // Non-vacuity: the leftovers really did exceed the cap on their own.
+    expect(beforeQuota).toBeGreaterThan(200 + 4000);
+  });
+
+  it('UI-7: the index file is the very last thing evicted', async () => {
+    const backend = makeMemoryBackend();
+    await createByokChatFileStore(backend, () => null).saveChat(
+      makeChat({ id: 'byok-only' })
+    );
+
+    // A second session: the index is (re)created by the reconciliation of a
+    // store that has never seen these files — which is exactly when the
+    // quota sweep runs against a folder that holds one.
+    const store = createByokChatFileStore(backend, () => null);
+    await store.listChatMetas();
+    expect(backend.raw.has('index.json')).toBe(true);
+
+    // A cap no transcript can satisfy: everything goes, index included.
+    await store.enforceQuota(0);
+    expect(backend.raw.has('index.json')).toBe(false);
   });
 });
 

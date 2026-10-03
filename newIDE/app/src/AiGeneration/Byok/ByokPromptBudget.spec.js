@@ -25,6 +25,47 @@ const BYOK_BUDGET_HARD_CAP_TOKENS = 15000;
 
 const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
 
+/**
+ * Where the prompt's tokens actually go: each knowledge section at FULL size
+ * (not the degraded version the budget keeps), plus the biggest tool schemas.
+ * Printed with the over-budget warning so the next slimming decision starts
+ * from measurements instead of guesses (the 8-10k aim of D13-6 has been open
+ * since Phase 13 for want of this).
+ */
+const reportLargestPromptParts = (): string => {
+  const {
+    getByokKnowledgeSections,
+  } = require('./Knowledge/ByokKnowledgeSections');
+  const sections = getByokKnowledgeSections()
+    .map(section => ({
+      id: section.id,
+      tokens: estimateTokens(
+        section.build(
+          makeByokPromptContext({ toolNames: [], hasOpenedProject: true })
+        )
+      ),
+    }))
+    .sort((first, second) => second.tokens - first.tokens)
+    .slice(0, 6)
+    .map(section => `    ${section.id}: ${section.tokens}`);
+  const toolSchemas = getByokToolSchemasForNames(
+    getByokAdvertisedToolNames({ hasOpenedProject: true })
+  )
+    .map(schema => ({
+      name: schema.name,
+      tokens: estimateTokens(JSON.stringify(schema)),
+    }))
+    .sort((first, second) => second.tokens - first.tokens)
+    .slice(0, 6)
+    .map(schema => `    tool ${schema.name}: ${schema.tokens}`);
+  return [
+    '  largest prompt sections (full size):',
+    ...sections,
+    '  largest tool schemas:',
+    ...toolSchemas,
+  ].join('\n');
+};
+
 describe('ByokPromptBudget (Phase 13.5)', () => {
   const measureTurn = async (hasOpenedProject: boolean) => {
     const advertisedNames = getByokAdvertisedToolNames({ hasOpenedProject });
@@ -79,7 +120,8 @@ ${buildWorkflowSkill.body.slice(0, 6000)}`
           `(prompt ${measurement.systemPromptTokens} + tools ${
             measurement.toolsTokens
           }, ` +
-          `${measurement.advertisedNames.length} advertised tools).`
+          `${measurement.advertisedNames.length} advertised tools).\n` +
+          reportLargestPromptParts()
       );
     }
     expect(measurement.totalTokens).toBeLessThanOrEqual(

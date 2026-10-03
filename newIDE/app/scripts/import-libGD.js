@@ -4,7 +4,9 @@ const path = require('path');
 
 const sourceDirectory = '../../../Binaries/embuild/GDevelop.js';
 const destinationTestDirectory = '../node_modules/libGD.js-for-tests-only';
-const alreadyHasLibGdJs =
+// Evaluated on demand rather than once at load: the restore below can fill the
+// test folder in, and the fallback at the end of the file must see that.
+const hasAllLibGdJsFiles = () =>
   shell.test('-f', '../public/libGD.js') &&
   shell.test('-f', '../public/libGD.wasm') &&
   shell.test('-f', destinationTestDirectory + '/index.js') &&
@@ -12,6 +14,37 @@ const alreadyHasLibGdJs =
 
 if (shell.mkdir('-p', destinationTestDirectory).stderr) {
   shell.echo('❌ Error while creating node_modules folder for libGD.js');
+}
+
+// npm considers this hand-made folder "extraneous" and PRUNES it on every
+// `npm install`, which then breaks every Jest suite with "Cannot find module
+// 'libGD.js-for-tests-only' from 'src/setupTests.js'". The copy already in
+// public/ is byte-identical, so restore the alias from it instead of going
+// back to the network. When a local build exists in Binaries/embuild, the
+// branch below copies those (newer) files over both folders anyway.
+if (
+  !shell.test('-f', destinationTestDirectory + '/index.js') &&
+  shell.test('-f', '../public/libGD.js') &&
+  shell.test('-f', '../public/libGD.wasm')
+) {
+  shell.echo(
+    'ℹ️  Restoring the libGD.js test alias from public/ (npm install prunes it)...'
+  );
+  const restoredJs = shell.cp(
+    '../public/libGD.js',
+    destinationTestDirectory + '/index.js'
+  );
+  const restoredWasm = shell.cp(
+    '../public/libGD.wasm',
+    destinationTestDirectory + '/libGD.wasm'
+  );
+  if (restoredJs.stderr || restoredWasm.stderr) {
+    shell.echo(
+      '❌ Error while restoring the libGD.js test alias from public/.'
+    );
+  } else {
+    shell.echo('✅ Restored libGD.js to the node_modules test folder');
+  }
 }
 
 if (shell.test('-f', path.join(sourceDirectory, 'libGD.js'))) {
@@ -177,7 +210,7 @@ if (shell.test('-f', path.join(sourceDirectory, 'libGD.js'))) {
             downloadBranchLatestLibGdJs('master').then(
               onLibGdJsDownloaded,
               () => {
-                if (alreadyHasLibGdJs) {
+                if (hasAllLibGdJsFiles()) {
                   shell.echo(
                     `ℹ️ Can't download any version of libGD.js, assuming you can go ahead with the existing one.`
                   );

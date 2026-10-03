@@ -384,6 +384,20 @@ const findToolMeta = (
 const isPlainObject = (value: any): boolean =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
+/**
+ * Whether this host can run a tool with that name: the two MCP-native tools,
+ * plus the extra tools and the registry ones. The protocol layer uses it to
+ * answer an unknown name with the -32602 the specification asks for, instead
+ * of a successful response carrying an isError result (audit100226 MCP-6).
+ */
+export const hasByokMcpTool = (
+  name: string,
+  host: ByokMcpToolHost
+): boolean => {
+  if (name === BYOK_MCP_GET_PROJECT_OVERVIEW_TOOL_NAME) return true;
+  if (name === BYOK_PLAN_TOOL_NAME) return true;
+  return findToolMeta(name, host) !== null;
+};
 const safeJsonParse = (text: string): any => {
   try {
     return JSON.parse(text);

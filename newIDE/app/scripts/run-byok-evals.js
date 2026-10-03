@@ -28,6 +28,77 @@
 const fs = require('fs');
 const path = require('path');
 
+/**
+ * The REAL BYOK system prompt and tool schemas (audit100226 SCRIPT-2).
+ *
+ * The harness used to send a two-message chat with neither, while its
+ * scorers require argument names (`create_if_missing`, `brush_position`,
+ * `children_to_add`, …) the model was never shown — so the authoring-reach
+ * tasks were near-unpassable except by training prior, and any prompt or
+ * tool-schema change this harness was supposed to measure had no effect on
+ * the answer. Both are now loaded from the app modules themselves (never
+ * re-implemented), through the same `@babel/register` bootstrap
+ * `scripts/byok-embedder/eval-embedder.js` uses.
+ *
+ * The shims below are what webpack does for us inside the app: CSS modules
+ * and binary assets are importable from the dependency chain, and a web
+ * worker module assigns to `self`. None of them are needed Node-side.
+ */
+const loadByokPromptModules = async () => {
+  if (!global.self) {
+    global.self = global;
+    global.postMessage = () => {};
+  }
+  for (const extension of [
+    '.css',
+    '.svg',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.webp',
+    '.woff',
+    '.woff2',
+  ]) {
+    if (!require.extensions[extension]) {
+      require.extensions[extension] = () => {};
+    }
+  }
+  if (!require.extensions['.js'].__byokBabelRegistered) {
+    // eslint-disable-next-line import/no-unresolved
+    require('@babel/register')({});
+    require.extensions['.js'].__byokBabelRegistered = true;
+  }
+  // eslint-disable-next-line import/no-unresolved
+  const toolSchema = require('../src/AiGeneration/Byok/ByokToolSchema');
+  // eslint-disable-next-line import/no-unresolved
+  const sections = require('../src/AiGeneration/Byok/Knowledge/ByokKnowledgeSections');
+  // eslint-disable-next-line import/no-unresolved
+  const prompts = require('../src/AiGeneration/Byok/ByokPrompts');
+  // eslint-disable-next-line import/no-unresolved
+  const skills = require('../src/AiGeneration/Byok/ByokSkills');
+
+  const hasOpenedProject = true;
+  const toolNames = toolSchema.getByokAdvertisedToolNames({ hasOpenedProject });
+  return {
+    systemPrompt: prompts.buildByokSystemPrompt({
+      toolNames,
+      hasOpenedProject,
+      context: sections.makeByokPromptContext({
+        toolNames,
+        hasOpenedProject,
+        skills: await skills.listByokSkillMetadata(),
+        engineReferenceAvailable: true,
+        projectNotes: null,
+        customInstructions: '',
+      }),
+    }),
+    tools: toolSchema.toOpenAiToolsFormat(
+      toolSchema.getByokToolSchemasForNames(toolNames)
+    ),
+  };
+};
+
 // ----------------------------------------------------------------------
 // The task suite.
 // ----------------------------------------------------------------------
@@ -845,11 +916,21 @@ async function runJudgePass({ results, judgeModel, sendJudgeCompletion }) {
         response.choices[0] &&
         response.choices[0].message &&
         response.choices[0].message.content;
+      // The judge's own cost was discarded, so a full judge pass over the
+      // suite reported only the TASK tokens and the eval looked far cheaper
+      // than it really is (audit100226 SCRIPT-3).
+      const judgeTokens =
+        response &&
+        response.usage &&
+        typeof response.usage.total_tokens === 'number'
+          ? response.usage.total_tokens
+          : 0;
       const parsed = parseJudgeAnswer(content);
       if (!parsed) {
         judged.push({
           taskId: result.taskId,
           verdict: 'unparseable',
+          tokens: judgeTokens,
           reason: 'The judge answer was not the expected JSON envelope.',
         });
         continue;
@@ -857,12 +938,14 @@ async function runJudgePass({ results, judgeModel, sendJudgeCompletion }) {
       judged.push({
         taskId: result.taskId,
         verdict: parsed.acceptable ? 'acceptable' : 'not-acceptable',
+        tokens: judgeTokens,
         reason: parsed.reason,
       });
     } catch (error) {
       judged.push({
         taskId: result.taskId,
         verdict: 'unavailable',
+        tokens: 0,
         reason: String((error && error.message) || error).slice(0, 300),
       });
     }
@@ -874,16 +957,23 @@ async function runJudgePass({ results, judgeModel, sendJudgeCompletion }) {
  * Run one task against an endpoint. `sendCompletion` is injected so the
  * suite is testable without a network; the CLI builds it on axios.
  */
-async function runEvalTask(task, sendCompletion) {
+async function runEvalTask(task, sendCompletion, byokModules) {
+  // The REAL BYOK prompt, with the answer contract appended, plus the real
+  // tool schemas (audit100226 SCRIPT-2). The envelope stays in the user turn
+  // so the task prompt itself is unchanged.
+  const systemContent = byokModules
+    ? `${byokModules.systemPrompt}\n\n${
+        task.prompt.split('\n\n').pop() || ''
+      }`.trim()
+    : 'You complete GDevelop game-building tasks. You answer with the exact JSON envelope requested.';
   const messages = [
-    {
-      role: 'system',
-      content:
-        'You complete GDevelop game-building tasks. You answer with the exact JSON envelope requested.',
-    },
+    { role: 'system', content: systemContent },
     { role: 'user', content: task.prompt },
   ];
-  const response = await sendCompletion({ messages });
+  const response = await sendCompletion({
+    messages,
+    tools: byokModules ? byokModules.tools : undefined,
+  });
   const choice = response.choices && response.choices[0];
   const answerText =
     choice && choice.message && typeof choice.message.content === 'string'
@@ -1003,6 +1093,16 @@ function formatReport(modelName, results, options) {
         `- **${judged.taskId}** — ${judged.verdict}: ${judged.reason}`
       );
     }
+    const judgeTokens = options.judgeResults.reduce(
+      (total, judged) => total + (judged.tokens || 0),
+      0
+    );
+    if (judgeTokens > 0) {
+      lines.push('');
+      lines.push(
+        `- Judge tokens spent on these verdicts: **${judgeTokens}** (not included in the task totals above).`
+      );
+    }
   }
   return lines.join('\n');
 }
@@ -1035,10 +1135,11 @@ async function main() {
   // eslint-disable-next-line import/no-unresolved
   const axios = require('axios');
 
-  const sendCompletion = async ({ messages }) => {
+  const sendCompletion = async ({ messages, tools }) => {
     // audit011026 B-SCRIPT-8: an uncapped completion is the same failure
     // class the QA round-1 benchmark fix addressed.
     const body = { model, messages, max_tokens: 4096 };
+    if (tools && tools.length > 0) body.tools = tools;
     const response = await axios.post(
       `${endpoint.replace(/\/+$/, '')}/chat/completions`,
       body,
@@ -1050,11 +1151,18 @@ async function main() {
     return response.data;
   };
 
+  // The real BYOK prompt + tool schemas, loaded once (audit100226 SCRIPT-2).
+  const byokModules = await loadByokPromptModules();
+  console.log(
+    `BYOK prompt: ${Math.ceil(
+      byokModules.systemPrompt.length / 4
+    )} tokens, ${byokModules.tools.length} tool schemas.`
+  );
   console.log(`Running ${tasks.length} eval tasks on ${model}…`);
   const results = [];
   for (const task of tasks) {
     try {
-      const result = await runEvalTask(task, sendCompletion);
+      const result = await runEvalTask(task, sendCompletion, byokModules);
       results.push(result);
       console.log(
         `${result.passed ? 'PASS' : 'FAIL'} ${result.taskId} (${

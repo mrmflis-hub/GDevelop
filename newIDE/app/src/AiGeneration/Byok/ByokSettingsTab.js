@@ -224,6 +224,27 @@ type ConnectionTestResult = {| ok: boolean, message: React.Node |};
  */
 const BYOK_BENCHMARK_SNAPSHOT_MAX_CHARS = 30000;
 
+/**
+ * The model name a provider's Test button sends, or '' when the provider has
+ * no model at all. A provider card can be created before any model is
+ * configured for it (Phase 13.4 ships an empty `modelSettings`), and a
+ * fetched model list is a perfectly good model to test with — so fall back
+ * to the first one. The old code sent `''` in that case, and the endpoint's
+ * "model not found" answer told the user their endpoint and key were broken
+ * (audit100226 UI-10). Returns '' so the caller can refuse the request with
+ * an actionable message instead of sending a doomed ping.
+ */
+export const resolveByokProviderTestModelName = (
+  provider: ByokProvider,
+  cachedModels: $ReadOnlyArray<{ id: string, ... }>
+): string => {
+  if (provider.modelSettings.length > 0) {
+    return provider.modelSettings[0].modelName;
+  }
+  const firstCachedModel = cachedModels[0];
+  return firstCachedModel ? firstCachedModel.id : '';
+};
+
 export const snapshotProjectForBenchmark = (
   project: any
 ): ByokBenchmarkProjectSnapshot => {
@@ -706,12 +727,30 @@ const ByokSettingsTab = (): React.Node => {
     // The PROVIDER'S own model (audit011026 B-UI-8): the global model name
     // belongs to the global endpoint — cross-vendor setups failed "model
     // not found" for providers that worked fine.
-    const providerModel =
-      provider.modelSettings.length > 0
-        ? provider.modelSettings[0].modelName
-        : '';
+    const testedModelName = resolveByokProviderTestModelName(
+      provider,
+      getProviderModels(provider)
+    );
+    // A provider card exists before any model is configured for it, and
+    // sending an EMPTY model name produced a "model not found" answer that
+    // told the user their endpoint and key were broken (audit100226 UI-10).
+    if (!testedModelName) {
+      setProviderTestResults(previous => ({
+        ...previous,
+        [provider.id]: {
+          ok: false,
+          message: (
+            <Trans>
+              Add a model for this provider first, then test the connection.
+            </Trans>
+          ),
+        },
+      }));
+      setProviderUnderTestId(null);
+      return;
+    }
     const options: ByokChatCompletionOptions = {
-      model: providerModel,
+      model: testedModelName,
       messages: [{ role: 'user', content: 'ping' }],
       timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
     };

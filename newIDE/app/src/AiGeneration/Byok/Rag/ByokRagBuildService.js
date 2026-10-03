@@ -137,6 +137,12 @@ export const rebuildByokRagIndex = async (options: {|
   // search must go through it rather than the in-memory index
   // (audit100226 RAG-1).
   setByokRagQdrantSearch(store.search || null);
+  // The freshly built corpus IS the lexical one: hand it over rather than
+  // letting the next search build it a second time (audit100226 CACHE-8).
+  seedLexicalCorpus(index.chunks, settings);
+  // The previous embedder is now dead weight: a rebuild with another
+  // embedder would otherwise keep both models resident (audit100226 RAG-9).
+  releaseOtherEmbedders(settings.embedderId);
   if (options.onProgress) {
     options.onProgress({ stage: 'done', progress: 1 });
   }
@@ -181,6 +187,7 @@ export const loadPersistedByokRagIndex = async (
       embedder: embedderResult.embedder,
     });
     setByokRagQdrantSearch(qdrantStore.search);
+    releaseOtherEmbedders(settings.embedderId);
     return { chunkCount: remoteState.pointCount };
   }
   if (settings.backend !== 'in-process') return null;
@@ -206,57 +213,52 @@ export const loadPersistedByokRagIndex = async (
     )
   ) {
     // A different embedder or a different corpus: the vectors are
-    // meaningless — rebuild.
+    // meaningless — rebuild. The corpus we just built IS the lexical one, so
+    // hand it over instead of letting the tool build it again right after
+    // (audit100226 CACHE-8).
+    seedLexicalCorpus(currentChunks, settings);
     return null;
   }
   const embedderResult = await loadByokRagEmbedder(settings.embedderId);
-  if (!embedderResult.ok) return null;
+  if (!embedderResult.ok) {
+    // Same story: the index is unusable without its embedder, and the tool
+    // will answer from the lexical corpus — the one already built.
+    seedLexicalCorpus(currentChunks, settings);
+    return null;
+  }
   setByokRagRuntime({
     settings,
     index: stored,
     embedder: embedderResult.embedder,
   });
+  releaseOtherEmbedders(settings.embedderId);
   return { chunkCount: stored.chunks.length };
+};
+
+/** Hand an already-built corpus to the lexical cache of the search module. */
+const seedLexicalCorpus = (
+  chunks: Array<any>,
+  settings: ByokRagSettings
+): void => {
+  const { seedByokRagLexicalCorpus } = require('./ByokRagSearch');
+  seedByokRagLexicalCorpus(chunks, settings.docsFolderPath || '');
+};
+
+/**
+ * Keep at most ONE embedder model resident. The cache holds every embedder it
+ * ever loaded, so switching embedders in the settings left two models (each
+ * tens of megabytes of WASM) alive for the rest of the session
+ * (audit100226 RAG-9).
+ */
+const releaseOtherEmbedders = (keptEmbedderId: string): void => {
+  const { releaseByokRagEmbeddersExcept } = require('./ByokRagEmbedder');
+  releaseByokRagEmbeddersExcept(keptEmbedderId);
 };
 
 /** The docs-folder reader of the desktop build (injected in the tests). */
 const makeDocsFolderReader = async (): Promise<any> => {
-  const optionalRequire = require('../../../Utils/OptionalRequire').default;
-  const fs = optionalRequire('fs');
-  const path = optionalRequire('path');
-  // fs/path are available in the desktop renderer (nodeIntegration). The
-  // historical `electron.remote` requirement could never be satisfied —
-  // it was removed in Electron 14 — which silently turned the reader into
-  // a no-op and indexed zero user files (audit011026 B-RAG-3).
-  if (!fs || !path) {
-    return {
-      listMarkdownFiles: async () => [],
-      readFile: async () => '',
-    };
-  }
-  return {
-    listMarkdownFiles: async (folderPath: string) => {
-      const walk = (folder: string): Array<string> => {
-        try {
-          const entries = fs.readdirSync(folder, { withFileTypes: true });
-          const files: Array<string> = [];
-          for (const entry of entries) {
-            const entryPath = path.join(folder, entry.name);
-            if (entry.isDirectory()) {
-              files.push(...walk(entryPath));
-            } else if (entry.name.toLowerCase().endsWith('.md')) {
-              files.push(entryPath);
-            }
-          }
-          return files;
-        } catch (error) {
-          return [];
-        }
-      };
-      return walk(folderPath);
-    },
-    readFile: async (filePath: string) => fs.readFileSync(filePath, 'utf8'),
-  };
+  const { makeByokRagDocsFolderReader } = require('./ByokRagCorpus');
+  return makeByokRagDocsFolderReader();
 };
 
 /** Read the persisted index metadata for the status card (no loading). */
@@ -291,13 +293,22 @@ export const readByokRagIndexStatus = async (
   if (settings.backend !== 'in-process') return null;
   const store = makeStoreForSettings(settings);
   if (!store) return null;
-  const stored = await store.loadIndex();
-  if (!stored) return null;
+  // Read the manifest sidecar, not the index: deserializing a multi-MB index
+  // (base64-decoding and checking every vector) to show four numbers made
+  // every settings-tab refresh read the whole file over IPC
+  // (audit100226 CACHE-7). The full read stays as the fallback for an index
+  // written before the sidecar existed.
+  let manifest = store.readManifest ? await store.readManifest() : null;
+  if (!manifest) {
+    const stored = await store.loadIndex();
+    if (!stored) return null;
+    manifest = stored.manifest;
+  }
   return {
-    chunkCount: stored.manifest.chunkCount,
-    corpusHash: stored.manifest.corpusHash,
-    builtAt: stored.manifest.builtAt,
-    embedderId: stored.manifest.embedderId,
+    chunkCount: manifest.chunkCount,
+    corpusHash: manifest.corpusHash,
+    builtAt: manifest.builtAt,
+    embedderId: manifest.embedderId,
   };
 };
 

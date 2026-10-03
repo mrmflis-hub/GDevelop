@@ -4601,3 +4601,192 @@ notable consequences worth recording:
 
 `outofscoped.md` rewritten: every fixed item removed, the ~25 still open kept
 with their reasons. No new `deferred` entries. New `usertasks` Task 20.
+
+---
+
+## 2026-10-03 — outofscoped backlog closure (owner-ordered)
+
+
+## Session: outofscoped backlog closure (owner-ordered)
+
+**Owner order:** "implement all outofscoped.md items; where user decision is
+needed use your recommended solution. Please try to address the flaking tests."
+
+The backlog held the whole `audit100226` remainder (~25 findings), the Phase
+13/14 filings, and the eight-member "random suite flakes per full run" family.
+All of it is now closed. **Every item was implemented except three, which
+ended as measured dispositions recorded in `deferred.md`** — the prompt-budget
+aim, the docs-min displacement, and the minification contract (the last one
+decided AND applied, not merely deferred).
+
+### Actions
+
+**1. The flaky tests — ROOT-CAUSED (the headline).** The documented family
+was described as "one random suite fails per full run, passes standalone". It
+was neither random nor a timeout: the first full run of this session
+reproduced it immediately, and a **two-file command reproduces it
+deterministically**:
+
+```
+npm test -- --watchAll=false --maxWorkers=1 --runTestsByPath \
+  src/AiGeneration/Byok/useByokChatSeam.spec.js src/UI/HelpIcon/HelpIcon.spec.js
+```
+
+Root cause: `useByokChatSeam.spec.js` mounted React trees it never unmounted.
+Their async effects (chat history at `useByokChatSeam.js:1078`, model choices)
+resolved *after the test file ended* and re-rendered the dead-but-mounted
+tree — with the **next** file's mocks already installed. The render then
+threw `Cannot destructure property 'ensureExtensionInstalled' of … as it is
+undefined` inside an unrelated suite, and because the throw was uncaught it
+**crashed the whole worker process**, not just a suite. Any suite rendering
+the seam could be the victim, which is why a different one failed each run.
+Fixed at three levels, each independently verified:
+- the seam spec tracks every renderer and unmounts them in `afterEach`;
+- the `useEnsureExtensionInstalled` stub is a **plain function** rather than a
+  `jest.fn`, so `resetMocks: true` can no longer strip it and turn a late
+  render into a TypeError;
+- `setupTests.js` drains the event loop in `afterAll`, so any remaining leak
+  stays in the file that caused it.
+Non-vacuity was proven by disabling each layer separately: the crash returns
+without both, and each alone holds.
+
+**2. O3 (npm install prunes the libGD test alias).** Root-caused: the
+"already present" flag was computed once at load, BEFORE the restore branch,
+so the script still fell through to the network and `exit(1)`d. Fixed in
+`scripts/import-libGD.js` (rebuild the alias from `public/`, re-evaluate the
+flag at the point of use). Verified by deleting the folder and re-running.
+
+**3. Eight retrieval findings** (RAG-6/7/8/9/10/11, CACHE-7/8): a failed
+embedder load is retried once per session; the RAG-off lexical corpus now
+includes the user's opt-in docs folder; user-docs chunks are titled and keyed
+by their folder-relative path (stable ids); embedders are evicted when one is
+replaced; concurrent first searches share one corpus build; the chunker
+overlap no longer starts mid-word or mid-fence; the status card reads a
+manifest sidecar instead of deserializing the multi-MB index; and the
+persisted-index recovery hands its corpus to the lexical cache instead of
+building it twice.
+
+**4. Five persistence/UI findings** (UI-6/7/8/9/10): a failed file move no
+longer leaves a duplicate chat in the Recents rail; quarantined files and the
+index are evictable under the quota; a chat with no images left deletes its
+stale sidecar; `getToolResultImage` is a stable `useCallback` so the memoized
+`ChatMessages` is no longer defeated on every store notification; and the
+per-provider Test button refuses an empty model name with an actionable
+message instead of sending a doomed ping.
+
+**5. Three upstream findings** (UP-14/15/16): the
+`replace_event_but_keep_existing_sub_events` WASM wrapper is freed in a
+`finally`; an empty replacement no longer enqueues its DELETE; and
+`create_scene` validates `background_color` before creating anything.
+
+**6. Two Electron findings + the two preview nits** (ELEC-21/22): the
+preview-close tracker contains its own failures and both `preview-close` and
+`preview-open` catch theirs; `closePreviewWindow` guards destroyed windows;
+and the RAG bundle channels accept only `api.github.com` / `github.com`
+(the validators live in the plain-CJS core the main process already requires,
+so a renderer-tree spec covers them).
+
+**7. Five MCP findings** (MCP-3/4/6/8/9): a cancellation is routed to the
+window that received the request; a POST whose body arrives after a disable is
+refused; an unknown tool answers `-32602` instead of an `isError` result;
+activity entries carry a `callId` so same-millisecond calls stop collapsing;
+and a legacy batch client no longer hangs on a ≥400 answer.
+
+**8. Prompt work** (PROMPT-3/4/5/6/7, O5): the guard now collects BARE
+snake_case tool mentions (it only matched `Name(`, so nearly all of the
+prompt's tool teaching escaped it) and scans every knowledge section at FULL
+size (the composed prompt degrades three of six sections, so the EventScript
+pack — the most defect-dense text in the feature — was never scanned). The
+pack now teaches all eight event-level placement relations. Three drifted
+docblocks corrected. The prompt budget spec was **instrumented** to print the
+six largest sections and schemas whenever it warns.
+
+**9. Eval scripts** (SCRIPT-3/4/5, O14): judge token usage is read and
+reported; six `docs-min` queries were added to the shared RAG eval set
+(24 → 30, so a regression confined to the two largest corpus grades can no
+longer pass the gate); the minified-docs plan sort is byte-wise, not
+locale-dependent; and the minification contract now says explicitly that
+upstream prose typos stay verbatim.
+
+**10. SCRIPT-2 — the eval harness sent no prompt and no tools.** It now loads
+the REAL BYOK system prompt and tool schemas through `@babel/register` (the
+pattern `eval-embedder.js` already established), with the webpack-only shims
+(CSS modules, binary assets, `self`) that plain Node needs.
+
+### Bugs found
+
+- **My own safety net broke a suite.** The `setupTests.js` `afterAll` drain
+  used the global `setTimeout`; `UseLongTouch.spec.js` installs fake timers,
+  so the drain waited on a timer nobody advances and the hook timed out —
+  failing that suite. Fixed by capturing the real `setTimeout` at load. Worth
+  recording: a global safety net must not depend on the environment it
+  protects.
+- **A CRLF trap that invalidated three non-vacuity checks.** Several files are
+  CRLF; a `replace()` anchored on `\n` silently matched nothing, so "revert
+  the fix" was a no-op and the test passed against UNFIXED code — the exact
+  failure mode the audit discipline exists to prevent. It produced a
+  **vacuous UP-15 test** that had to be rewritten with a verified-revert
+  helper. After that, RAG-11's two tests and UP-15's were each proven to go
+  red with the fix reverted.
+- **Two more vacuous-test traps**, both from CRA's `resetMocks: true`:
+  `jest.fn(() => Promise.reject(...))` loses its implementation before the
+  test runs, so the ELEC-21 tracker tests asserted nothing; and
+  `jest.spyOn(console, 'error')` + `mockRestore()` clears the recorded calls,
+  so the assertion after the restore read an empty mock.
+- `npm install` re-downloaded `public/libGD.js` during verification, leaving a
+  newer WASM than the tree was built against. Harmless (both `public/` files
+  are gitignored and libGD-dependent suites pass), but it is why the O3
+  verification needed re-running.
+
+### Issues found
+
+- **`A1002-PROMPT-6` item 3 was a false finding.** The audit claimed
+  `read_events_source`'s `max_chars` "describes a nonexistent capability"
+  because no code reads it. It IS implemented, in
+  `EditorFunctions/index.js:4471-4480`, with exactly the documented default
+  (12000) and clamp (2000–30000). The audit searched only the BYOK tree, not
+  the editor file that implements it. No change made; recorded so it is not
+  "fixed" a second time.
+- **The prompt budget stays above the aim** — 12,582 tokens (prompt 6,484 +
+  tools 6,098) against an 8–10k aim and a green 15k cap. My recommendation
+  (accept, instrument, revisit on real cost pressure) was applied as
+  instructed; reasoning in `deferred.md`.
+- The O4 family is closed, but the underlying hazard is now only *contained*,
+  not impossible: a future spec that mounts a component with an async effect
+  and never unmounts can still leak. The `afterAll` drain keeps such a leak in
+  its own file instead of letting it fail an unrelated one.
+
+### Files worked on
+
+`REVIEW/outofscoped.md` (rewritten — now empty), `REVIEW/deferred.md`
+(three by-design dispositions added), `REVIEW/usertasks.md` (Task 21),
+`REVIEW/worklog.md`. In `newIDE/app`: `src/setupTests.js`,
+`scripts/import-libGD.js`, `scripts/run-byok-evals.js`,
+`scripts/build-byok-minified-docs.js`,
+`src/AiGeneration/Byok/evals/byok-rag-eval-queries.json`,
+`src/AiGeneration/Byok/`: `ByokPrompts.js`, `ByokPromptGuard.spec.js`,
+`ByokPromptBudget.spec.js`, `ByokChatPersistence.js`+`.spec.js`,
+`ByokSettingsTab.js`+`.spec.js`, `useByokChatSeam.spec.js`,
+`Knowledge/ByokEventScriptPack.js`+`.spec.js`,
+`Knowledge/ByokKnowledgeSections.js`,
+`evals/ByokEvalHarness.spec.js`, and under `Rag/`: `ByokRagCorpus.js`+`.spec.js`,
+`ByokRagSearch.js`+`.spec.js`, `ByokRagStorage.js`+`.spec.js`,
+`ByokRagBuildService.js`, `ByokRagEmbedder.js`+`.spec.js`,
+`ByokQdrantSetupCore.js`+`.spec.js`, and under `Mcp/`: `ByokMcpProtocol.js`+
+`.spec.js`, `ByokMcpTools.js`, `ByokMcpToolHost.js`, `ByokMcpActivity.js`+
+`.spec.js`, `ByokMcpStdioAdapterCore.js`+`.spec.js`, `useByokMcpServer.js`+
+`.spec.js`. Upstream: `src/AiGeneration/AskAiEditorContainer.js`,
+`src/EditorFunctions/index.js`, `CreateScene.spec.js`,
+`src/EditorFunctions/ApplyEventsChanges.js`+`.spec.js`,
+`src/ExportAndShare/LocalExporters/LocalPreviewLauncher/index.js`,
+`PreviewClosedTracker.js`+`.spec.js`. In `newIDE/electron-app/app`:
+`ByokMcpServer.js`, `ByokRagFiles.js`, `PreviewWindow.js`.
+
+### Triage
+
+`outofscoped.md` rewritten to empty — every entry fixed, tested and verified.
+Three became **by-design dispositions in `deferred.md`** with their numbers
+(prompt budget, docs-min displacement, minification contract). New
+`usertasks` **Task 21** (commit review across three uncommitted sessions, the
+budget decision taken on the owner's behalf, the two corrected tests, and the
+Electron-main desktop QA list).

@@ -238,6 +238,10 @@ describe('Byok eval harness: the LLM-as-judge pass', () => {
           },
         },
       ],
+      // The judge's own cost used to be discarded, so a judge pass reported
+      // only the TASK tokens and the eval looked far cheaper than it is
+      // (audit100226 SCRIPT-3).
+      usage: { total_tokens: 321 },
     });
     const judged = await runJudgePass({
       results: [
@@ -253,6 +257,7 @@ describe('Byok eval harness: the LLM-as-judge pass', () => {
       {
         taskId: 't1',
         verdict: 'acceptable',
+        tokens: 321,
         reason: 'the grid is usable',
       },
     ]);
@@ -275,9 +280,15 @@ describe('Byok eval harness: the LLM-as-judge pass', () => {
       {
         taskId: 't1',
         verdict: 'unparseable',
+        tokens: 0,
         reason: 'The judge answer was not the expected JSON envelope.',
       },
-      { taskId: 't2', verdict: 'unavailable', reason: 'endpoint down' },
+      {
+        taskId: 't2',
+        verdict: 'unavailable',
+        tokens: 0,
+        reason: 'endpoint down',
+      },
     ]);
   });
 
@@ -301,5 +312,59 @@ describe('Byok eval harness: the LLM-as-judge pass', () => {
       judgeResults: [],
     });
     expect(noFailures).toContain('No failed tasks to judge.');
+  });
+});
+
+describe('Byok eval harness: the real BYOK prompt and tools (audit100226 SCRIPT-2)', () => {
+  it('sends the BYOK system prompt and the tool schemas, not a generic chat', async () => {
+    // The harness used to send a two-message chat with NEITHER, while its
+    // scorers require argument names the model was never shown — so the
+    // authoring-reach tasks were near-unpassable except by training prior,
+    // and a prompt or schema change had no measurable effect.
+    const task = tasks.find(entry => entry.id === 'grid-5x5-platform');
+    if (!task) throw new Error('the grid task is missing from the suite');
+
+    let sentRequest = null;
+    const byokModules = {
+      systemPrompt: 'THE REAL BYOK SYSTEM PROMPT',
+      tools: [{ type: 'function', function: { name: 'put_2d_instances' } }],
+    };
+    await runEvalTask(
+      task,
+      async request => {
+        sentRequest = request;
+        return {
+          choices: [{ message: { role: 'assistant', content: '{}' } }],
+          usage: { total_tokens: 1 },
+        };
+      },
+      byokModules
+    );
+
+    expect(sentRequest).toBeTruthy();
+    expect(sentRequest.messages[0].role).toBe('system');
+    expect(sentRequest.messages[0].content).toContain(
+      'THE REAL BYOK SYSTEM PROMPT'
+    );
+    // The tools ride the request, so the model sees the argument names the
+    // scorers check (create_if_missing, brush_position, children_to_add...).
+    expect(sentRequest.tools).toEqual(byokModules.tools);
+    // The task prompt itself is untouched.
+    expect(sentRequest.messages[1].content).toBe(task.prompt);
+  });
+
+  it('still works without the modules (the self-check path)', async () => {
+    const task = tasks.find(entry => entry.id === 'grid-5x5-platform');
+    if (!task) throw new Error('the grid task is missing from the suite');
+    let sentRequest = null;
+    const result = await runEvalTask(task, async request => {
+      sentRequest = request;
+      return {
+        choices: [{ message: { role: 'assistant', content: '{}' } }],
+        usage: { total_tokens: 2 },
+      };
+    });
+    expect(sentRequest.tools).toBeUndefined();
+    expect(result.tokens).toBe(2);
   });
 });

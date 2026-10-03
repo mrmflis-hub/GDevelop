@@ -34,7 +34,18 @@ export const createPreviewClosedTracker = (
       if (!captureOptions) return;
 
       ownedPreviewWindows.delete(windowId);
-      await onCaptureFinished(captureOptions);
+      try {
+        await onCaptureFinished(captureOptions);
+      } catch (error) {
+        // The caller fires this from an IPC listener with `void`, so a
+        // rejection here became an unhandled rejection that could take the
+        // renderer down. A failing capture upload must not do that — the
+        // window is already gone either way (audit100226 ELEC-21).
+        console.error(
+          'A finished preview capture could not be handled.',
+          error
+        );
+      }
     },
 
     releaseAll: () => {

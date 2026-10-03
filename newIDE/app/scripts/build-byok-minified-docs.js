@@ -112,6 +112,8 @@ const MINIFICATION_CONTRACT = [
   '',
   'NEVER invent engine, action, condition, expression, behavior or object names that are not in the source. Never alter code.',
   '',
+  'TYPOS: keep the source spelling verbatim, INCLUDING a typo in upstream prose. Two waves normalized "Triggred Once" and "Returns a Hash a MD5" against this rule, so the contract now says so explicitly: this artifact is a faithful reduction of a specific commit of the wiki, and a silent spelling fix makes the minified text impossible to diff against its source. A prose typo is a wiki bug to report upstream, not something to repair here.',
+  '',
   'OUTPUT per page: { "path": given, "title": from frontmatter or first heading, "summary": "1-2 sentences (max 40 words) on what this page covers", "body": "the minified markdown (no frontmatter, no title heading)", "suggestedTags": ["0-4 short lowercase topical tags"] }',
 ].join('\n');
 
@@ -274,7 +276,13 @@ const listWikiPages = docsRoot => {
   walk(docsRoot);
   pages.sort(
     (a, b) =>
-      b.sourceBytes - a.sourceBytes || a.wikiPath.localeCompare(b.wikiPath)
+      b.sourceBytes - a.sourceBytes ||
+      // Byte-wise, NOT localeCompare: the batch plan is documented as
+      // reproducible, and a host-locale comparator reorders same-size pages
+      // differently on different machines — so two agents building the same
+      // commit could pick different pages for the same batch
+      // (audit100226 SCRIPT-5).
+      (a.wikiPath < b.wikiPath ? -1 : a.wikiPath > b.wikiPath ? 1 : 0)
   );
   return pages;
 };

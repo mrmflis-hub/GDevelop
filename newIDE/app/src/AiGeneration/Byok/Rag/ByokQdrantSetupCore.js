@@ -416,9 +416,68 @@ const isAllowedByokQdrantSnapshotUrl = url => {
   );
 };
 
+/**
+ * Where the prebuilt RAG bundle lives, and the only host the app ever asks
+ * GitHub's API about. Kept here (a plain-CJS core the Electron main process
+ * requires directly) so the SAME rule is enforced on both sides of the IPC
+ * boundary: the renderer builds the URLs, and the main process is the one
+ * that actually performs the request.
+ */
+const BYOK_RAG_BUNDLE_API_HOST = 'api.github.com';
+const BYOK_RAG_BUNDLE_DOWNLOAD_HOST = 'github.com';
+const BYOK_RAG_BUNDLE_REPO_PATH_PREFIX = '/repos/mrmflis-hub/GDevelop';
+
+/**
+ * Only the two official GitHub URLs of the GDevelop release repository may
+ * be fetched for a RAG bundle: the releases API (bundle info) and a release
+ * asset (bundle download).
+ *
+ * Both URLs arrive from the RENDERER and the main process dereferences them,
+ * so an unvalidated value turned the bundle-info/download channels into a
+ * fetch-on-demand for any https URL a caller chose (audit100226 ELEC-22).
+ * The download is sha256-verified and capped, so nothing was written
+ * unverified — but the app would still issue the request, with the user's
+ * network position, to a host it never intended to reach.
+ *
+ * Redirect targets need no allow-listing: the fetch follows them from an
+ * already-validated origin (release assets redirect to
+ * objects.githubusercontent.com), and the fetch is what follows them.
+ */
+const isAllowedByokRagBundleApiUrl = url => {
+  if (typeof url !== 'string') return false;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (error) {
+    return false;
+  }
+  return (
+    parsed.protocol === 'https:' &&
+    parsed.hostname === BYOK_RAG_BUNDLE_API_HOST &&
+    parsed.pathname.startsWith(BYOK_RAG_BUNDLE_REPO_PATH_PREFIX)
+  );
+};
+
+const isAllowedByokRagBundleDownloadUrl = url => {
+  if (typeof url !== 'string') return false;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (error) {
+    return false;
+  }
+  return (
+    parsed.protocol === 'https:' &&
+    parsed.hostname === BYOK_RAG_BUNDLE_DOWNLOAD_HOST &&
+    parsed.pathname.startsWith('/mrmflis-hub/GDevelop/releases/download/')
+  );
+};
+
 module.exports = {
   BYOK_QDRANT_DOWNLOAD_URL_BASE,
   isAllowedByokQdrantSnapshotUrl,
+  isAllowedByokRagBundleApiUrl,
+  isAllowedByokRagBundleDownloadUrl,
   BYOK_QDRANT_ENDPOINT_FILE_NAME,
   buildByokQdrantConfigYaml,
   getByokQdrantPlatform,

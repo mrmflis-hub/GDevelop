@@ -404,6 +404,12 @@ export const applyEventsChanges = (
             `Generated events for operation "${operationName}" (path: ${operationTargetEvent ||
               'N/A'}) are empty. Insertion might not add any events.`
           );
+          // Stop here: an empty replacement that still enqueues its DELETE
+          // destroys the targeted event and replaces it with nothing, while
+          // the paired insert no-ops. The target must survive (audit100226
+          // UP-15).
+          localEventsToInsert.delete();
+          return;
         }
         mapFor(0, localEventsToInsert.getEventsCount(), i => {
           if (!localEventsToInsert) return;
@@ -711,57 +717,65 @@ export const applyEventsChanges = (
         );
         const targetEvent = parentList.getEventAt(eventIndexInParentList);
 
-        // Get existing sub-events from target event before replacement
+        // Get existing sub-events from target event before replacement.
+        // This is a WASM object: it MUST be freed on every exit, including
+        // the throwing ones — the shared `finally` below only knows about
+        // `op.eventsToInsert`, so a throw between here and the success path
+        // leaked it for the whole session (audit100226 UP-14).
         let existingSubEvents: gdEventsList | null = null;
-        if (targetEvent.canHaveSubEvents()) {
-          existingSubEvents = new gd.EventsList();
-          const targetSubEvents = targetEvent.getSubEvents();
-          existingSubEvents.insertEvents(
-            targetSubEvents,
-            0,
-            targetSubEvents.getEventsCount(),
-            0
-          );
-        }
+        try {
+          if (targetEvent.canHaveSubEvents()) {
+            existingSubEvents = new gd.EventsList();
+            const targetSubEvents = targetEvent.getSubEvents();
+            existingSubEvents.insertEvents(
+              targetSubEvents,
+              0,
+              targetSubEvents.getEventsCount(),
+              0
+            );
+          }
 
-        // Delete the target event
-        parentList.removeEventAt(eventIndexInParentList);
+          // Delete the target event
+          parentList.removeEventAt(eventIndexInParentList);
 
-        // Insert new events from generated events
-        if (op.eventsToInsert && !op.eventsToInsert.isEmpty()) {
-          parentList.insertEvents(
-            // $FlowFixMe[incompatible-type]
-            op.eventsToInsert,
-            0,
-            // $FlowFixMe[incompatible-use]
-            op.eventsToInsert.getEventsCount(),
-            eventIndexInParentList
-          );
+          // Insert new events from generated events
+          if (op.eventsToInsert && !op.eventsToInsert.isEmpty()) {
+            parentList.insertEvents(
+              // $FlowFixMe[incompatible-type]
+              op.eventsToInsert,
+              0,
+              // $FlowFixMe[incompatible-use]
+              op.eventsToInsert.getEventsCount(),
+              eventIndexInParentList
+            );
 
-          // If there were existing sub-events, add them to the first new event
-          if (existingSubEvents && existingSubEvents.getEventsCount() > 0) {
-            const firstNewEvent = parentList.getEventAt(eventIndexInParentList);
-            if (firstNewEvent.canHaveSubEvents()) {
-              const newSubEvents = firstNewEvent.getSubEvents();
-              // Insert existing sub-events at the beginning
-              newSubEvents.insertEvents(
-                existingSubEvents,
-                0,
-                existingSubEvents.getEventsCount(),
-                0
+            // If there were existing sub-events, add them to the first new event
+            if (existingSubEvents && existingSubEvents.getEventsCount() > 0) {
+              const firstNewEvent = parentList.getEventAt(
+                eventIndexInParentList
               );
-            } else {
-              // The sub-events cannot be moved to the first new event: report
-              // the loss instead of silently dropping them.
-              errors.push(
-                `Cannot preserve sub-events: the first replacement event at path [${pathForLog}] does not support sub-events.`
-              );
+              if (firstNewEvent.canHaveSubEvents()) {
+                const newSubEvents = firstNewEvent.getSubEvents();
+                // Insert existing sub-events at the beginning
+                newSubEvents.insertEvents(
+                  existingSubEvents,
+                  0,
+                  existingSubEvents.getEventsCount(),
+                  0
+                );
+              } else {
+                // The sub-events cannot be moved to the first new event:
+                // report the loss instead of silently dropping them.
+                errors.push(
+                  `Cannot preserve sub-events: the first replacement event at path [${pathForLog}] does not support sub-events.`
+                );
+              }
             }
           }
-        }
-
-        if (existingSubEvents) {
-          existingSubEvents.delete();
+        } finally {
+          if (existingSubEvents) {
+            existingSubEvents.delete();
+          }
         }
         applied++;
       } else if (op.type === 'insertActionsConditionsAtEnd') {

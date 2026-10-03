@@ -362,6 +362,41 @@ export const setByokRagRuntime = (next: ?ByokRagRuntimeInput): void => {
         embedder: next.embedder || null,
       }
     : null;
+  // A runtime carrying a usable embedder needs no repair pass anymore.
+  if (runtime && runtime.embedder) embedderRepairAttempted = false;
+};
+
+// A runtime can hold a perfectly good index with a FAILED embedder (the
+// prebuilt-bundle import installs exactly that when the query-side model
+// cannot load). Semantic search then stayed off for the whole session: the
+// embedder cache evicts failed loads, so the next attempt really can succeed,
+// but nothing ever made one (audit100226 RAG-6). One repair attempt per
+// session is enough to recover a transient failure without hammering a
+// genuinely broken model on every search.
+let embedderRepairAttempted = false;
+
+/**
+ * Try once to load the embedder of the live runtime's settings, and install
+ * it when it succeeds. Returns the embedder, or null when there is nothing
+ * to repair or the load failed again.
+ */
+const repairRuntimeEmbedder = async (): Promise<?ByokRagEmbedder> => {
+  const currentRuntime = runtime;
+  if (embedderRepairAttempted || !currentRuntime) return null;
+  const embedderId = currentRuntime.settings
+    ? currentRuntime.settings.embedderId
+    : '';
+  if (!embedderId) return null;
+  embedderRepairAttempted = true;
+  const { loadByokRagEmbedder } = require('./ByokRagEmbedder');
+  const embedderResult = await loadByokRagEmbedder(embedderId);
+  if (!embedderResult.ok) return null;
+  setByokRagRuntime({
+    settings: currentRuntime.settings,
+    index: currentRuntime.index,
+    embedder: embedderResult.embedder,
+  });
+  return embedderResult.embedder;
 };
 
 /** The deps the search_knowledge tool passes (null runtime → lexical). */
@@ -371,6 +406,37 @@ export const getByokRagSearchDeps = (): ByokRagSearchDeps => ({
 });
 
 let lexicalCorpusCache: ?Array<ByokRagChunk> = null;
+// The docs folder the cached corpus was built from: changing that folder (or
+// opting in and out of it) must invalidate the cache, or the user's own files
+// would stay invisible until the next restart.
+let lexicalCorpusCacheKey: string | null = null;
+// The in-flight build, so two concurrent first searches share ONE corpus build
+// instead of each paying for it (audit100226 RAG-10).
+let lexicalCorpusBuild: ?Promise<Array<ByokRagChunk>> = null;
+
+/** The docs folder the corpus cache is currently keyed on. */
+const makeLexicalCorpusKey = (): string => {
+  const settings = ragSettingsProvider ? ragSettingsProvider() : null;
+  return settings && settings.docsFolderPath ? settings.docsFolderPath : '';
+};
+
+const buildLexicalCorpusForKey = async (
+  docsFolderPath: string
+): Promise<Array<ByokRagChunk>> => {
+  const {
+    buildByokRagCorpus,
+    makeByokRagDocsFolderReader,
+  } = require('./ByokRagCorpus');
+  return buildByokRagCorpus({
+    docsFolderPath: docsFolderPath || undefined,
+    // The user's opt-in folder is part of the corpus, so the lexical (RAG-off)
+    // mode can answer from their own documentation too — before, only a full
+    // build ever indexed them (audit100226 RAG-7).
+    docsFolderReader: docsFolderPath
+      ? await makeByokRagDocsFolderReader()
+      : undefined,
+  });
+};
 
 /**
  * The corpus without vectors, cached: the lexical (RAG-off) mode of the
@@ -380,15 +446,45 @@ let lexicalCorpusCache: ?Array<ByokRagChunk> = null;
 export const ensureByokRagLexicalCorpus = async (): Promise<
   Array<ByokRagChunk>
 > => {
-  if (lexicalCorpusCache) return lexicalCorpusCache;
-  const { buildByokRagCorpus } = require('./ByokRagCorpus');
-  lexicalCorpusCache = await buildByokRagCorpus({});
-  return lexicalCorpusCache;
+  const docsFolderPath = makeLexicalCorpusKey();
+  const cached = lexicalCorpusCache;
+  if (cached && lexicalCorpusCacheKey === docsFolderPath) return cached;
+  const inFlight = lexicalCorpusBuild;
+  if (inFlight && lexicalCorpusCacheKey === docsFolderPath) return inFlight;
+
+  lexicalCorpusCacheKey = docsFolderPath;
+  const build = buildLexicalCorpusForKey(docsFolderPath);
+  lexicalCorpusBuild = build;
+  try {
+    const chunks = await build;
+    lexicalCorpusCache = chunks;
+    return chunks;
+  } finally {
+    // A failed build must not be remembered: the next call retries.
+    if (lexicalCorpusBuild === build) lexicalCorpusBuild = null;
+  }
+};
+
+/**
+ * Seed the lexical corpus cache with a corpus somebody else already built.
+ * The persisted-index recovery builds the whole corpus to hash it against the
+ * index; when that recovery does not install a runtime, the tool then built
+ * the IDENTICAL corpus again a moment later for the lexical cache — two full
+ * builds on the first search after every restart (audit100226 CACHE-8).
+ */
+export const seedByokRagLexicalCorpus = (
+  chunks: Array<ByokRagChunk>,
+  docsFolderPath: string
+): void => {
+  lexicalCorpusCache = chunks;
+  lexicalCorpusCacheKey = docsFolderPath;
 };
 
 /** Forget the cached lexical corpus (tests). */
 export const resetByokRagLexicalCorpusForTests = (): void => {
   lexicalCorpusCache = null;
+  lexicalCorpusCacheKey = null;
+  lexicalCorpusBuild = null;
 };
 
 /**
@@ -415,6 +511,7 @@ export const setByokRagQdrantSearch = (
 /** Forget the lazy-load state (tests). */
 export const resetByokRagPersistedLoadForTests = (): void => {
   persistedLoadAttempted = false;
+  embedderRepairAttempted = false;
 };
 
 export const getByokRagSearchDepsAsync = async (): Promise<ByokRagSearchDeps> => {
@@ -440,9 +537,21 @@ export const getByokRagSearchDepsAsync = async (): Promise<ByokRagSearchDeps> =>
     }
   }
   if (runtime && runtime.index) {
+    const liveRuntime = runtime;
+    // A good index with no embedder: one repair attempt before answering, so
+    // a transient model-load failure does not cost the whole session its
+    // semantic search (audit100226 RAG-6).
+    if (!liveRuntime.embedder) {
+      const repairedEmbedder = await repairRuntimeEmbedder();
+      return {
+        index: liveRuntime.index,
+        embedder: repairedEmbedder || liveRuntime.embedder,
+        qdrantSearch: qdrantSearchFn,
+      };
+    }
     return {
-      index: runtime.index,
-      embedder: runtime.embedder,
+      index: liveRuntime.index,
+      embedder: liveRuntime.embedder,
       qdrantSearch: qdrantSearchFn,
     };
   }

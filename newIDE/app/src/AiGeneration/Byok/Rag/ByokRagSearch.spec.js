@@ -1,11 +1,16 @@
 // @flow
 import {
+  ensureByokRagLexicalCorpus,
   getByokRagSearchDepsAsync,
+  resetByokRagLexicalCorpusForTests,
   resetByokRagPersistedLoadForTests,
   searchByokRagKnowledge,
+  seedByokRagLexicalCorpus,
   setByokRagRuntime,
   setByokRagSettingsProvider,
 } from './ByokRagSearch';
+import * as ragCorpusModule from './ByokRagCorpus';
+import * as ragEmbedderModule from './ByokRagEmbedder';
 
 // The lazy persisted-index recovery requires the build service: mocked so
 // the test observes the call without touching storages.
@@ -18,6 +23,8 @@ describe('ByokRagSearch: audit011026 fixes', () => {
     setByokRagRuntime(null);
     setByokRagSettingsProvider(null);
     resetByokRagPersistedLoadForTests();
+    resetByokRagLexicalCorpusForTests();
+    jest.restoreAllMocks();
   });
 
   it('B-RAG-1: lazily loads the persisted index when RAG is enabled', async () => {
@@ -171,5 +178,171 @@ describe('ByokRagSearch: audit011026 fixes', () => {
       deps: { index: null, embedder: null, lexicalChunks: (chunks: any) },
     });
     expect(result.hits[0].chunk.id).toBe('docs:0:0');
+  });
+});
+
+describe('ByokRagSearch: audit100226 retrieval fixes', () => {
+  const makeSettings = (overrides?: Object): any => ({
+    enabled: true,
+    backend: 'in-process',
+    embedderId: 'Xenova/all-MiniLM-L6-v2',
+    docsFolderPath: '',
+    qdrantBaseUrl: '',
+    ...(overrides || {}),
+  });
+
+  const makeFakeChunk = (id: string): any => ({
+    id,
+    source: 'docs',
+    title: id,
+    text: 'Some documentation text.',
+    tags: [],
+  });
+
+  afterEach(() => {
+    setByokRagRuntime(null);
+    setByokRagSettingsProvider(null);
+    resetByokRagPersistedLoadForTests();
+    resetByokRagLexicalCorpusForTests();
+    jest.restoreAllMocks();
+  });
+
+  it('A1002-RAG-7: builds the lexical corpus WITH the opt-in docs folder', async () => {
+    const buildSpy = jest
+      .spyOn(ragCorpusModule, 'buildByokRagCorpus')
+      .mockResolvedValue([makeFakeChunk('user-docs:notes.md:0')]);
+    jest
+      .spyOn(ragCorpusModule, 'makeByokRagDocsFolderReader')
+      .mockResolvedValue(
+        ({
+          listMarkdownFiles: async () => [],
+          readFile: async () => '',
+        }: any)
+      );
+    setByokRagSettingsProvider(() =>
+      makeSettings({ docsFolderPath: 'C:/docs' })
+    );
+
+    const chunks = await ensureByokRagLexicalCorpus();
+
+    expect(chunks).toHaveLength(1);
+    // RAG is OFF by default, so this is the corpus almost every user searches.
+    // Without the folder, the user's own documentation was invisible until
+    // they built an index.
+    expect(buildSpy).toHaveBeenCalledTimes(1);
+    expect(buildSpy.mock.calls[0][0]).toEqual({
+      docsFolderPath: 'C:/docs',
+      docsFolderReader: expect.anything(),
+    });
+  });
+
+  it('A1002-RAG-7: rebuilds when the opt-in folder is cleared', async () => {
+    const buildSpy = jest
+      .spyOn(ragCorpusModule, 'buildByokRagCorpus')
+      .mockResolvedValue([]);
+    jest
+      .spyOn(ragCorpusModule, 'makeByokRagDocsFolderReader')
+      .mockResolvedValue(
+        ({
+          listMarkdownFiles: async () => [],
+          readFile: async () => '',
+        }: any)
+      );
+    setByokRagSettingsProvider(() =>
+      makeSettings({ docsFolderPath: 'C:/docs' })
+    );
+    await ensureByokRagLexicalCorpus();
+    expect(buildSpy).toHaveBeenCalledTimes(1);
+
+    setByokRagSettingsProvider(() => makeSettings({ docsFolderPath: '' }));
+    await ensureByokRagLexicalCorpus();
+    expect(buildSpy).toHaveBeenCalledTimes(2);
+    expect(buildSpy.mock.calls[1][0].docsFolderPath).toBeUndefined();
+  });
+
+  it('A1002-RAG-10: two concurrent first searches build the corpus ONCE', async () => {
+    let releaseBuild: () => void = () => {};
+    const buildGate = new Promise(resolve => {
+      releaseBuild = resolve;
+    });
+    const buildSpy = jest
+      .spyOn(ragCorpusModule, 'buildByokRagCorpus')
+      .mockImplementation(async () => {
+        await buildGate;
+        return [makeFakeChunk('docs:0:0')];
+      });
+    setByokRagSettingsProvider(() => makeSettings());
+
+    const firstSearch = getByokRagSearchDepsAsync();
+    const secondSearch = getByokRagSearchDepsAsync();
+    releaseBuild();
+    const [firstDeps, secondDeps] = await Promise.all([
+      firstSearch,
+      secondSearch,
+    ]);
+
+    expect(buildSpy).toHaveBeenCalledTimes(1);
+    expect(firstDeps.lexicalChunks).toBe(secondDeps.lexicalChunks);
+  });
+
+  it('A1002-CACHE-8: a seeded corpus is reused instead of rebuilt', async () => {
+    const buildSpy = jest
+      .spyOn(ragCorpusModule, 'buildByokRagCorpus')
+      .mockResolvedValue([]);
+    setByokRagSettingsProvider(() => makeSettings());
+
+    // What loadPersistedByokRagIndex does on its stale-index path: it built
+    // the corpus to hash it, then handed it over instead of letting the tool
+    // build the identical corpus again right after.
+    const seeded = [makeFakeChunk('docs:0:0')];
+    seedByokRagLexicalCorpus(seeded, '');
+
+    const deps = await getByokRagSearchDepsAsync();
+    expect(buildSpy).not.toHaveBeenCalled();
+    expect(deps.lexicalChunks).toBe(seeded);
+  });
+
+  it('A1002-RAG-6: retries a failed embedder load on a runtime that has an index', async () => {
+    const repairedEmbedder = ({ id: 'repaired', dimensions: 4 }: any);
+    const loadSpy = jest
+      .spyOn(ragEmbedderModule, 'loadByokRagEmbedder')
+      .mockResolvedValue({ ok: true, embedder: repairedEmbedder });
+    setByokRagSettingsProvider(() => makeSettings());
+    // The prebuilt-bundle import installs exactly this: a good index whose
+    // query-side model failed to load.
+    setByokRagRuntime({
+      settings: makeSettings(),
+      index: ({ chunks: [], vectors: [] }: any),
+      embedder: null,
+    });
+
+    const deps = await getByokRagSearchDepsAsync();
+
+    expect(loadSpy).toHaveBeenCalledWith('Xenova/all-MiniLM-L6-v2');
+    expect(deps.embedder).toBe(repairedEmbedder);
+    // The runtime is repaired too, so the NEXT search does not reload it.
+    const secondDeps = await getByokRagSearchDepsAsync();
+    expect(secondDeps.embedder).toBe(repairedEmbedder);
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('A1002-RAG-6: a still-failing embedder is not retried on every search', async () => {
+    const loadSpy = jest
+      .spyOn(ragEmbedderModule, 'loadByokRagEmbedder')
+      .mockResolvedValue({ ok: false, error: 'model file missing' });
+    setByokRagSettingsProvider(() => makeSettings());
+    setByokRagRuntime({
+      settings: makeSettings(),
+      index: ({ chunks: [], vectors: [] }: any),
+      embedder: null,
+    });
+
+    const firstDeps = await getByokRagSearchDepsAsync();
+    await getByokRagSearchDepsAsync();
+
+    expect(firstDeps.embedder).toBe(null);
+    // One attempt per session: a genuinely broken model must not be
+    // re-downloaded on every single search.
+    expect(loadSpy).toHaveBeenCalledTimes(1);
   });
 });

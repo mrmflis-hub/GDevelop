@@ -2,6 +2,7 @@
 import {
   loadByokRagEmbedder,
   makeByokHashingEmbedderForTests,
+  releaseByokRagEmbeddersExcept,
   resetByokRagEmbedderCache,
   setByokTransformersLoaderForTests,
   type ByokTransformersModule,
@@ -78,6 +79,26 @@ describe('loadByokRagEmbedder (the lazy Transformers.js loader)', () => {
     const result = await loadByokRagEmbedder('Xenova/all-MiniLM-L6-v2');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('could not be loaded');
+  });
+
+  it('RAG-9: releases every embedder but the one still in use', async () => {
+    const { module, pipelineCalls } = makeFakeTransformers();
+    setByokTransformersLoaderForTests(async () => module);
+
+    await loadByokRagEmbedder('Xenova/all-MiniLM-L6-v2');
+    await loadByokRagEmbedder('Xenova/bge-small-en-v1.5');
+    // Each entry pins a Transformers.js pipeline (tens of MB of WASM):
+    // switching embedders used to keep both models resident forever.
+    expect(pipelineCalls).toHaveLength(2);
+
+    releaseByokRagEmbeddersExcept('Xenova/bge-small-en-v1.5');
+
+    // The kept one is still cached (no new pipeline), the dropped one is
+    // loaded again from scratch.
+    await loadByokRagEmbedder('Xenova/bge-small-en-v1.5');
+    expect(pipelineCalls).toHaveLength(2);
+    await loadByokRagEmbedder('Xenova/all-MiniLM-L6-v2');
+    expect(pipelineCalls).toHaveLength(3);
   });
 });
 

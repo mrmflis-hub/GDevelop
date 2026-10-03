@@ -21,14 +21,13 @@ import './Knowledge/ByokJsApiPack';
  * one. Quality here decides BYOK quality.
  *
  * Bump BYOK_AGENT_PROMPT_VERSION whenever a change alters the prompt's
- * behavior, and note it in the worklog. byok-v10 (Phase 14): the retrieval
- * map + the docs-min corpus grades. byok-v11 (audit011026): the
+ * behavior, and note it in the worklog. byok-v11 (audit011026): the
  * read_doc_page tool (the docs-min drill-down), the corrected EventScript
- * examples and the external-events wording.
- * map gained the minified-wiki drill-down line (category maps → page
- * chunks → read_doc_page, D14-2) and the system prompt became
- * snapshot-once per chat for provider prefix caching (14.1 — behavior
- * identical bytes within a chat). byok-v9 (Phase 13): the tiered tool
+ * examples and the external-events wording. byok-v10 (Phase 14): the
+ * retrieval map gained the minified-wiki drill-down line (category maps →
+ * page chunks → read_doc_page, D14-2) and the system prompt became
+ * snapshot-once per chat for provider prefix caching (14.1 — identical
+ * bytes within a chat). byok-v9 (Phase 13): the tiered tool
  * advertisement (core list inline, the rest via the search_tools meta-tool),
  * the retrieval map + task catalog, and the pinned EventScript block (13.6).
  * byok-v8 (Phase 12): discovery and runtime — the starter-catalog guidance

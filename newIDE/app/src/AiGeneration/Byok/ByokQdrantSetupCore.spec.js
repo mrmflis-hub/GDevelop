@@ -6,6 +6,8 @@ const {
   getByokQdrantPlatform,
   getByokQdrantReleaseInfo,
   isAllowedByokQdrantSnapshotUrl,
+  isAllowedByokRagBundleApiUrl,
+  isAllowedByokRagBundleDownloadUrl,
   makeByokQdrantPaths,
   runByokQdrantSetup,
   runByokQdrantSnapshotRestore,
@@ -440,5 +442,43 @@ describe('runByokQdrantSnapshotRestore: a client timeout keeps the collection (R
     // failure path used to run a SECOND drop, deleting data out from under
     // a server-side import still in progress (audit100226 RAG-3).
     expect(calls.filter(call => call.method === 'DELETE')).toHaveLength(1);
+  });
+});
+
+describe('the prebuilt-bundle URL allowlist (audit100226 ELEC-22)', () => {
+  const allowedApiUrl =
+    'https://api.github.com/repos/mrmflis-hub/GDevelop/releases';
+  const allowedDownloadUrl =
+    'https://github.com/mrmflis-hub/GDevelop/releases/download/v3/byok-rag-bundle.json';
+
+  it('accepts the two official GitHub URLs the renderer builds', () => {
+    // The renderer builds these two from its own tested constants
+    // (makeByokRagBundleReleasesApiUrl, and the release asset URL); the
+    // main process re-checks them before dereferencing.
+    expect(isAllowedByokRagBundleApiUrl(allowedApiUrl)).toBe(true);
+    expect(isAllowedByokRagBundleDownloadUrl(allowedDownloadUrl)).toBe(true);
+  });
+
+  it('refuses http, foreign hosts, cloud metadata and non-string values', () => {
+    for (const isAllowed of [
+      isAllowedByokRagBundleApiUrl,
+      isAllowedByokRagBundleDownloadUrl,
+    ]) {
+      expect(isAllowed(allowedApiUrl.replace('https:', 'http:'))).toBe(false);
+      expect(isAllowed('https://evil.example.com/whatever.json')).toBe(false);
+      expect(isAllowed('http://169.254.169.254/latest/meta-data')).toBe(false);
+      expect(isAllowed('https://github.com/other/repo/releases/x')).toBe(false);
+      expect(isAllowed('not a url')).toBe(false);
+      expect(isAllowed(null)).toBe(false);
+      expect(isAllowed(undefined)).toBe(false);
+      expect(isAllowed(42)).toBe(false);
+    }
+  });
+
+  it('does not let an API URL pass as a download URL (or the reverse)', () => {
+    // The two channels fetch different things; mixing them would let the
+    // releases API answer a download request (and vice versa).
+    expect(isAllowedByokRagBundleApiUrl(allowedDownloadUrl)).toBe(false);
+    expect(isAllowedByokRagBundleDownloadUrl(allowedApiUrl)).toBe(false);
   });
 });

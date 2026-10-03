@@ -118,7 +118,15 @@ export default class LocalPreviewLauncher extends React.Component<
   _previewClosedListenerRegistered = false;
 
   _onPreviewWindowClosed = (event: any, windowId: number) => {
-    void this._previewClosedTracker.handleClosed(windowId);
+    // The tracker already contains its own failures; this catch is the
+    // belt-and-braces for anything else, so a preview that closes while the
+    // IDE is shutting down can never produce an unhandled rejection
+    // (audit100226 ELEC-21).
+    this._previewClosedTracker
+      .handleClosed(windowId)
+      .catch(error =>
+        console.error('A preview window close could not be handled.', error)
+      );
   };
 
   _ensurePreviewClosedListenerRegistered = () => {
@@ -171,12 +179,26 @@ export default class LocalPreviewLauncher extends React.Component<
           this._previewClosedTracker.own(windowIds, captureOptions);
         }
         this._ensurePreviewClosedListenerRegistered();
-      });
+      })
+      // The main process refused (the preview could not be written, the
+      // window could not be opened). Nothing else reports this: without the
+      // catch it is an unhandled rejection.
+      .catch(error =>
+        console.error('Unable to open the preview window - ignoring.', error)
+      );
   };
 
   closePreview = (windowId: number) => {
     if (!ipcRenderer) return;
-    ipcRenderer.invoke('preview-close', { windowId });
+    // The main process closes a window that may already be gone (a close
+    // race, or a crashed renderer). Mirrors closeAllPreviews: the failure is
+    // reported and ignored rather than becoming an unhandled rejection
+    // (audit100226 ELEC-21).
+    ipcRenderer
+      .invoke('preview-close', { windowId })
+      .catch(error =>
+        console.info('Unable to close the preview window - ignoring.', error)
+      );
   };
 
   closeAllPreviews = () => {

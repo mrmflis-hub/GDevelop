@@ -289,7 +289,12 @@ describe('useByokMcpServer — desktop', () => {
     if (!listReply) throw new Error('The tools/list reply was not sent');
     expect(listReply[1].response.result.tools.length).toBeGreaterThan(0);
 
-    // A tools/call with no host is a tool-level error result, not a crash.
+    // A tools/call with no host is a PROTOCOL error, not a crash: with no
+    // host the tool list is empty, so every name is unknown, and an unknown
+    // tool is a -32602. This assertion USED to expect a successful response
+    // carrying an isError result — that was the pre-MCP-6 contract, which
+    // the audit found inconsistent with unknown methods, prompts and
+    // resources (audit100226 MCP-6).
     await act(async () => {
       listener(null, {
         requestId: 2,
@@ -306,7 +311,8 @@ describe('useByokMcpServer — desktop', () => {
       call => call[0] === 'byok-mcp-response' && call[1].requestId === 2
     );
     if (!callReply) throw new Error('The tools/call reply was not sent');
-    expect(callReply[1].response.result.isError).toBe(true);
+    expect(callReply[1].response.result).toBeUndefined();
+    expect(callReply[1].response.error.code).toBe(-32602);
     expect(getByokMcpToolHost()).toBeNull();
 
     // Garbage is answered with the parse error; notifications are answered

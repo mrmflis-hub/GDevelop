@@ -101,6 +101,15 @@ export type ByokMcpActivityEntry = {|
   outcome: ByokMcpActivityOutcome,
   didModifyProject: boolean,
   durationMs: number,
+  /**
+   * Identifies the CALL this entry came from. The cross-window merge keys on
+   * it, because everything else can repeat: two calls with the same tool,
+   * arguments, outcome and duration recorded in the same millisecond had the
+   * same key, so the second entry was dropped and never displayed
+   * (audit100226 MCP-8). Optional so older mirrors (and the tests that build
+   * entries by hand) still parse.
+   */
+  +callId?: string,
 |};
 
 // ---- The module-level host registry ----
@@ -250,14 +259,16 @@ export const executeByokMcpToolCall = (
   const task = async (): Promise<ByokMcpCallToolResult> => {
     const host = getByokMcpToolHost();
     if (!host) {
-      recordActivity(makeEntry(name, argsPreview, startedAt, 'failed', false));
+      recordActivity(
+        makeEntry(name, argsPreview, startedAt, 'failed', false, callId)
+      );
       return makeByokMcpErrorResult(NO_TOOL_HOST_MESSAGE);
     }
     if (requestIdKey !== null) {
       if (cancelledCallIds.has(requestIdKey)) {
         cancelledCallIds.delete(requestIdKey);
         recordActivity(
-          makeEntry(name, argsPreview, startedAt, 'cancelled', false)
+          makeEntry(name, argsPreview, startedAt, 'cancelled', false, callId)
         );
         return makeByokMcpErrorResult(
           'The tool call was cancelled by the client.'
@@ -274,7 +285,8 @@ export const executeByokMcpToolCall = (
         argsPreview,
         startedAt,
         detailed.outcome,
-        detailed.didModifyProject
+        detailed.didModifyProject,
+        callId
       )
     );
     return detailed.result;
@@ -290,6 +302,7 @@ export const executeByokMcpToolCall = (
     name,
     argsPreview,
     startedAt,
+    callId,
     () => {
       // The caller has given up, but the call may still be QUEUED and about to
       // run. Mark it cancelled so the start check skips it: a mutating tool
@@ -321,9 +334,11 @@ const makeEntry = (
   argsPreview: string,
   startedAt: number,
   outcome: ByokMcpToolCallOutcome | 'timeout' | 'cancelled',
-  didModifyProject: boolean
+  didModifyProject: boolean,
+  callId?: string
 ): ByokMcpActivityEntry => ({
   at: new Date().toISOString(),
+  callId,
   tool,
   argsPreview,
   outcome,
@@ -342,6 +357,7 @@ const withTimeout = (
   name: string,
   argsPreview: string,
   startedAt: number,
+  callId: string,
   onTimeout?: () => void
 ): Promise<ByokMcpCallToolResult> =>
   new Promise(resolve => {
@@ -350,7 +366,9 @@ const withTimeout = (
       if (settled) return;
       settled = true;
       if (onTimeout) onTimeout();
-      recordActivity(makeEntry(name, argsPreview, startedAt, 'timeout', false));
+      recordActivity(
+        makeEntry(name, argsPreview, startedAt, 'timeout', false, callId)
+      );
       resolve(
         makeByokMcpErrorResult(
           `The tool call timed out after ${timeoutMs} ms. It may still finish in the editor.`

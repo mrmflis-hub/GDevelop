@@ -79,6 +79,12 @@ export type ByokMcpToolHandlers = {|
   ) => Promise<ByokMcpCallToolResult>,
   cancel: (requestId: string | number, reason: string) => void,
   getAppVersion: () => string,
+  // Whether the host knows a tool name. Optional: without it an unknown
+  // tool keeps answering a successful response carrying an isError result,
+  // while the MCP specification asks for a -32602 protocol error for an
+  // unknown tool — the same treatment this module already gives unknown
+  // methods, prompts and resources (audit100226 MCP-6).
+  +hasTool?: (name: string) => boolean,
   // The prompts/resources primitives (Phase 12, D12-6). Optional so older
   // hosts keep working: the methods then answer with empty lists / -32602.
   +listPrompts?: () =>
@@ -207,6 +213,13 @@ export const handleByokMcpMessage = async (
           id,
           BYOK_MCP_ERROR_INVALID_PARAMS,
           'tools/call requires a "name" string; "arguments", when present, must be an object.'
+        );
+      }
+      if (handlers.hasTool && !handlers.hasTool(toolParams.name)) {
+        return makeErrorResponse(
+          id,
+          BYOK_MCP_ERROR_INVALID_PARAMS,
+          `Unknown tool: ${toolParams.name}`
         );
       }
       const result = await handlers.callTool(toolParams, id);

@@ -154,16 +154,33 @@ const shouldRelayResponseBody = (parsedMessage, responseBody) => {
  * body (an empty 403/413, or a batch array the server rejects — its error
  * body has no top-level id, so shouldRelayResponseBody skips it). Without
  * this the client hung forever on its request (audit011026 B-MCP-11).
+ *
+ * A LEGACY client sends a JSON-RPC batch (an array of requests). The server
+ * answers 400 with a single error object carrying `id: null`, and the array
+ * itself has no `id` — so nothing was ever written to stdout and the client
+ * waited forever for the ids it had put inside the array. Answering for the
+ * first id-bearing member is enough to unblock it (audit100226 MCP-9).
+ * Notifications still get silence: there is nothing to wait for.
  */
 const buildHttpFailureText = (parsedMessage, statusCode) => {
+  const requestsInBatch = Array.isArray(parsedMessage) ? parsedMessage : null;
+  const requestToAnswer = requestsInBatch
+    ? requestsInBatch.find(
+        candidate =>
+          candidate &&
+          typeof candidate === 'object' &&
+          candidate.id !== null &&
+          candidate.id !== undefined
+      )
+    : parsedMessage;
   const carriesId =
-    parsedMessage &&
-    typeof parsedMessage === 'object' &&
-    parsedMessage.id !== null &&
-    parsedMessage.id !== undefined;
+    requestToAnswer &&
+    typeof requestToAnswer === 'object' &&
+    requestToAnswer.id !== null &&
+    requestToAnswer.id !== undefined;
   if (!carriesId) return null;
   return buildErrorResponseText(
-    parsedMessage.id,
+    requestToAnswer.id,
     ENDPOINT_ERROR_CODE,
     `The GDevelop MCP endpoint answered HTTP ${statusCode} for the request.`
   );

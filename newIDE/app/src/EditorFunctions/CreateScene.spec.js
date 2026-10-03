@@ -1,5 +1,9 @@
 // @flow
-import { editorFunctions, type EditorFunctionGenericOutput } from './index';
+import {
+  editorFunctions,
+  isValidSceneBackgroundColor,
+  type EditorFunctionGenericOutput,
+} from './index';
 import { makeFakeLaunchFunctionOptionsWithProject } from './TestHelpers';
 
 const gd: libGDevelop = global.gd;
@@ -60,6 +64,40 @@ describe('create_scene', () => {
     expect(scene.getBackgroundColorRed()).toBe(255);
     expect(scene.getBackgroundColorGreen()).toBe(0);
     expect(scene.getBackgroundColorBlue()).toBe(128);
+  });
+
+  it('creates a new scene with an "r;g;b" background color', async () => {
+    const result: EditorFunctionGenericOutput = await editorFunctions.create_scene.launchFunction(
+      {
+        ...makeFakeLaunchFunctionOptionsWithProject(project),
+        args: { scene_name: 'Level1', background_color: '10;20;30' },
+      }
+    );
+
+    expect(result.success).toBe(true);
+    const scene = project.getLayout('Level1');
+    expect(scene.getBackgroundColorRed()).toBe(10);
+    expect(scene.getBackgroundColorGreen()).toBe(20);
+    expect(scene.getBackgroundColorBlue()).toBe(30);
+  });
+
+  it('UP-16: refuses a color it cannot parse, and creates nothing', async () => {
+    const layoutsBefore = project.getLayoutsCount();
+
+    // "red" parsed to NaN, which hexNumberToRGBArray turned into 0,0,0: the
+    // scene was persisted BLACK while the tool reported success.
+    const result: EditorFunctionGenericOutput = await editorFunctions.create_scene.launchFunction(
+      {
+        ...makeFakeLaunchFunctionOptionsWithProject(project),
+        args: { scene_name: 'Level1', background_color: 'red' },
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('Invalid background_color');
+    // Nothing half-created: a refusal must not leave an empty scene behind.
+    expect(project.getLayoutsCount()).toBe(layoutsBefore);
+    expect(project.hasLayoutNamed('Level1')).toBe(false);
   });
 
   it('creates a new scene set as the first (startup) scene', async () => {
@@ -127,5 +165,29 @@ describe('create_scene', () => {
       'Scene "SceneB" already exists. Also set as the first (startup) scene.'
     );
     expect(project.getFirstLayout()).toBe('SceneB');
+  });
+});
+
+describe('isValidSceneBackgroundColor (audit100226 UP-16)', () => {
+  it('accepts the two forms rgbOrHexToHexNumber understands', () => {
+    expect(isValidSceneBackgroundColor('#ff0080')).toBe(true);
+    expect(isValidSceneBackgroundColor('ff0080')).toBe(true);
+    expect(isValidSceneBackgroundColor('#FFFFFF')).toBe(true);
+    expect(isValidSceneBackgroundColor('10;20;30')).toBe(true);
+    expect(isValidSceneBackgroundColor(' 10 ; 20 ; 30 ')).toBe(true);
+    expect(isValidSceneBackgroundColor('0;0;0')).toBe(true);
+    expect(isValidSceneBackgroundColor('255;255;255')).toBe(true);
+  });
+
+  it('rejects anything that would parse to NaN', () => {
+    expect(isValidSceneBackgroundColor('red')).toBe(false);
+    expect(isValidSceneBackgroundColor('#fff')).toBe(false);
+    expect(isValidSceneBackgroundColor('#gggggg')).toBe(false);
+    expect(isValidSceneBackgroundColor('')).toBe(false);
+    expect(isValidSceneBackgroundColor('10;20')).toBe(false);
+    expect(isValidSceneBackgroundColor('10;20;30;40')).toBe(false);
+    expect(isValidSceneBackgroundColor('300;0;0')).toBe(false);
+    expect(isValidSceneBackgroundColor('-1;0;0')).toBe(false);
+    expect(isValidSceneBackgroundColor('10;20;30.5')).toBe(false);
   });
 });

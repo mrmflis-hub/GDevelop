@@ -266,3 +266,130 @@ describe('chunkByokRagText: fenced code blocks (audit011026 B-RAG-14)', () => {
     expect(fenceChunks[0]).toContain('const b = 2;');
   });
 });
+
+describe('chunkByokRagText: the overlap boundary (audit100226 RAG-11)', () => {
+  const makeParagraphs = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, index) =>
+        `Paragraph ${index} discusses the ${'topic '.repeat(20)}${index}.`
+    ).join('\n\n');
+
+  const countFenceMarkers = (text: string): number =>
+    (text.match(/^\s*(?:```|~~~)/gm) || []).length;
+
+  it('never starts a chunk in the middle of a word', () => {
+    const text = makeParagraphs(8);
+    const chunks = chunkByokRagText(text, 40);
+    expect(chunks.length).toBeGreaterThan(2);
+
+    // A raw slice(-overlapChars) cut lands inside a word often enough to be
+    // visible: every non-first chunk must begin with a word the source text
+    // actually contains.
+    const sourceWords = new Set(text.split(/\s+/));
+    const starters = chunks.slice(1).map(chunk => chunk.split(/\s+/)[0]);
+    for (const starter of starters) {
+      expect(sourceWords.has(starter)).toBe(true);
+    }
+
+    // Non-vacuity: with no overlap at all this test would pass trivially, so
+    // require that the overlap really changed the output.
+    expect(chunkByokRagText(text, 40, 0)).not.toEqual(chunks);
+  });
+
+  it('does not carry an overlap out of the middle of a fenced block', () => {
+    // A fence longer than one chunk is hard-split, so a chunk can end inside
+    // the fence. The overlap must not then re-open the next chunk with fence
+    // body — code the model would read as prose.
+    const codeLines = Array.from(
+      { length: 40 },
+      (_, index) => `const value${index} = compute(${index});`
+    );
+    const text = [
+      'Intro.',
+      '',
+      '```js',
+      ...codeLines,
+      '```',
+      '',
+      'Outro.',
+    ].join('\n');
+    const chunks = chunkByokRagText(text, 40);
+
+    let inspectedBoundaries = 0;
+    for (let index = 1; index < chunks.length; index++) {
+      const previousChunk = chunks[index - 1];
+      if (countFenceMarkers(previousChunk) % 2 === 0) continue;
+      inspectedBoundaries++;
+      const previousLines = new Set(previousChunk.trim().split('\n'));
+      const repeatedLines = chunks[index]
+        .trim()
+        .split('\n')
+        .filter(line => previousLines.has(line));
+      expect(repeatedLines).toEqual([]);
+    }
+    // Non-vacuity: the fixture must actually produce a boundary inside the
+    // fence, otherwise the assertion above checked nothing.
+    expect(inspectedBoundaries).toBeGreaterThan(0);
+  });
+});
+
+describe('buildByokRagUserDocsChunks: stable, distinguishing ids (audit100226 RAG-8)', () => {
+  const makeTwoSameNamedFilesReader = (): ByokRagDocsFolderReader => ({
+    listMarkdownFiles: async () => [
+      'C:/docs/design/notes.md',
+      'C:/docs/notes.md',
+    ],
+    readFile: async (filePath: string) =>
+      filePath.endsWith('design/notes.md')
+        ? 'The design folder keeps its own notes about the game loop.'
+        : 'The root notes describe the release checklist for the game.',
+  });
+
+  it('titles chunks by their folder-relative path, not the bare file name', async () => {
+    const chunks = await buildByokRagUserDocsChunks(
+      'C:/docs',
+      makeTwoSameNamedFilesReader()
+    );
+    expect(chunks.length).toBe(2);
+    expect(chunks.map(chunk => chunk.title).sort()).toEqual([
+      'design/notes.md',
+      'notes.md',
+    ]);
+    // Distinct ids: two same-named files are two different documents.
+    expect(chunks[0].id).not.toBe(chunks[1].id);
+  });
+
+  it('keeps the same ids when an earlier file grows by a chunk', async () => {
+    const reader = makeTwoSameNamedFilesReader();
+    const before = await buildByokRagUserDocsChunks('C:/docs', reader);
+
+    const grownReader: ByokRagDocsFolderReader = {
+      listMarkdownFiles: reader.listMarkdownFiles,
+      readFile: async (filePath: string) =>
+        filePath.endsWith('design/notes.md')
+          ? `${await reader.readFile(filePath)}\n\n${'more '.repeat(900)}`
+          : reader.readFile(filePath),
+    };
+    const after = await buildByokRagUserDocsChunks('C:/docs', grownReader);
+
+    const rootChunkBefore = before.find(chunk => chunk.title === 'notes.md');
+    const rootChunkAfter = after.find(chunk => chunk.title === 'notes.md');
+    expect(rootChunkAfter).toBeTruthy();
+    // The id used to embed the running chunk count, so ANY earlier file
+    // growing by one chunk silently renamed every later chunk.
+    expect(rootChunkAfter && rootChunkAfter.id).toBe(
+      rootChunkBefore && rootChunkBefore.id
+    );
+  });
+
+  it('falls back to the file name for a path outside the chosen folder', async () => {
+    const reader: ByokRagDocsFolderReader = {
+      listMarkdownFiles: async () => ['C:/elsewhere/other.md'],
+      readFile: async () => 'Some other document about enemy waves.',
+    };
+    const chunks = await buildByokRagUserDocsChunks('C:/docs', reader);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].title).toBe('other.md');
+  });
+});

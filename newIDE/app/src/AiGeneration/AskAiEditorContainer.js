@@ -578,6 +578,17 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         updateByokPreferences: byokSettings =>
           setPreferencesMultipleValues({ byok: byokSettings }),
       });
+      // A STABLE identity on purpose: this function is a prop of the memoized
+      // ChatMessages, and an inline arrow gave it a new identity on every
+      // render. Since the seam re-renders on every chat-store notification,
+      // that defeated the memo and rebuilt the whole transcript — bubbles,
+      // images, tool results — on every streaming step, for a chat whose
+      // messages had not changed (audit100226 UI-9). getByokImage is a
+      // module-level function, so an empty dependency list is correct.
+      const getByokToolResultImage = React.useCallback((imageId: string) => {
+        const image = getByokImage(imageId);
+        return image ? { dataUrl: image.dataUrl } : null;
+      }, []);
       const {
         selectedByokChatId,
         setSelectedByokChatId,
@@ -2012,10 +2023,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                       // Tool outputs reference their captured screenshots by
                       // id: the chat renders them inline, so the user sees
                       // what the model was shown.
-                      getToolResultImage: (imageId: string) => {
-                        const image = getByokImage(imageId);
-                        return image ? { dataUrl: image.dataUrl } : null;
-                      },
+                      getToolResultImage: getByokToolResultImage,
                       // Phase 13.1: the header toggle and the bottom-bar
                       // controls (effort pill, model picker, attachments).
                       byokToggle: byokChatSeam.byokToggleState,

@@ -75,7 +75,9 @@ const RUNTIME_JS_API_TOKENS = new Set([
   'NearestEnemyX',
   'assert',
   'get3DRendererObject',
+  'getArgument',
   'getLayer',
+  'getObjects',
   'getPIXIRenderer',
   'getRenderer',
   'getRendererContainer',
@@ -92,10 +94,67 @@ const RUNTIME_JS_API_TOKENS = new Set([
   'stepUntilObjectIsStable',
 ]);
 
+// The EventScript placement relations (the writer's KNOWN_PLACEMENT_RELATIONS
+// vocabulary). The pack teaches them as VALUES of `placement_relation`, and
+// they are spelled exactly like tool names — which is why the widened guard
+// has to know they are not (audit100226 PROMPT-3/PROMPT-5).
+const EVENTSCRIPT_PLACEMENT_RELATION_TOKENS = new Set([
+  'insert_at_end',
+  'insert_before_event',
+  'insert_after_event',
+  'insert_as_sub_event',
+  'insert_and_replace_event',
+  'replace_entire_event_and_sub_events',
+  'replace_event_but_keep_existing_sub_events',
+  'replace_all_actions',
+  'replace_all_conditions',
+  'insert_actions_conditions_at_end',
+  'insert_actions_conditions_at_start',
+  'delete_event',
+]);
+
+// ARGUMENT names the prompt legitimately teaches. They are fields of a tool
+// call, not tools: the widened guard cannot tell the two apart by shape
+// (audit100226 PROMPT-3). Keep this list explicit and commented — a name that
+// disappears from the prompt is harmless, but one added to a tool schema
+// without a line here makes this guard fail and someone will "fix" it by
+// widening the allowlist blindly.
+const TOOL_ARGUMENT_TOKENS = new Set([
+  // The event-writing tools.
+  'changed_properties',
+  'event_script',
+  'expected_event_source',
+  'placement_relation',
+  'placement_target_event_id',
+  // The catalog / asset tools.
+  'effect_type',
+  'search_terms',
+  // change_sprite_frames operation names.
+  'delete_even_if_used',
+  'set_frame_image',
+  // The docs pages argument.
+  'about_translations',
+]);
+
+/**
+ * Every identifier the prompt could be teaching as a tool name.
+ *
+ * Two shapes are collected, because the prompt uses both (audit100226
+ * PROMPT-3): the call-shaped `name(` — which is what a model is told to
+ * write — AND the BARE `snake_case` mention, which is how most tool names
+ * actually appear in prose ("Use describe_instances and read_events_source
+ * to check…", "found with search_tools(query)"). The old guard only matched
+ * the first shape, so nearly all of the prompt's tool teaching escaped it.
+ */
 const collectCallTokens = (text: string): Set<string> => {
   const tokens = new Set<string>();
   for (const match of text.matchAll(/[A-Za-z_][A-Za-z0-9_]*\(/g)) {
     tokens.add(match[0].slice(0, -1));
+  }
+  // Snake_case, which is the tool naming convention (`read_scene_events`),
+  // and which English prose essentially never produces.
+  for (const match of text.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g)) {
+    tokens.add(match[0]);
   }
   return tokens;
 };
@@ -123,29 +182,48 @@ describe('ByokPromptGuard (audit011026: every taught tool token resolves)', () =
       engineTokens.has(token) ||
       GENERIC_CODE_TOKENS.has(token) ||
       EVENTSCRIPT_SHORTHAND_TOKENS.has(token) ||
+      EVENTSCRIPT_PLACEMENT_RELATION_TOKENS.has(token) ||
+      TOOL_ARGUMENT_TOKENS.has(token) ||
       RUNTIME_JS_API_TOKENS.has(token);
 
     const surfaces: Array<string> = [];
+    const contexts: Array<Object> = [];
     for (const hasOpenedProject of [true, false]) {
       const skills = await listByokSkillMetadata();
+      const context = makeByokPromptContext({
+        toolNames: require('./ByokToolSchema').getByokAdvertisedToolNames({
+          hasOpenedProject,
+        }),
+        hasOpenedProject,
+        skills,
+        engineReferenceAvailable: true,
+        projectNotes: null,
+        customInstructions: '',
+      });
+      contexts.push(context);
       surfaces.push(
         buildByokSystemPrompt({
           toolNames: require('./ByokToolSchema').getByokAdvertisedToolNames({
             hasOpenedProject,
           }),
           hasOpenedProject,
-          context: makeByokPromptContext({
-            toolNames: require('./ByokToolSchema').getByokAdvertisedToolNames({
-              hasOpenedProject,
-            }),
-            hasOpenedProject,
-            skills,
-            engineReferenceAvailable: true,
-            projectNotes: null,
-            customInstructions: '',
-          }),
+          context,
         })
       );
+    }
+    // Every registered knowledge section, built at FULL size (audit100226
+    // PROMPT-4). The composed prompt above is budget-limited: three of the
+    // six degradable sections — including the EventScript pack, the most
+    // defect-dense text this feature has had — are collapsed to a one-line
+    // summary in the default configuration, so the guard was reading an
+    // abbreviated version of exactly the text that keeps going stale.
+    const {
+      getByokKnowledgeSections,
+    } = require('./Knowledge/ByokKnowledgeSections');
+    for (const section of getByokKnowledgeSections()) {
+      for (const context of contexts) {
+        surfaces.push(section.build(context));
+      }
     }
     const skillsMetadata = await listByokSkillMetadata();
     for (const skill of skillsMetadata) {

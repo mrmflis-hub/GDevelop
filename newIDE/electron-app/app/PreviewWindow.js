@@ -101,11 +101,23 @@ const openPreviewWindow = ({
 };
 
 const closePreviewWindow = windowId => {
-  const entry = previewWindows.find(
-    entry => entry.previewWindow.id === windowId
-  );
-  if (entry && entry.previewWindow) {
-    entry.previewWindow.close();
+  // Same guards as the two functions below: the registry entry is only
+  // removed when 'closed' fires, so in a close race (a crashed renderer, a
+  // window closed by the user while the request is in flight) the entry can
+  // still hold a destroyed window. Reading `.id` on it threw "Object has
+  // been destroyed" out of the IPC handler and rejected the renderer's
+  // ipcRenderer.invoke.
+  try {
+    const entry = previewWindows.find(entry =>
+      entry.previewWindow && !entry.previewWindow.isDestroyed()
+        ? entry.previewWindow.id === windowId
+        : false
+    );
+    if (entry && entry.previewWindow && !entry.previewWindow.isDestroyed()) {
+      entry.previewWindow.close();
+    }
+  } catch (error) {
+    console.warn('Ignoring exception when closing preview window:', error);
   }
 };
 

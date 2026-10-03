@@ -109,4 +109,65 @@ describe('PreviewClosedTracker', () => {
 
     expect(onCaptureFinished).not.toHaveBeenCalled();
   });
+
+  it('ELEC-21: a failing capture handling does NOT reject', async () => {
+    // The caller fires this from an IPC listener with `void`, so a rejection
+    // was an unhandled rejection in the renderer — and a capture upload that
+    // fails (offline, revoked URL) is an ordinary outcome, not a crash.
+    // The implementation is installed here, inside the test: the repo's jest
+    // config resets mocks before each test, which strips an implementation
+    // given to the factory (and would make this test vacuous).
+    const onCaptureFinished: JestMockFn<
+      [CaptureOptions],
+      Promise<void>
+    > = jest.fn();
+    onCaptureFinished.mockImplementation(() =>
+      Promise.reject(new Error('the capture upload failed'))
+    );
+    const tracker = createPreviewClosedTracker(onCaptureFinished);
+    // The messages are collected in a plain array: restoring a console spy
+    // also clears its recorded calls.
+    const reportedErrors: Array<string> = [];
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation((...args) => {
+        reportedErrors.push(String(args[0]));
+      });
+
+    tracker.own([1], makeCaptureOptions('launch'));
+    let rejected = false;
+    try {
+      await tracker.handleClosed(1);
+    } catch (error) {
+      rejected = true;
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(onCaptureFinished).toHaveBeenCalledTimes(1);
+    expect(rejected).toBe(false);
+    // Reported, not swallowed silently.
+    expect(reportedErrors.length).toBe(1);
+  });
+
+  it('ELEC-21: the window is still forgotten when the handling fails', async () => {
+    const onCaptureFinished: JestMockFn<
+      [CaptureOptions],
+      Promise<void>
+    > = jest.fn();
+    onCaptureFinished.mockImplementation(() =>
+      Promise.reject(new Error('nope'))
+    );
+    const tracker = createPreviewClosedTracker(onCaptureFinished);
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+
+    tracker.own([1], makeCaptureOptions('launch'));
+    await tracker.handleClosed(1);
+    await tracker.handleClosed(1);
+    consoleError.mockRestore();
+
+    expect(onCaptureFinished).toHaveBeenCalledTimes(1);
+  });
 });

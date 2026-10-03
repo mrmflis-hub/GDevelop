@@ -340,6 +340,59 @@ export const collectByokChatImageEntries = (
   return entries;
 };
 
+/**
+ * Persist a chat's image sidecar, or DELETE it when the chat has no image
+ * left. A chat whose images were all evicted (by the quota sweep, or by a
+ * compaction dropping the references) kept a stale sidecar forever: the
+ * orphan sweep spares sidecars of chats that still exist, and the eviction
+ * only runs while over quota, so nothing else ever removed it — and its
+ * bytes counted against the quota (audit100226 UI-8).
+ */
+const writeOrDeleteChatImageSidecar = async (
+  chatId: string,
+  imageEntries: { [imageId: string]: any },
+  backend: ByokChatFilesBackend
+): Promise<void> => {
+  const sidecarFileName = imagesFileNameForChatId(chatId);
+  const hasImages = Object.keys(imageEntries).length > 0;
+  if (hasImages) {
+    await backend.writeFile(
+      sidecarFileName,
+      JSON.stringify({ images: imageEntries })
+    );
+    return;
+  }
+  await backend.deleteFile(sidecarFileName).catch(() => {});
+};
+
+/**
+ * Move a chat file to a new name, and report the name the chat actually
+ * ended up under. The old file must NOT survive a failed move: the index
+ * entry then points at the new name while the old one sits on disk, and
+ * reconciliation adopts that leftover as a second entry for the same chat —
+ * the chat appears twice in the Recents rail and one copy is orphaned
+ * forever (audit100226 UI-6). So a failed move keeps the current name.
+ */
+const moveChatFileTo = async (
+  entry: ?ByokChatFileMeta,
+  desiredFileName: string,
+  backend: ByokChatFilesBackend
+): Promise<string> => {
+  if (!entry || entry.fileName === desiredFileName) return desiredFileName;
+  try {
+    await backend.moveFile(entry.fileName, desiredFileName);
+  } catch (error) {
+    // Locked by another process, or the folder moved under us: the chat is
+    // saved under the name it already had rather than duplicated.
+    return entry.fileName;
+  }
+  // The backend reports a failed move as a rejection, but a backend that
+  // resolves `false` (a custom one) must not silently duplicate either.
+  const oldFileStillThere = await backend.readFile(entry.fileName);
+  if (oldFileStillThere !== null) return entry.fileName;
+  return desiredFileName;
+};
+
 // ----------------------------------------------------------------------
 // The chat index (audit011026 B-UI-13).
 // ----------------------------------------------------------------------
@@ -691,26 +744,28 @@ export const createByokChatFileStore = (
       const desiredFileName = makeByokChatFileName(chatName, chat.id);
 
       // The name carries the last-interaction date: a saved chat whose
-      // name changed is moved to the new file name.
-      if (entry && entry.fileName !== desiredFileName) {
-        await backend.moveFile(entry.fileName, desiredFileName).catch(() => {});
-      }
+      // name changed moves to the new file name. The move is verified: a
+      // FAILED move used to be swallowed, the new file was written next to
+      // the old one, and reconciliation then adopted the leftover as a
+      // SECOND entry for the same chat — the chat showed up twice in the
+      // rail (audit100226 UI-6). When the move cannot happen, the chat stays
+      // under its current file name instead.
+      const effectiveFileName = await moveChatFileTo(
+        entry,
+        desiredFileName,
+        backend
+      );
 
       const content = serializeByokChatToMarkdown(chat);
       const imageEntries = collectByokChatImageEntries(chat, getImageById);
-      await backend.writeFile(desiredFileName, content);
-      if (Object.keys(imageEntries).length > 0) {
-        await backend.writeFile(
-          imagesFileNameForChatId(chat.id),
-          JSON.stringify({ images: imageEntries })
-        );
-      }
+      await backend.writeFile(effectiveFileName, content);
+      await writeOrDeleteChatImageSidecar(chat.id, imageEntries, backend);
       // The chat file is written FIRST, the index after — a crash in
       // between is covered by reconciliation (B-UI-13).
       await upsertChatIndexEntry(
-        makeByokChatIndexEntryFromChat(desiredFileName, chat)
+        makeByokChatIndexEntryFromChat(effectiveFileName, chat)
       );
-      return desiredFileName;
+      return effectiveFileName;
     },
 
     setArchived: async (
@@ -743,15 +798,17 @@ export const createByokChatFileStore = (
       // The display name drives the file name: after retitling, the chat
       // moves (the first prompt is overridden by the explicit title).
       const desiredFileName = makeByokChatFileName(title, chatId);
-      if (entry.fileName !== desiredFileName) {
-        await backend.moveFile(entry.fileName, desiredFileName).catch(() => {});
-      }
-      await backend.writeFile(
+      const effectiveFileName = await moveChatFileTo(
+        entry,
         desiredFileName,
+        backend
+      );
+      await backend.writeFile(
+        effectiveFileName,
         serializeByokChatToMarkdown(chat)
       );
       await upsertChatIndexEntry(
-        makeByokChatIndexEntryFromChat(desiredFileName, chat)
+        makeByokChatIndexEntryFromChat(effectiveFileName, chat)
       );
       return true;
     },
@@ -842,6 +899,31 @@ export const createByokChatFileStore = (
           .catch(() => {});
         evictedChatCount++;
       }
+
+      // Last resort: files that are NOT chats — quarantined (unparseable)
+      // Markdown and the index itself. They counted against the quota from
+      // the first check but neither loop above can ever select them, so a
+      // folder holding only those stayed over quota forever while every save
+      // re-ran a futile sweep (audit100226 UI-7). The index is a rebuildable
+      // cache (reconciliation recreates it), so it goes last.
+      const evictableNonChatFiles = files.filter(
+        file =>
+          !isChatFileName(file.fileName) &&
+          !file.fileName.endsWith(IMAGES_FILE_SUFFIX)
+      );
+      for (const file of evictableNonChatFiles) {
+        if (file.fileName === BYOK_CHAT_INDEX_FILE_NAME) continue;
+        if (totalBytes <= capBytes) break;
+        await backend.deleteFile(file.fileName).catch(() => {});
+        totalBytes -= file.sizeBytes;
+      }
+      if (
+        totalBytes > capBytes &&
+        files.some(file => file.fileName === BYOK_CHAT_INDEX_FILE_NAME)
+      ) {
+        await backend.deleteFile(BYOK_CHAT_INDEX_FILE_NAME).catch(() => {});
+      }
+
       totalBytes = await backend.getTotalBytes();
 
       return { evictedImageChatCount, evictedChatCount };

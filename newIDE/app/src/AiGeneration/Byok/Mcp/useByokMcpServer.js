@@ -9,7 +9,7 @@ import {
   parseByokMcpRawMessage,
   type ByokMcpToolHandlers,
 } from './ByokMcpProtocol';
-import { makeByokMcpToolDescriptors } from './ByokMcpTools';
+import { hasByokMcpTool, makeByokMcpToolDescriptors } from './ByokMcpTools';
 import { getByokMcpPrompt, listByokMcpPrompts } from './ByokMcpPrompts';
 import {
   makeByokMcpResourceDescriptors,
@@ -161,6 +161,13 @@ export const useByokMcpServer = (enabled: boolean): ByokMcpServerStatus => {
       },
       callTool: async (params, requestId) =>
         executeByokMcpToolCall(params.name, params.args, { requestId }),
+      // An unknown name is a protocol error (-32602), not a tool result that
+      // happens to carry isError (audit100226 MCP-6). With no host the lists
+      // are empty, so every name is unknown — which is the right answer.
+      hasTool: name => {
+        const host = getByokMcpToolHost();
+        return host ? hasByokMcpTool(name, host) : false;
+      },
       cancel: (requestId, reason) => {
         cancelByokMcpCall(requestId);
       },

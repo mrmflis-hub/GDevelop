@@ -12,7 +12,6 @@ import {
 } from './ByokChatStore';
 import { createByokChatFileStore } from './ByokChatPersistence';
 import { isByokAiRequestId } from './ByokSeam';
-import { useEnsureExtensionInstalled } from '../UseEnsureExtensionInstalled';
 import { getByokMcpToolHost, setByokMcpToolHost } from './Mcp/ByokMcpToolHost';
 
 jest.mock('./ByokClient', () => ({
@@ -25,14 +24,17 @@ jest.mock('./ByokClient', () => ({
 
 // The real hook consumes the extension-store context through
 // useEnsureExtensionInstalled — not under test here (it has its own spec);
-// replace it with a stub. The implementation is (re)installed in beforeEach:
-// the repo's jest config resets mocks between tests, which would wipe a
-// factory-provided implementation.
+// replace it with a stub. The stub is a **plain function**, not a jest.fn():
+// the repo's jest config sets `resetMocks: true`, which strips the
+// implementation off a jest.fn() before every test, and a late render of a
+// tree this suite left mounted (see renderSeam's unmount tracking below) would
+// then get `undefined` back from the hook.
 jest.mock('../UseEnsureExtensionInstalled', () => ({
-  useEnsureExtensionInstalled: (jest.fn(): any),
+  useEnsureExtensionInstalled: () => ({
+    ensureExtensionInstalled: (jest.fn(async () => {}): any),
+  }),
 }));
 
-const mockUseEnsureExtensionInstalled: any = useEnsureExtensionInstalled;
 const mockSendByokChatCompletion: any = sendByokChatCompletionWithRetries;
 
 // The suite runs in the node environment (like ByokOrchestrator.spec.js —
@@ -115,21 +117,77 @@ const renderSeam = (
   const renderer = reactTestRenderer.create(
     <Probe options={options} capture={capture} />
   );
+  mountedRenderers.push(renderer);
   return { renderer, getSeam: () => capture.current };
+};
+
+// Every renderer this suite creates, so the afterEach below can unmount them.
+// A tree left mounted keeps its async effects (history loading, model choice
+// loading) alive past the test that made it: their state setters then fire
+// during a later test file — where this file's mocks no longer exist — and
+// crash or fail an unrelated suite. This is the one thing that made full runs
+// fail a different, arbitrary suite each time.
+const mountedRenderers: Array<any> = [];
+
+const unmountEverySeam = () => {
+  const renderers = mountedRenderers.splice(0, mountedRenderers.length);
+  renderers.forEach(renderer => {
+    act(() => {
+      renderer.unmount();
+    });
+  });
 };
 
 describe('useByokChatSeam', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseEnsureExtensionInstalled.mockImplementation(() => ({
-      ensureExtensionInstalled: (jest.fn(async () => {}): any),
-    }));
     mockSendByokChatCompletion.mockReset();
     localStorageShim.clear();
     listByokChats().forEach(chat => {
       const record = getByokChat(chat.id);
       if (record) record.archivedAt = new Date().toISOString();
     });
+  });
+
+  afterEach(() => {
+    unmountEverySeam();
+  });
+
+  // Regression test for the "one random suite fails per full run" family
+  // (outofscoped O4). This suite mounts trees that kick off async effects
+  // (chat history, model choices); a tree left mounted keeps them alive past
+  // the test that made it, and their state setters then fire while a LATER
+  // test file is running — against that file's mocks. Reproduce the original
+  // failure with:
+  //   npm test -- --watchAll=false --maxWorkers=1 --runTestsByPath \
+  //     src/AiGeneration/Byok/useByokChatSeam.spec.js \
+  //     src/UI/HelpIcon/HelpIcon.spec.js
+  // which crashed the worker process outright.
+  it('tracks every tree it mounts so the afterEach can unmount it', async () => {
+    const { getSeam } = renderSeam(makeOptions());
+    await act(async () => {});
+    expect(mountedRenderers.length).toBe(1);
+
+    const consoleErrors: Array<string> = [];
+    const consoleErrorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation((...args) => {
+        consoleErrors.push(String(args[0]));
+      });
+    try {
+      unmountEverySeam();
+      // The seam object still answers after its tree is gone: a late call
+      // like the ones the unmounted effects make must update nothing, and
+      // must not warn about an update it could not flush.
+      await act(async () => {
+        await getSeam().refreshByokHistoryChats();
+      });
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+
+    expect(mountedRenderers.length).toBe(0);
+    expect(consoleErrors.join('\n')).not.toContain('not wrapped in act');
   });
 
   it('exposes the BYOK chat selection and store summaries', () => {
@@ -248,10 +306,14 @@ describe('useByokChatSeam', () => {
       await getSeam().startByokChat('Make me a game');
     });
 
-    await getSeam().suspendAiRequestWithByokSupport('not-a-byok-id');
+    await act(async () => {
+      await getSeam().suspendAiRequestWithByokSupport('not-a-byok-id');
+    });
     expect(getSeam().selectedByokChat.status).toBe('ready');
 
-    getSeam().suspendByokChat(getSeam().selectedByokChatId);
+    act(() => {
+      getSeam().suspendByokChat(getSeam().selectedByokChatId);
+    });
     expect(getSeam().selectedByokChat.status).toBe('suspended');
   });
 
@@ -285,15 +347,11 @@ describe('useByokChatSeam — the MCP tool host (Phase 10)', () => {
     output: { message: 'ok' },
   });
 
-  beforeEach(() => {
-    // Outside the parent describe: this block needs the same hook stub.
-    mockUseEnsureExtensionInstalled.mockImplementation(() => ({
-      ensureExtensionInstalled: (jest.fn(async () => {}): any),
-    }));
-  });
-
+  // The useEnsureExtensionInstalled stub is installed by the module factory
+  // above, so this describe needs no extra per-test setup.
   afterEach(() => {
     setByokMcpToolHost(null);
+    unmountEverySeam();
   });
 
   it('registers the tool host on mount and unregisters it on unmount', async () => {
@@ -401,11 +459,10 @@ describe('useByokChatSeam: Phase 13 (toggle, bottom bar, history rail)', () => {
 
   beforeEach(() => {
     setByokChatPersistence(null);
-    // Same re-implementation as the suite above: the jest preset resets
-    // every mock's implementation before each test.
-    mockUseEnsureExtensionInstalled.mockImplementation(() => ({
-      ensureExtensionInstalled: (jest.fn(async () => {}): any),
-    }));
+  });
+
+  afterEach(() => {
+    unmountEverySeam();
   });
 
   it('exposes the toggle synced with the preferences setting, both ways', () => {
@@ -445,7 +502,9 @@ describe('useByokChatSeam: Phase 13 (toggle, bottom bar, history rail)', () => {
     // A hosted chat id never produces controls either: the controls gate on
     // isByokAiRequestId.
     const seam = getSeam();
-    seam.setSelectedByokChatId('byok-not-a-real-chat');
+    await act(async () => {
+      seam.setSelectedByokChatId('byok-not-a-real-chat');
+    });
     expect(getSeam().byokChatControls).toBe(null);
   });
 
@@ -468,14 +527,20 @@ describe('useByokChatSeam: Phase 13 (toggle, bottom bar, history rail)', () => {
 
     const { getSeam } = renderSeam(makeOptions());
     await act(async () => {});
-    await getSeam().refreshByokHistoryChats();
+    await act(async () => {
+      await getSeam().refreshByokHistoryChats();
+    });
 
     let history = getSeam().byokHistoryChats;
     expect(history.map((entry: any) => entry.id)).toContain('byok-persisted-1');
 
     // Archive the persisted-only chat: the file marker moves.
-    await getSeam().setByokHistoryChatArchived('byok-persisted-1', true);
-    await getSeam().refreshByokHistoryChats();
+    await act(async () => {
+      await getSeam().setByokHistoryChatArchived('byok-persisted-1', true);
+    });
+    await act(async () => {
+      await getSeam().refreshByokHistoryChats();
+    });
     history = getSeam().byokHistoryChats;
     const archivedEntry = history.find(
       (entry: any) => entry.id === 'byok-persisted-1'
@@ -483,9 +548,13 @@ describe('useByokChatSeam: Phase 13 (toggle, bottom bar, history rail)', () => {
     expect(archivedEntry.archivedAt).toBeTruthy();
 
     // Restore, then delete: the entry disappears.
-    await getSeam().setByokHistoryChatArchived('byok-persisted-1', false);
-    await getSeam().deleteByokHistoryChat('byok-persisted-1');
-    await getSeam().refreshByokHistoryChats();
+    await act(async () => {
+      await getSeam().setByokHistoryChatArchived('byok-persisted-1', false);
+      await getSeam().deleteByokHistoryChat('byok-persisted-1');
+    });
+    await act(async () => {
+      await getSeam().refreshByokHistoryChats();
+    });
     expect(
       getSeam().byokHistoryChats.some(
         (entry: any) => entry.id === 'byok-persisted-1'
