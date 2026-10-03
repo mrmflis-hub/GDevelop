@@ -13,6 +13,7 @@ import BookLeafIcon from '../../../UI/CustomSvgIcons/BookLeaf';
 import StoreIcon from '../../../UI/CustomSvgIcons/Store';
 import Preferences from '../../../UI/CustomSvgIcons/Preferences';
 import GDevelopGLogo from '../../../UI/CustomSvgIcons/GDevelopGLogo';
+import FileWithLinesIcon from '../../../UI/CustomSvgIcons/FileWithLines';
 import GDevelopThemeContext from '../../../UI/Theme/GDevelopThemeContext';
 import HomePageMenuBar from './HomePageMenuBar';
 import {
@@ -132,6 +133,7 @@ export const getTabsToDisplay = ({
 type Props = {|
   setActiveTab: HomeTab => void,
   activeTab: HomeTab,
+  onOpenGameCode: () => void,
   onOpenPreferences: () => void,
   onOpenAbout: () => void,
 |};
@@ -139,6 +141,7 @@ type Props = {|
 export const HomePageMenu = ({
   setActiveTab,
   activeTab,
+  onOpenGameCode,
   onOpenPreferences,
   onOpenAbout,
 }: Props): React.MixedElement => {
@@ -157,6 +160,15 @@ export const HomePageMenu = ({
     id: string,
     onClick: () => void,
   }[] = [
+    {
+      // D15-9: the game-code editor is the first button of the bar.
+      label: <Trans>Game code</Trans>,
+      id: 'game-code',
+      onClick: onOpenGameCode,
+      getIcon: ({ color, fontSize }) => (
+        <FileWithLinesIcon fontSize={fontSize} color={color} />
+      ),
+    },
     {
       label: <Trans>Preferences</Trans>,
       id: 'settings',

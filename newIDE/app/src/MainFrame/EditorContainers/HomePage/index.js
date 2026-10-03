@@ -23,6 +23,7 @@ import { TutorialContext } from '../../../Tutorial/TutorialContext';
 import { ExampleStoreContext } from '../../../AssetStore/ExampleStore/ExampleStoreContext';
 import { HomePageHeader } from './HomePageHeader';
 import { HomePageMenu, type HomeTab } from './HomePageMenu';
+import { openByokGameCode } from '../../../AiGeneration/Byok/GameCode/ByokGameCodeOpenCommand';
 import AuthenticatedUserContext from '../../../Profile/AuthenticatedUserContext';
 import { type ExampleShortHeader } from '../../../Utils/GDevelopServices/Example';
 import { type ResourceManagementProps } from '../../../ResourcesList/ResourceSource';
@@ -738,6 +739,7 @@ export const HomePage: React.ComponentType<Props> = React.memo<Props>(
                 <HomePageMenu
                   activeTab={activeTab}
                   setActiveTab={setActiveTab}
+                  onOpenGameCode={openByokGameCode}
                   onOpenPreferences={onOpenPreferences}
                   onOpenAbout={onOpenAbout}
                 />

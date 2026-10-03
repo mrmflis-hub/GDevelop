@@ -225,6 +225,15 @@ const effectChangeProperty = objectProperty('One effect change.', {
   'search_tools',
   // The on-device knowledge search (Phase 13.7).
   'search_knowledge',
+  // Game code (Phase 15.3): the read/write surface of the game code folder
+  // (`<GameName>Code/` next to the project file), intercepted
+  // (ByokGameCodeTools). reload_game_code routes to the Phase 15.4 hot
+  // reload and degrades to an honest failure before it exists.
+  'list_game_code_files',
+  'read_game_code_file',
+  'write_game_code_file',
+  'delete_game_code_file',
+  'reload_game_code',
 ];
 
 /**
@@ -2086,6 +2095,71 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
       required: [],
     },
   },
+  {
+    name: 'list_game_code_files',
+    description:
+      "List the JavaScript files of the game code folder (<project>/<GameName>Code/), in their load order (folder root, then core/, then the other folders alphabetically), with each file's size and its GameCode.* runtime namespace. Folders are runtime namespaces; core/ only marks boot-order-critical files — it is NOT a namespace level.",
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'read_game_code_file',
+    description:
+      "Read one JavaScript file of the game code folder (<project>/<GameName>Code/). Paths are relative to that folder and confined to it. The answer carries the file's GameCode.* namespace and its defensive prologue.",
+    parameters: {
+      type: 'object',
+      properties: {
+        path: stringProperty(
+          'The file path, relative to the game code folder (e.g. "character/spawn.js"). Must end with .js.'
+        ),
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'write_game_code_file',
+    description:
+      'Create or update one JavaScript file of the game code folder (<project>/<GameName>Code/); it ships in previews and exports automatically. Files are classic scripts (no import/export): publish through the GameCode.<folder>.<name> namespace given in the answer, starting from its defensive prologue. Paths are relative to the folder and confined to it (no "..", no absolute paths); folders are runtime namespaces and core/ only marks boot order (not a namespace level). Each file is capped at 262144 bytes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: stringProperty(
+          'The file path, relative to the game code folder (e.g. "character/spawn.js"). Must end with .js.'
+        ),
+        content: stringProperty(
+          'The full JavaScript source to write (it replaces the file).'
+        ),
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'delete_game_code_file',
+    description:
+      'Delete one JavaScript file of the game code folder (<project>/<GameName>Code/) and drop it from the export carrier, so it stops shipping. A running preview must be reloaded to pick up a deletion. Paths are relative to the folder and confined to it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: stringProperty(
+          'The file path, relative to the game code folder. Must end with .js.'
+        ),
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'reload_game_code',
+    description:
+      'Push the game code files that changed on disk into the running preview of this chat (it hard-reloads when files were deleted). Call it after write_game_code_file/delete_game_code_file while a preview runs.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
 ];
 
 /**
@@ -2259,6 +2333,14 @@ export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
   // The tool-discovery meta-tool (13.5) and the knowledge search (13.7).
   'search_tools',
   'search_knowledge',
+  // Phase 15.3 game-code tools: no registry entry (Byok's own
+  // implementations in GameCode/ByokGameCodeTools, over the game code
+  // folder and the carrier extension).
+  'list_game_code_files',
+  'read_game_code_file',
+  'write_game_code_file',
+  'delete_game_code_file',
+  'reload_game_code',
 ];
 
 const BYOK_ONLY_TOOL_NAMES_SET: Set<string> = new Set(BYOK_ONLY_TOOL_NAMES);
@@ -2330,15 +2412,17 @@ export const validateByokToolSchemas = (
     }
   }
   // The dispatchable list grew phase by phase: 62 names at the end of
-  // Phase 12, plus search_tools in Phase 13.5 (63) — the ADVERTISED set is
-  // the much smaller core list (BYOK_CORE_TOOL_NAMES), which is what the
-  // 13.5 token budget guards; this cap only stops the dispatchable
-  // whitelist from growing unnoticed.
-  if (BYOK_TOOL_NAMES.length > 64) {
+  // Phase 12, plus search_tools in Phase 13.5 (63), then 64; Phase 15.3
+  // raised it to 69 with the five game-code tools (the owner approved the
+  // raise — it guards the DISPATCH whitelist, not the wire payload: the
+  // ADVERTISED set is the much smaller core list (BYOK_CORE_TOOL_NAMES),
+  // which is what the 13.5 token budget guards; this cap only stops the
+  // dispatchable whitelist from growing unnoticed).
+  if (BYOK_TOOL_NAMES.length > 69) {
     problems.push(
       `The default tool set has ${
         BYOK_TOOL_NAMES.length
-      } tools — the cap is 64.`
+      } tools — the cap is 69.`
     );
   }
 

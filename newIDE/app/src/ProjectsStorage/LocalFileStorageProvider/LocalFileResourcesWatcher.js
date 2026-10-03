@@ -48,12 +48,17 @@ export const setupResourcesWatcher:
         const folderPath = path.dirname(fileIdentifier);
         const gameFile = path.basename(fileIdentifier);
         const autosaveFile = gameFile + '.autosave';
-        ipcRenderer.on('project-file-changed', (event, path) => {
+        // Keep a reference to the handler so the unsubscribe can remove
+        // exactly the listener WE registered: `removeAllListeners` would
+        // also kill every other consumer's listener on the channel (for
+        // example the game-code auto-reloader of the AI assistant).
+        const onProjectFileChanged = (event: mixed, changedPath: string) => {
           // TODO: Is it safe to let it like that since the OS could for some reason
           // do never-ending operations on the folder or its children, making the debounce
           // never ending.
-          debouncedCallback(path);
-        });
+          debouncedCallback(changedPath);
+        };
+        ipcRenderer.on('project-file-changed', onProjectFileChanged);
 
         // Note: this ignore list is not a list of glob. Any file that matches a string in this list will be ignored.
         // This could be improved to separate this in a list of paths, filenames, etc.
@@ -80,7 +85,10 @@ export const setupResourcesWatcher:
         );
 
         return () => {
-          ipcRenderer.removeAllListeners('project-file-changed');
+          ipcRenderer.removeListener(
+            'project-file-changed',
+            onProjectFileChanged
+          );
           subscriptionIdPromise.then(subscriptionId => {
             ipcRenderer.invoke(
               'local-filesystem-watcher-disable',

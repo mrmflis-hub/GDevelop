@@ -175,6 +175,13 @@ const AUTHORING_REACH_SECTION_TEXT = `- External events (read_external_events_so
 - Discovery (Phase 12): search_object_asset_store finds ready-made objects (public/free), search_resource_store finds audio and fonts with direct urls — and create_or_replace_object with search_terms INSTALLS the best asset match by itself.
 - Runtime (Phase 12): read_runtime_details, control_runtime and profile_runtime see and steer the preview this chat launched (pause it, dump its state, profile a slow scene). They never touch the project itself.`;
 
+// Phase 15.3: the game code folder — where plain JavaScript files live, in
+// which order they load, and under which namespace they publish.
+const GAME_CODE_SECTION_TEXT = `- The game code folder \`<GameName>Code/\` sits next to the project file and holds plain JavaScript files that ship in previews and exports automatically: list_game_code_files lists them in load order with sizes and namespaces, read_game_code_file reads one, write_game_code_file / delete_game_code_file write and delete (the export carrier is kept in sync), reload_game_code pushes changes into the running preview.
+- Load order: folder root first, then core/, then every other folder alphabetically. \`core/\` marks boot-order-critical files — it is NOT a namespace level.
+- Files are classic scripts (no import/export): each publishes \`GameCode.<folder>.<name>\` (\`character/spawn.js\` → \`GameCode.character.spawn\`), opens with the defensive namespace prologue the tools return, then assigns into it.
+- Reach for game code when logic outgrows events or needs the runtime API directly; keep add_scene_events for ordinary gameplay logic.`;
+
 // --- The Phase 13.5 retrieval map + task catalog ----------------------------
 
 /**
@@ -514,6 +521,17 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
       ),
   };
 
+  // The game-code section (Phase 15.3): non-degradable. The five tools are
+  // dispatchable but invisible unless the prompt names the folder, the load
+  // order and the namespace rule — a collapsed one-liner would leave the
+  // model guessing exactly the things the tools refuse on.
+  const gameCodeSection = makeSimpleSection(
+    'game-code',
+    'Game code folder (JavaScript files)',
+    107,
+    GAME_CODE_SECTION_TEXT
+  );
+
   const skillsSection: ByokKnowledgeSection = {
     id: 'skills-appendix',
     title: 'Available skills',
@@ -566,6 +584,7 @@ const buildCoreSections = (): Array<ByokKnowledgeSection> => {
     lookVerifySection,
     groundingSection,
     authoringReachSection,
+    gameCodeSection,
     skillsSection,
     customInstructionsSection,
   ];

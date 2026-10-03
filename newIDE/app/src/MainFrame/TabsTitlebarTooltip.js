@@ -14,7 +14,9 @@ import { ColumnStackLayout } from '../UI/Layout';
 import Text from '../UI/Text';
 import { parseCustomObjectEditorTabName } from '../Utils/CustomObjectEditorTabName';
 
-const editorKindToLabel: { [kind: EditorKind]: React.Node } = {
+// Exported for the spec that pins the 'game-code' entry (every key of this
+// map is a member of EditorKind — Flow enforces the exhaustiveness).
+export const editorKindToLabel: { [kind: EditorKind]: React.Node } = {
   layout: <Trans>Scene</Trans>,
   'layout events': <Trans>Scene events</Trans>,
   'external layout': <Trans>External layout</Trans>,
@@ -26,6 +28,7 @@ const editorKindToLabel: { [kind: EditorKind]: React.Node } = {
   'global-search': <Trans>Global search</Trans>,
   'start page': <Trans>Homepage</Trans>,
   'ask-ai': <Trans>Ask AI</Trans>,
+  'game-code': <Trans>Game code</Trans>,
 };
 
 const styles = {

@@ -447,3 +447,30 @@ and when to revisit it.
   upstream, not something to repair during minification.
 - **The two already-minified pages keep their fix** — re-running the
   generator is not warranted, and the corpus hash is unchanged by a docblock.
+`[P15-a15-1-tail]` **The last hop of A15-1 (`<script src>` emission) is not
+provable in Jest.** `UsedExtensionsFinder.ScanProject` — the entry point the
+EXPORTER itself uses — answers only `BuiltinObject` in the test WASM, even
+for a scene event written by the app's own `byokApplySceneEventBatches` with a
+real `CreateTimerNew` action, and for an object of a carrier-declared type
+placed in the scene. So the emitted tags cannot be asserted there.
+Deferred because the observed half IS asserted (a real export runs, copies
+every game-code file, and produces exactly the names the hot reload will
+fetch) and the remaining hop is one `<script src>` per used source file, which
+is upstream code this phase does not modify.
+When: at the Phase 15 desktop QA (`A15-7`), where the owner confirms the tags
+in a real preview. If the tags are MISSING there, the marker mechanism needs
+a different hook and the 2026-10-03 worklog entry explains the candidates
+(project-level object of a carrier-declared type is the next thing to try).
+Standing proposal: after A15-7 passes, turn the desktop check into a note in
+`deferred.md` and close this entry.
+
+`[P15-phase15-md]` **`REVIEW/Phase15.md` §1 states something that is not
+true.** It says the extension source files get a `{path, hash}` hot-reload
+entry "as `EventsFunctionsExtensionsProvider.js:50-57` does". They do not:
+that hash map covers the GENERATED code include files, and the source files
+are merged into `index.html` inside `ExportIndexFile`, which runs AFTER
+`SerializeRuntimeGameOptions` built `scriptFiles`
+(`GDJS/GDJS/IDE/ExporterHelper.cpp:313` vs `:335`).
+Deferred because the phase document is the owner's, and amending it is better
+done together with step 15.4, which is where the consequence lands.
+When: at the start of step 15.4.

@@ -39,6 +39,7 @@ import { getByokExternalSceneTools } from './ByokExternalSceneTools';
 import { getByokCatalogTools } from './ByokCatalogTools';
 import { getByokSpriteTools } from './ByokSpriteTools';
 import { getByokResourceTools } from './ByokResourceTools';
+import { getByokGameCodeTools } from './GameCode/ByokGameCodeTools';
 import {
   getByokProjectSnapshot,
   listByokProjectSnapshots,
@@ -736,6 +737,10 @@ const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   // Debugger/profiler tools (Phase 12): pause, dump and profile the preview
   // this chat launched — targeted, never cross-preview.
   ...getByokDebuggerTools(),
+  // Game code (Phase 15.3): read/write/delete/list over the game code
+  // folder (`<GameName>Code/`), plus the hot-reload router. Writes and
+  // deletes re-sync the carrier extension themselves.
+  ...getByokGameCodeTools(),
 ];
 
 /** All the intercepted tools (a fresh read: the list may grow per phase). */

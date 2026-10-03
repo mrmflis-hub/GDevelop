@@ -57,6 +57,7 @@ const { registerByokChatFileHandlers } = require('./ByokChatFiles');
 const { registerByokMcpServer } = require('./ByokMcpServer');
 const { registerByokRagFileHandlers } = require('./ByokRagFiles');
 const { registerByokResourceDownload } = require('./ByokResourceDownload');
+const { registerByokGameCodeFiles } = require('./ByokGameCode');
 const {
   ensureStarted: ensureByokQdrantStarted,
   registerByokQdrant,
@@ -522,6 +523,11 @@ app.on('ready', function() {
   // http(s) only, the cloud cookie only for gdevelop.io hosts, byte cap +
   // timeout, target confined to the project folder.
   registerByokResourceDownload(ipcMain);
+  // The BYOK game-code files (Phase 15.1): the renderer owns the folder
+  // name, the load order and the rules; this side only moves bytes, and
+  // re-checks every path against the folder it derives from the project
+  // file.
+  registerByokGameCodeFiles(ipcMain);
   // The managed Qdrant (BYOK RAG) starts with the app once installed.
   // Called directly (not via app.on('ready')): this code already runs
   // inside the one 'ready' emission, and a listener registered during an

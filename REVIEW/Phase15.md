@@ -1,7 +1,9 @@
 # Phase 15 — Game code on disk: BYOK-written JavaScript, bundled like the build, hot-reloaded
 
 Status: planned 2026-10-02; all 13 decisions answered (last five on 2026-10-03).
-Not started.
+**All six steps IMPLEMENTED 2026-10-03** (uncommitted), all four gates green at
+252 suites / 2959 tests. A15-1's last hop, A15-2 and A15-7/A15-8 still need the
+owner's desktop QA (`usertasks.md` Task 22 item 7).
 Owner decisions D15-1…D15-13 recorded canonically in `usertasks.md`.
 Depends on: Phases 1–14 + `audit011026` (all committed or staged for the
 owner's review).
@@ -361,8 +363,13 @@ check-format), then the manual checklist in §4.
 - `[A15-4]` The pane's tree root is the game-code folder; the wider engine
   filesystem is not reachable from it.
 - `[A15-5]` Every new function has a spec; all four gates are green.
-- `[A15-6]` The upstream touchpoint budget for this phase is exactly the four
-  files listed in 15.4 and 15.5, each recorded in the worklog.
+- `[A15-6]` The upstream touchpoint budget for this phase is the four files
+  listed in 15.4 and 15.5 plus THREE companions the owner approved on
+  2026-10-03 (`usertasks.md` Task 22): `electron-app/app/main.js` (registering
+  the game-code IPC channels), `MainFrame/TabsTitlebarTooltip.js` (its
+  `editorKindToLabel` is a Flow-exhaustive map keyed by `EditorKind`) and
+  `MainFrame/EditorContainers/HomePage/index.js` (the button's `onOpenGameCode`
+  prop has to reach `HomePageMenu`). Each is recorded in the worklog.
 - `[A15-7]` Manual desktop QA passes: create files via the agent, see them in
   the tree, edit one in Monaco, watch it hot-reload.
 - `[A15-8]` The D15-12 condition holds in a real preview: a file assigning

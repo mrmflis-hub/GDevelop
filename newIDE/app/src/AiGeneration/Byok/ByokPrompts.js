@@ -21,7 +21,11 @@ import './Knowledge/ByokJsApiPack';
  * one. Quality here decides BYOK quality.
  *
  * Bump BYOK_AGENT_PROMPT_VERSION whenever a change alters the prompt's
- * behavior, and note it in the worklog. byok-v11 (audit011026): the
+ * behavior, and note it in the worklog. byok-v12 (Phase 15.3): the
+ * game-code section (the `<GameName>Code/` folder next to the project, its
+ * D15-3a load order, the GameCode.* namespace and the classic-script rule)
+ * joined the always-on prompt, with the five game-code tools. byok-v11
+ * (audit011026): the
  * read_doc_page tool (the docs-min drill-down), the corrected EventScript
  * examples and the external-events wording. byok-v10 (Phase 14): the
  * retrieval map gained the minified-wiki drill-down line (category maps →
@@ -40,7 +44,7 @@ import './Knowledge/ByokJsApiPack';
  * completion rules, skill pointers). byok-v5 (Phase 7): section composer
  * with a token budget + the F2 progress discipline in the planning section.
  */
-export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v11';
+export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v12';
 
 /**
  * Build the system prompt of the BYOK agent loop. The signature keeps the

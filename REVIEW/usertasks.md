@@ -1308,3 +1308,62 @@ The upstream touchpoint budget is four files, each listed in `Phase15.md` §3
    so its scorers were checking argument names the model had never seen — a
    whole class of authoring-reach tasks was near-unpassable. Any historical
    eval numbers are therefore not comparable with future ones.
+
+## Task 22 — Phase 15 steps 15.1 + 15.2 (2026-10-03)
+
+1. **Commit review** for the 2026-10-03 session: ten new files under
+   `newIDE/app/src/AiGeneration/Byok/GameCode/`, one new
+   `newIDE/electron-app/app/ByokGameCode.js`, and the five-line registration
+   in `newIDE/electron-app/app/main.js`. Nothing else is touched, and no
+   existing BYOK file changed.
+2. **`BYOK_TOOL_NAMES` cap. ANSWERED 2026-10-03: raise it to 69.** The list
+   is at exactly 64 and both the validator (`ByokToolSchema.js:2337`) and the
+   spec (`ByokToolSchema.spec.js:91-93`) reject more. The cap guards the
+   dispatch whitelist, not the request payload — what is actually sent is
+   `BYOK_CORE_TOOL_NAMES` (28 today), which the Phase 13.5 prompt-budget spec
+   already guards. Nothing is billed at request time. Step 15.3 applies it.
+3. **Upstream-budget companions. ANSWERED 2026-10-03: approved**, so the
+   `[A15-6]` budget for this phase is SEVEN files, not four. The three
+   companions are:
+   `newIDE/electron-app/app/main.js` (registering the new IPC channels —
+   already done), plus, when 15.5 lands,
+   `MainFrame/TabsTitlebarTooltip.js` (its `editorKindToLabel` is a Flow
+   EXHAUSTIVE map keyed by `EditorKind`, so the new `'game-code'` kind breaks
+   Flow without it) and
+   `MainFrame/EditorContainers/HomePage/index.js` (the button's
+   `onOpenGameCode` prop has to reach `HomePageMenu`).
+4. **Desktop QA that now carries A15-1's remaining hop.**
+   `UsedExtensionsFinder.ScanProject` returns only `BuiltinObject` in the
+   Jest harness — for the app's own event writer too — so the exported
+   `<script src>` tags cannot be asserted there. Everything observable IS
+   asserted (a real export runs, copies every game-code file, and produces
+   exactly the names the hot reload will fetch). What needs a real preview:
+   create a project with two game-code files in different folders, preview it,
+   and confirm one `<script src>` per file in the D15-3a order. If the tags
+   are absent, the "marker makes the extension used" mechanism needs another
+   hook — the 2026-10-03 worklog entry lists the next candidate (a
+   project-level object of a carrier-declared type).
+5. **Steps 15.3, 15.4 and 15.5 are BUILT (same day).** Prompt is `byok-v12`,
+   the prompt budget is 12,703 tokens (under the 15,000 hard cap), and all
+   four gates are green at 252 suites / 2,959 tests. `outofscoped.md` is
+   empty again.
+6. **Two deviations from the plan, both from the approved seven-file budget.**
+   Neither is a defect, but you may want them the other way:
+   - `onOpenGameCode` reaches the home page button through the codebase's
+     one-way-command singleton (the `AskAiPrefill` pattern) instead of
+     through the `onOpenAskAi` prop chain. The prop chain would need
+     `EditorTabsPane.js` and `BaseEditor.js`, both outside the budget.
+   - The game-code pane's mosaic layout is not persisted between sessions
+     (the preference key would have to join the CLOSED `EditorMosaicName`
+     union in `PreferencesContext.js:57`, outside the budget). In-session
+     resizing works.
+7. **Desktop QA, expanded.** Beyond item 4 above, these can only be
+   confirmed in a running desktop preview:
+   - A15-2: edit one game-code file and watch ONLY it reload; add a file and
+     watch it load; delete a file and watch the hard reload.
+   - A15-8: a file assigning `GameCode.character.spawn` is callable from
+     another game-code file AND from a scene's JS code event, against the
+     live GD engine.
+   - The pane: the home page button opens the tab, the tree is rooted at the
+     game-code folder, and an AI write to the file open in Monaco shows a
+     notice instead of replacing unsaved typing (D15-7).

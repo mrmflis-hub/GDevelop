@@ -45,6 +45,7 @@ export type EditorKind =
   | 'resources'
   | 'global-search'
   | 'ask-ai'
+  | 'game-code'
   | 'start page';
 
 export type EditorTab = {|
@@ -869,6 +870,27 @@ export const getOpenedAskAiEditor = (
   return {
     // $FlowFixMe[incompatible-type] - the key ensures that the editor is an AskAiEditorInterface.
     askAiEditor: editorTabOpened.editorTab.editorRef,
+    editorTab: editorTabOpened.editorTab,
+    paneIdentifier: editorTabOpened.paneIdentifier,
+    tabIndex: editorTabOpened.tabIndex,
+  };
+};
+
+/**
+ * The game-code tab, if open. It is a singleton (key 'game-code'), like
+ * 'ask-ai': the AI-assistant openers close it (or close the Ask AI tab)
+ * so exactly one chat UI exists (D15-11).
+ */
+export const getOpenedGameCodeTab = (
+  state: EditorTabsState
+): null | {|
+  editorTab: EditorTab,
+  paneIdentifier: string,
+  tabIndex: number,
+|} => {
+  const editorTabOpened = getEditorTabOpenedWithKey(state, 'game-code');
+  if (!editorTabOpened) return null;
+  return {
     editorTab: editorTabOpened.editorTab,
     paneIdentifier: editorTabOpened.paneIdentifier,
     tabIndex: editorTabOpened.tabIndex,

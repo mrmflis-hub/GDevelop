@@ -86,9 +86,11 @@ describe('validateByokToolSchemas', () => {
     // load_skill): every advertised schema is billed as input tokens on
     // every turn, so the guard exists to force a conscious decision when
     // the surface grows again.
-    // The cap moved to 48 (Phase 8), 56 (Phase 11) then 62 (Phase 12) —
+    // The cap moved to 48 (Phase 8), 56 (Phase 11), 62 (Phase 12), 64,
+    // then 69 (Phase 15.3, the five game-code tools — owner-approved: it
+    // guards the dispatch whitelist, not the advertised wire payload) —
     // see the counting comment in ByokToolSchema.js.
-    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(64);
+    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(69);
     expect(BYOK_TOOL_NAMES.length).toBeGreaterThanOrEqual(30);
     expect(validateByokToolSchemas()).toEqual([]);
   });

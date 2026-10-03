@@ -124,9 +124,11 @@ describe('ByokPrompts', () => {
 
 describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
   it('pins the prompt version', () => {
-    // Bumped to byok-v10 in Phase 14; byok-v11 in audit011026 (read_doc_page + example fixes).
-    // byok-v9 was Phase 13; byok-v8 was Phase 12 (discovery + runtime guidance).
-    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v11');
+    // Bumped to byok-v11 in audit011026 (read_doc_page + example fixes);
+    // byok-v12 in Phase 15.3 (the game-code section + the five game-code
+    // tools). byok-v10 was Phase 14; byok-v9 was Phase 13; byok-v8 was
+    // Phase 12 (discovery + runtime guidance).
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v12');
   });
 
   it('teaches the F2 obligatory to-do list and per-item progress updates', () => {

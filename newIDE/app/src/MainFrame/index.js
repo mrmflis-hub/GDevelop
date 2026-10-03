@@ -14,6 +14,7 @@ import ExternalLayoutIcon from '../UI/CustomSvgIcons/ExternalLayout';
 import ExtensionIcon from '../UI/CustomSvgIcons/Extension';
 import SearchIcon from '../UI/CustomSvgIcons/Search';
 import PreviewIcon from '../UI/CustomSvgIcons/Preview';
+import GameCodeIcon from '../UI/CustomSvgIcons/FileWithLines';
 import ProjectTitlebar from './ProjectTitlebar';
 import PreferencesDialog from './Preferences/PreferencesDialog';
 import AboutDialog from './AboutDialog';
@@ -50,6 +51,7 @@ import {
   getCurrentTabForPane,
   getCustomObjectEditor,
   getOpenedAskAiEditor,
+  getOpenedGameCodeTab,
   getEditorTabOpenedWithKey,
   changeCurrentTab,
   getAllEditorTabs,
@@ -98,6 +100,8 @@ import {
 } from './EditorTabs/EditorTabsRenaming';
 import { renderAskAiEditorContainer } from '../AiGeneration/AskAiEditorContainer';
 import { requestAskAiPrefill } from '../AiGeneration/AskAiPrefill';
+import { renderGameCodeEditorContainer } from '../AiGeneration/Byok/GameCode/GameCodePane';
+import { registerByokGameCodeOpener } from '../AiGeneration/Byok/GameCode/ByokGameCodeOpenCommand';
 import { ByokMcpServerHost } from '../AiGeneration/Byok/Mcp/useByokMcpServer';
 import { renderResourcesEditorContainer } from './EditorContainers/ResourcesEditorContainer';
 import { renderGlobalEventsSearchEditorContainer } from './EditorContainers/GlobalEventsSearchEditorContainer';
@@ -320,6 +324,7 @@ const editorKindToRenderer: {
   resources: renderResourcesEditorContainer,
   'global-search': renderGlobalEventsSearchEditorContainer,
   'ask-ai': renderAskAiEditorContainer,
+  'game-code': renderGameCodeEditorContainer,
 };
 
 const defaultSnackbarAutoHideDuration = 3000;
@@ -821,6 +826,8 @@ const MainFrame = (props: Props): React.MixedElement => {
           ? i18n._(t`Global search`)
           : kind === 'ask-ai'
           ? i18n._(t`Ask AI`)
+          : kind === 'game-code'
+          ? i18n._(t`Game code`)
           : kind === 'start page'
           ? undefined
           : kind === 'debugger'
@@ -890,6 +897,8 @@ const MainFrame = (props: Props): React.MixedElement => {
           <PreviewIcon />
         ) : kind === 'ask-ai' ? (
           <RobotIcon size={16} />
+        ) : kind === 'game-code' ? (
+          <GameCodeIcon />
         ) : null;
 
       const closable = kind !== 'start page';
@@ -1124,6 +1133,17 @@ const MainFrame = (props: Props): React.MixedElement => {
       setState(state => {
         let openedEditor = getOpenedAskAiEditor(state.editorTabs);
         let newEditorTabs = state.editorTabs;
+        // D15-11: exactly one chat UI exists. The game-code tab embeds the
+        // same chat as the Ask AI tab, so opening Ask AI closes the
+        // game-code tab (unmounting it never suspends the AI request: it
+        // lives in the module-level orchestrator registry).
+        const openedGameCodeTab = getOpenedGameCodeTab(state.editorTabs);
+        if (openedGameCodeTab) {
+          newEditorTabs = closeEditorTab(
+            newEditorTabs,
+            openedGameCodeTab.editorTab
+          );
+        }
         if (openedEditor) {
           if (openedEditor.paneIdentifier !== newPaneIdentifier) {
             // The editor is opened, but not at the right position, close it.
@@ -1195,6 +1215,42 @@ const MainFrame = (props: Props): React.MixedElement => {
     },
     [setState]
   );
+
+  const openGameCode = React.useCallback(
+    () => {
+      setState(state => {
+        let newEditorTabs = state.editorTabs;
+        // D15-11: exactly one chat UI exists. The game-code tab embeds the
+        // same chat as the Ask AI tab, so opening it closes the standalone
+        // Ask AI tab (unmounting it never suspends the AI request: it lives
+        // in the module-level orchestrator registry).
+        const openedAskAiEditor = getOpenedAskAiEditor(state.editorTabs);
+        if (openedAskAiEditor) {
+          newEditorTabs = closeEditorTab(
+            newEditorTabs,
+            openedAskAiEditor.editorTab
+          );
+        }
+        return {
+          ...state,
+          editorTabs: openEditorTab(
+            newEditorTabs,
+            // $FlowFixMe[incompatible-type]
+            getEditorOpeningOptions({ kind: 'game-code', name: '' })
+          ),
+        };
+      });
+    },
+    [setState, getEditorOpeningOptions]
+  );
+
+  // The home page button (D15-9) opens the tab through the module-singleton
+  // command (ByokGameCodeOpenCommand): drilling a prop from MainFrame to
+  // HomePage would need new fields on the shared render-props types, which
+  // are outside the phase's approved touchpoints.
+  React.useEffect(() => registerByokGameCodeOpener(openGameCode), [
+    openGameCode,
+  ]);
 
   const closeProject = React.useCallback(
     async (): Promise<void> => {

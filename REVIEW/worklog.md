@@ -4790,3 +4790,400 @@ Three became **by-design dispositions in `deferred.md`** with their numbers
 `usertasks` **Task 21** (commit review across three uncommitted sessions, the
 budget decision taken on the owner's behalf, the two corrected tests, and the
 Electron-main desktop QA list).
+---
+
+## Run log — 2026-10-03 — Phase 15 steps 15.1 + 15.2 (game code core, store, carrier)
+
+### 1. Date
+
+2026-10-03.
+
+### 2. Description of actions
+
+Ordered implementation of `REVIEW/Phase15.md`, starting from the two
+load-bearing steps and stopping there (see "Issues found" for why 15.3-15.5
+did not fit this session's budget).
+
+- **Step 15.1 — the pure rules and the byte layer.**
+  `ByokGameCodeCore.js` (folder name, D15-3a load order, the D15-12
+  folder-derived namespace and its defensive prologue, path confinement,
+  and the exported script-name computation) + `ByokGameCodeStore.js` (the
+  dual fs/IPC store) + `ByokGameCodeManifest.js` (`gamecode.json`) + the
+  plain-CJS `ByokGameCodePathCore.js` (the Electron-side confinement) and
+  `newIDE/electron-app/app/ByokGameCode.js` (the five flat
+  `byok-game-code-<verb>` channels, registered in `main.js`).
+- **Step 15.2 — the carrier extension.** `ByokGameCodeCarrier.js` creates
+  the `GameCode` extension, declares one action plus one free function that
+  calls it (this is how D15-4's "made structurally used" is achieved — with
+  no event in any user scene), registers each game-code file as a
+  `javascript` project resource, and rebuilds the extension's
+  `addSourceFile()` declarations in D15-3a order.
+- Three load-bearing facts were established by reading the C++ before
+  writing code, and each is pinned by a spec:
+  1. the exporter copies every project resource **flat** into the export
+     folder (`ResourcesMergingHelper::ExposeFile` with
+     `preserveDirectoriesStructure = false`), renaming on collision — so the
+     `<script src>` of `character/spawn.js` is `spawn.js`, or `spawn2.js`
+     for the second one. `computeByokGameCodeExportedScriptNames` mirrors
+     `NewNameGenerator::Generate` exactly, and a spec asserts the predicted
+     names against a REAL export folder.
+  2. the source files are merged into `index.html` inside `ExportIndexFile`,
+     which runs AFTER `SerializeRuntimeGameOptions` built `scriptFiles` —
+     so extension source files are **not** in `gdjs.runtimeGameOptions`
+     today. 15.4 will have to append its own `{path, hash}` entries to the
+     `runtimeGameOptions` it pushes. Recorded for the owner as a finding.
+  3. the confining of every path is done in TWO processes (the renderer's
+     `resolveByokGameCodeAbsolutePath` and the main process's
+     `resolveGameCodeFile`), each with its own spec.
+
+### 3. Bugs found
+
+- **`BYOK_TOOL_NAMES` is already at its hard cap of 64.**
+  `Byok/ByokToolSchema.js:2337` fails the validator above 64 names, so the
+  five 15.3 tools cannot be added without raising it. Not fixed here (the
+  tool schemas do not exist yet); the cap and its reasoning are recorded in
+  `usertasks.md`. Repro: counting the names in `BYOK_TOOL_NAMES` -> 64.
+- **Extension actions are named `Extension::action`, not
+  `Extension:action`.** This is load-bearing and silent: a one-colon type
+  resolves to no metadata at all, so `UsedExtensionsFinder` never marks the
+  carrier used and the game code never ships — with no error anywhere.
+  Found by reading the declared names back off `JsPlatform`
+  (`ByokGameCodeCarrier.spec.js`, "declares the marker action under the name
+  the engine resolves"); fixed in
+  `getByokGameCodeMarkerActionFullName()`.
+- **`EventsList` unserialization takes `{event: [...]}`, not
+  `{events: [...]}`.** `EventsListSerialization::UnserializeEventsFrom`
+  calls `ConsiderAsArrayOf("event")`
+  (`Core/GDCore/Events/Serialization.cpp:209`), so the JS-object spelling of
+  the array is keyed `event`. Written as `events` it silently produced an
+  EMPTY list — the marker function had no event and the whole D15-4
+  mechanism was a no-op. Root cause: the analogous `EventsSheet` spelling
+  (`events`) is what the EventScript parser emits, so both shapes look right.
+- **`UsedExtensionsFinder.ScanProject` is blind in the Jest harness.**
+  It answers only `BuiltinObject` even for a scene event written by the
+  app's own already-tested event writer (`byokApplySceneEventBatches`,
+  applied successfully with a real `CreateTimerNew` action) and for an
+  object of a carrier-declared type placed in the scene. Because the
+  EXPORTER uses the same finder, no `<script src>` assertion can be made in
+  Jest — so none is made. Instead the specs assert the observable half
+  (a real export runs, copies every game-code file, and produces exactly
+  the names the hot reload will fetch) and name the gap in a test whose
+  comment says why. Verified against the shipped WASM, not assumed.
+- **libGD binding traps hit while building the carrier** (each cost a
+  round-trip; all fixed):
+  `extension.getEventsFunctions()` is an `EventsFunctionsContainer`, not a
+  vector — use `hasEventsFunctionNamed` / `getEventsFunction` /
+  `getEventsFunctionsCount()`; `resourcesManager` has neither
+  `getResourcesCount()` nor `Count()` — use
+  `getAllResourceNames().toJSArray()`; an events-based object container uses
+  `insertNew` / `getCount`; `gd.ExporterHelper` is not exported, it is
+  `gd.Exporter(fs, gdjsRoot)` + `setCodeOutputDirectory`; and the exporter
+  needs the app's real filesystem
+  (`assignIn(new gd.AbstractFileSystemJS(), new LocalFileSystem(...))`),
+  because a bare `new gd.AbstractFileSystemJS()` throws "a
+  JSImplementation must implement all functions".
+- **`loadProjectEventsFunctionsExtensions` is async** and returns before the
+  platform knows the extension. Every spec that scans or exports must
+  `await` it; the tools/pane must flush `reloadEventsFunctionsExtensions`
+  after a carrier write, exactly as the extension tools already do.
+- **A real preview export DOES work in Jest** (242 suites, export returns
+  true, 65 `<script>` tags) — recorded because it is not obvious and it is
+  what makes A15-1 testable at all in a follow-up session.
+
+### 4. Issues found
+
+- **Steps 15.3, 15.4 and 15.5 are NOT implemented.** The session ran out of
+  budget during 15.2's investigation of the `ScanProject` behaviour. They
+  are recorded in `outofscoped.md` with everything they need, and they are
+  self-contained: 15.3 (the five tools, the schemas, the registry merge,
+  the `byok-v12` bump, the new skill, the `extend-with-js.md` correction),
+  15.4 (the hot reload + auto reload + the one upstream watcher fix), 15.5
+  (the pane + the tab wiring + the home page button). Nothing in 15.1/15.2
+  has to change for them.
+- **`A15-1` cannot be fully closed in Jest** for the reason above; its
+  remaining hop (`CompleteIndexFile` emitting the `<script src>`) is the
+  desktop QA of `A15-7`.
+- **Upstream budget.** `[A15-6]` allows four upstream files (the watcher,
+  `EditorTabsHandler.js`, `MainFrame/index.js`, `HomePageMenu.js`). Two
+  unavoidable companions were added beyond that list, both recorded here as
+  AGENTS.md §4 requires: `newIDE/electron-app/app/main.js` (registering the
+  five new IPC channels — the same file every other BYOK handler is
+  registered in) and, once 15.5 lands,
+  `MainFrame/TabsTitlebarTooltip.js` (its `editorKindToLabel` is a Flow
+  EXHAUSTIVE `{[kind: EditorKind]}` map, so adding the `'game-code'` kind
+  breaks Flow without it) plus
+  `MainFrame/EditorContainers/HomePage/index.js` (the button's
+  `onOpenGameCode` prop has to reach `HomePageMenu`). The budget approval is
+  requested in `usertasks.md`.
+- **`REVIEW/Phase15.md` §1 premise corrected**: it says extension source
+  files get a `{path, hash}` hot-reload entry "as
+  `EventsFunctionsExtensionsProvider` does". They do not — the merge happens
+  after `scriptFiles` is serialized. Phase15.md should be amended with the
+  same finding when 15.4 is built.
+
+### 5. Files worked on
+
+Created — `newIDE/app/src/AiGeneration/Byok/GameCode/`:
+`ByokGameCodeCore.js`+`.spec.js`, `ByokGameCodeStore.js`+`.spec.js`,
+`ByokGameCodeManifest.js`+`.spec.js`, `ByokGameCodePathCore.js`+`.spec.js`,
+`ByokGameCodeCarrier.js`+`.spec.js`.
+Created — `newIDE/electron-app/app/ByokGameCode.js`.
+Modified — `newIDE/electron-app/app/main.js` (require + register the five
+game-code channels).
+Docs — `REVIEW/worklog.md`, `REVIEW/outofscoped.md`, `REVIEW/deferred.md`,
+`REVIEW/usertasks.md`.
+
+### Verification
+
+From `newIDE/app`:
+
+- `npm test -- --watchAll=false --maxWorkers=2` ->
+  **242 suites / 2846 tests: 2845 passed, 1 skipped, 0 failed**
+  (113 snapshots).
+- `npm run lint` -> clean, 0 errors 0 warnings.
+- `npm run flow` -> **No errors!**
+- `npm run check-format` -> clean.
+
+From `newIDE/electron-app`: `npm run check-format` -> clean.
+
+Audit greps (Phase 15 artefacts):
+
+```
+=== 1. Files created ===
+ByokGameCodeCarrier.js            ByokGameCodeManifest.js
+ByokGameCodeCarrier.spec.js       ByokGameCodeManifest.spec.js
+ByokGameCodeCore.js               ByokGameCodePathCore.js
+ByokGameCodeCore.spec.js          ByokGameCodePathCore.spec.js
+ByokGameCodeStore.js              ByokGameCodeStore.spec.js
+
+=== 2. Confinement gate is the only path normaliser (A15-3) ===
+      1 ByokGameCodeCore.js        <- the normaliser itself
+      9 ByokGameCodeStore.js       <- every store verb routes through it
+
+=== 3. No Buffer / no dynamic require in the renderer store ===
+ByokGameCodeStore.js:230: * The UTF-8 length of a string, without assuming `Buffer` exists
+(a comment only — the Node global was removed from the code)
+
+=== 4. Exported functions vs spec cases ===
+ByokGameCodeCore:     exports=16 specs=39
+ByokGameCodeStore:    exports=7  specs=28
+ByokGameCodeManifest: exports=10 specs=23
+ByokGameCodePathCore: exports=0  specs=14   (plain CJS core, spec'd from here)
+ByokGameCodeCarrier:  exports=6  specs=23
+
+=== 5. Double-colon action name (the silent-failure trap) ===
+ByokGameCodeCarrier.js:  "'::' +"   in getByokGameCodeMarkerActionFullName
+ByokGameCodeCarrier.spec.js: "GameCode::markGameCodeAsUsed"
+```
+
+### Triage
+
+`outofscoped.md` — three entries (steps 15.3, 15.4, 15.5), each with the
+context the next session needs. `deferred.md` — one entry: the
+`BYOK_TOOL_NAMES` cap decision belongs to the owner, and the prompt-budget
+impact of the 15.3 section is unmeasurable until the schemas exist.
+`usertasks.md` — Task 22 (commit review, the cap decision, the upstream
+budget companions, and the desktop QA that now carries A15-1's remaining
+hop).---
+
+## Run log — 2026-10-03 (session 2) — Phase 15 steps 15.3, 15.4, 15.5
+
+### 1. Date
+
+2026-10-03 (same day as the 15.1 + 15.2 entry above).
+
+### 2. Description of actions
+
+The owner answered the two open Task 22 questions — **raise the
+`BYOK_TOOL_NAMES` cap to 69**, and **approve the three upstream-budget
+companions** (`[A15-6]` is now seven files, not four) — and asked for the
+remaining three steps to run through subagents. Three implementation agents
+worked concurrently on disjoint file sets; the orchestrator verified every
+claim, ran the gates itself, and wrote this entry.
+
+- **Step 15.3 — the agent's surface.** `ByokGameCodeTools.js` with the five
+  tools (`list_game_code_files`, `read_game_code_file`, `write_game_code_file`,
+  `delete_game_code_file`, `reload_game_code`), their five schemas, the
+  registry merge, the `byok-v12` bump with a ~250-token non-degradable
+  game-code knowledge section, the new `game-code-authoring` skill
+  (+ regenerated `ByokBuiltinSkills.generated.js`), and the correction of
+  `extend-with-js.md`'s false claim that the EventScript writer accepts JS
+  code events.
+- **Step 15.4 — hot reload.** `ByokGameCodeHotReload.js` (the `{path, hash}`
+  list, the re-export, the `hotReload` push, the hard-reload fallbacks) and
+  `ByokGameCodeAutoReload.js` (watcher subscription, debounce, re-entrancy,
+  the D15-6 setting), plus the one approved upstream fix in
+  `LocalFileResourcesWatcher.js`.
+- **Step 15.5 — the pane.** `GameCodePane.js` (an `EditorMosaic`
+  three-pane tab: tree | Monaco | Ask AI chat), `GameCodeTree.js`,
+  `GameCodeEditor.js`, `GameCodePaneState.js` (the orchestration hook that
+  makes every pane mutation go `store op -> ensureByokGameCodeCarrier ->
+  reload`), `ByokGameCodeOpenCommand.js`, and the tab wiring.
+
+### 3. Bugs found
+
+- **A `hotReload` re-export would have WIPED THE RUNNING PREVIEW.**
+  `shouldClearExportFolder` defaults to `true`
+  (`GDJS/GDJS/IDE/ExporterHelper.h:394`) and only the launcher's hot-reload
+  branch turns it off (`LocalPreviewLauncher/index.js:388-391`). A naive
+  re-export therefore deletes the export folder of the preview that is
+  currently running. Fixed: `setShouldClearExportFolder(false)`, and the
+  export must target `<tempDir>/preview` — the folder the running preview was
+  launched from — because script paths are relative to the running
+  `index.html` and reloading from anywhere else re-loads STALE copies.
+- **The runtime never answers `hotReload`/`hardReload`.**
+  `abstract-debugger-client.ts:311-329, :556-560` send no `messageId`
+  response, so awaiting `sendDebuggerCommand` always burns the 5 s timeout.
+  The completion signal is the PUSHED `hotReloader.logs` (`:827-833`).
+- **Without `setIncludeFileHash`, the re-loader reloads every engine script.**
+  The exporter serializes `scriptFiles` with hash 0 for anything the IDE did
+  not hash, and a 0→0 entry never differs. The hash map is now injected
+  (`getIncludeFileHashs`, the same one MainFrame passes the launcher at
+  `MainFrame/index.js:5974`); without it the reload is correct but heavy.
+- **A top-level import of `LocalFileSystem` broke two MCP suites.**
+  `LocalFileSystem` reads `optionalRequire('path').posix` at module scope and
+  is null in those specs' stubbed environment, so importing it statically
+  from `ByokGameCodeTools.js` dragged it into every `ByokExtraTools` consumer
+  (`useByokMcpServer.spec.js`, `ByokMcpSettingsCard.spec.js` both failed with
+  `Cannot read properties of null (reading 'posix')`). Fixed with the
+  existing lazy-require pattern (`ByokRagBuildService.js:201`).
+- **`LocalFileResourcesWatcher` destroyed every renderer's listener.**
+  Its unsubscribe called `removeAllListeners('project-file-changed')` while
+  the handler was an anonymous arrow that was never stored. Fixed with a kept
+  reference plus `removeListener`, and a new
+  `LocalFileResourcesWatcher.spec.js` proves one subscriber unsubscribing
+  leaves another's alive.
+- **A JSX-children comment was rendering as text.** A `// $FlowFixMe` placed
+  above `<TreeView>` inside a JSX body is a text child, not a comment: it
+  would have rendered into the DOM and suppressed nothing. Fixed by
+  extracting the renderer.
+- **`ByokPrompts.spec.js:129` pins the prompt version** — the `byok-v12` bump
+  fails it; worth knowing for the next version bump.
+- **The skills generator emits non-prettier output** (`JSON.stringify`
+  double-quoted keys), so `check-format` fails after regeneration until the
+  generated file is formatted. The committed file has always been the
+  formatted form; recorded so the next run does not lose an hour.
+- **`BYOK_TOOL_NAMES` cap (answered and applied).** Raised 64 -> 69 with the
+  owner-approved rationale in the comment at `ByokToolSchema.js`, and the
+  matching spec assertion updated.
+- **`npx jest` is unusable in this repo** (bypasses CRA's config, loses
+  `setupTests.js`, `self is not defined`). Only
+  `npm test -- --watchAll=false` is valid. Hit by two agents.
+- **Concurrent `npm run flow` servers kill each other** ("Lost connection to
+  the flow server") when agents share the tree; the documented
+  `flow.exe check` direct-binary workaround resolves it.
+- **Stray duplicate module, removed.** A subagent created
+  `newIDE/app/electron-app/app/ByokGameCode.js` — a stale first draft at a
+  nonsense path, never referenced, never tracked, with a broken relative
+  import. Removed; the real file is `newIDE/electron-app/app/ByokGameCode.js`.
+
+### 4. Issues found
+
+- **`onOpenGameCode` does not follow the `onOpenAskAi` prop path.** Doing so
+  literally needs `EditorTabsPane.js` (`EditorTabsPaneCommonProps` plus the
+  `renderEditorContainer({...})` literal) AND `BaseEditor.js` (the exact
+  `RenderEditorContainerProps`) — two files outside the approved seven. The
+  agent used the codebase's existing one-way-command singleton instead (the
+  `AskAiPrefill.js` pattern: MainFrame registers `openGameCode`,
+  `HomePage/index.js` passes it to `HomePageMenu`). Semantically identical;
+  recorded for the owner rather than spent from the budget.
+- **The game-code pane's mosaic layout is not persisted between sessions.**
+  The preference key would have to join the CLOSED `EditorMosaicName` union
+  in `PreferencesContext.js:57`, which means editing two preference files
+  outside the budget. The pane opens with the default 22/62 layout;
+  in-session resizing works. Cosmetic.
+- **`UseEditorTabsStateSaving.js` deliberately untouched**, so a
+  `'game-code'` tab is not restored across sessions — exactly like the
+  `'ask-ai'` tab. Reasoning recorded by the agent: a restored game-code tab
+  would resurrect a chat pane for a project state that may no longer be open.
+  Reversible in one line if the owner wants it.
+- **The remaining A15 acceptance criteria still need the desktop QA of
+  A15-7.** `A15-1`'s last hop (`<script src>` emission) is unobservable in
+  Jest for the reason recorded in the previous entry; A15-2 (hot reload
+  against a live preview), A15-7 and A15-8 (the D15-12 namespace called from
+  another game-code file AND from a scene's JS code event) can only be
+  confirmed by the owner.
+- **`A15-5` ("every new function has a spec") is met**, and the orchestrator
+  independently re-verified non-vacuity on the D15-7 guard: reverting
+  `GameCodeEditor.js`'s `if (buffer !== savedContent) return;` turns 3 tests
+  red; restoring turns them green.
+
+### 5. Files worked on
+
+Created under `newIDE/app/src/AiGeneration/Byok/GameCode/` (14 modules +
+14 specs): `ByokGameCodeTools`, `ByokGameCodeHotReload`,
+`ByokGameCodeAutoReload`, `GameCodePane`, `GameCodePaneState`,
+`GameCodeTree`, `GameCodeEditor`, `ByokGameCodeOpenCommand`, plus
+`GameCodeTabRegistration.spec.js`.
+Modified: `Byok/ByokToolSchema.js`+`.spec.js`, `Byok/ByokExtraTools.js`,
+`Byok/ByokPrompts.js`+`.spec.js`, `Byok/Knowledge/ByokKnowledgeSections.js`,
+`Byok/Skills/game-code-authoring.md` (new), `Byok/Skills/extend-with-js.md`,
+`Byok/Skills/ByokBuiltinSkills.generated.js` (regenerated).
+Upstream (the approved seven, of which these five changed in this session):
+`MainFrame/EditorTabs/EditorTabsHandler.js`, `MainFrame/index.js`,
+`MainFrame/TabsTitlebarTooltip.js`,
+`MainFrame/EditorContainers/HomePage/HomePageMenu.js`,
+`MainFrame/EditorContainers/HomePage/index.js`; plus from the earlier
+session `ProjectsStorage/LocalFileStorageProvider/LocalFileResourcesWatcher.js`
+(+ new spec) and `newIDE/electron-app/app/main.js`.
+Docs: `REVIEW/worklog.md`, `REVIEW/Phase15.md` (the `[A15-6]` budget),
+`REVIEW/outofscoped.md`, `REVIEW/deferred.md`, `REVIEW/usertasks.md`.
+
+### Verification (run by the orchestrator, not the agents)
+
+From `newIDE/app`:
+- `npm test -- --watchAll=false --maxWorkers=2` ->
+  **252 suites / 2959 tests: 2958 passed, 1 skipped, 0 failed** (113
+  snapshots).
+- `npm run lint` -> clean.
+- `npm run flow` -> **No errors!**
+- `npm run check-format` -> clean.
+From `newIDE/electron-app`: `npm run check-format` -> clean, exit 0.
+
+Prompt budget after 15.3: **12,703 tokens** (prompt 6,605 + tools 6,098, 28
+advertised) — under the 15,000 hard cap, above the 8-10k band, +121 against
+the previous 12,582.
+
+Audit greps (Phase 15 as a whole):
+
+```
+=== 1. Phase 15 files (14 modules + 14 specs) ===
+ByokGameCodeAutoReload  ByokGameCodeCarrier   ByokGameCodeCore
+ByokGameCodeHotReload  ByokGameCodeManifest  ByokGameCodeOpenCommand
+ByokGameCodePathCore   ByokGameCodeStore     ByokGameCodeTools
+GameCodeEditor         GameCodePane          GameCodePaneState  GameCodeTree
+
+=== 2. Every write path funnels through the confinement gate (A15-3) ===
+ByokGameCodeCore.js:1  ByokGameCodeStore.js:9  ByokGameCodeTools.js:4
+GameCodeTree.js:3      GameCodePaneState.js:6
+(plus the Electron-side core ByokGameCodePathCore.js, spec'd from Jest)
+
+=== 3. The double-colon trap is pinned ===
+ByokGameCodeCarrier.js:118   '::' +          (getByokGameCodeMarkerActionFullName)
+ByokGameCodeCarrier.spec.js:178,184,194  'GameCode::markGameCodeAsUsed'
+
+=== 4. D15-7 single-writer guard ===
+GameCodeEditor.js:74   const isDirty = buffer !== savedContent;
+GameCodeEditor.js:88         if (buffer !== savedContent) return;   <- reverted -> 3 tests red
+
+=== 5. D15-13 hard reload on deletion ===
+ByokGameCodeHotReload.js: 7 references to hardReload
+
+=== 6. Upstream files touched — exactly the approved seven ===
+ M MainFrame/EditorContainers/HomePage/HomePageMenu.js
+ M MainFrame/EditorContainers/HomePage/index.js
+ M MainFrame/EditorTabs/EditorTabsHandler.js
+ M MainFrame/TabsTitlebarTooltip.js
+ M MainFrame/index.js
+ M ProjectsStorage/LocalFileStorageProvider/LocalFileResourcesWatcher.js
+ M newIDE/electron-app/app/main.js
+ ?? ProjectsStorage/LocalFileStorageProvider/LocalFileResourcesWatcher.spec.js
+```
+
+### Triage
+
+`outofscoped.md` is **empty again**: steps 15.3, 15.4 and 15.5 are built, and
+the cap item is answered. `deferred.md` keeps the two by-design items from
+the morning (`[P15-a15-1-tail]`, `[P15-phase15-md]`). `usertasks.md` Task 22
+gains the owner answers and a short list of what only desktop QA can
+confirm.
