@@ -5186,4 +5186,271 @@ ByokGameCodeHotReload.js: 7 references to hardReload
 the cap item is answered. `deferred.md` keeps the two by-design items from
 the morning (`[P15-a15-1-tail]`, `[P15-phase15-md]`). `usertasks.md` Task 22
 gains the owner answers and a short list of what only desktop QA can
-confirm.
+confirm.---
+
+## Run log — 2026-10-03 (session 3) — `usertasks.md` consolidation
+
+### 1. Date
+
+2026-10-03.
+
+### 2. Description of actions
+
+Documentation-only session. The owner found `REVIEW/usertasks.md`
+increasingly confusing: 22 numbered tasks, several answering to different
+numbers for the same thing (a "Task 6" existed twice, renumbered mid-flight),
+per-phase QA matrices for phases whose features were long since verified, and
+every completed checklist still sitting inline. The instruction was to move
+the file to `REVIEW/deprecated/usertasks.md` and write a clean one holding
+only outstanding work, in order, **assuming basic functionality through Phase
+12 is verified**.
+
+- Read the full 1,400-line file and classified all 22 tasks plus the three
+  inline decision records (2026-09-22, Phase 10, Phase 11/12) and the Phase 15
+  decision record.
+- Moved the file to `REVIEW/deprecated/usertasks.md` with an ARCHIVED banner
+  explaining that the retired matrices are **retired, not skipped**.
+- Wrote a new `REVIEW/usertasks.md` with **five ordered sections** and no
+  completed items at all: (1) Phase 15 desktop QA, (2) the v3 RAG bundle
+  rebuild + upload, (3) the accumulated Electron-main and upstream-guard QA,
+  (4) four specific edge behaviours beyond "does it work", (5) three
+  revisitable decisions, plus a reference section with no action.
+- Updated `AGENTS.md` (§2 status, the triage-doc bullet, the decision-record
+  pointer, and every stale `usertasks Task N` reference) and the one stale
+  pointer in `Phase15.md`.
+- Deliberately did **not** rewrite the audit records (`audit011026.md`,
+  `audit100226.md`, `audit.md`, `audit2209.md`) or the older phase plans:
+  those are permanent records written when the statements were true, and a new
+  note at the top of the live file explains that their task numbers now point
+  into the archive.
+
+### 3. Bugs found
+
+None — no code was touched this session.
+
+One documentation defect found and fixed: `AGENTS.md` carried eight
+`usertasks Task N` references and a "Tasks 1, 2, 6, 7 open" status line that
+had been true only as of 2026-09-24 and had gone stale across the three audit
+sessions. All are now either corrected or explicitly marked as pointing into
+the archive.
+
+### 4. Issues found
+
+- **Retiring a checklist is not the same as it passing.** Per the owner's
+  instruction, Phases 1–12 basic functionality is now treated as verified and
+  the per-phase matrices are retired. Two consequences are recorded explicitly
+  rather than buried: the *events headline* item in the old Task 6 was
+  **superseded** by the Phase 13 harness rework (never re-tested), and the
+  old Task 7 *vision flagship* self-fix loop never succeeded. Neither is a
+  "basic functionality" claim, so both were re-listed — the flagship under
+  section 1's spirit is not carried forward as a blocker, but the gap is not
+  silently deleted either.
+- **Two old Task 17 items are now moot**, because 14.3 (the finetuned
+  embedder) was deferred by the owner's own order. The 200-query set and the
+  Colab training run are therefore not outstanding; the new file says so
+  instead of leaving them to be rediscovered.
+- **Item 1 is written with a fallback plan.** A15-1's last hop is not
+  assertable in Jest (`UsedExtensionsFinder.ScanProject` is blind in the test
+  WASM), so the new file tells the owner what to look at AND what to do if
+  the tags are absent, so the QA cannot dead-end.
+
+### 5. Files worked on
+
+Created: `REVIEW/usertasks.md` (rewritten, ~200 lines).
+Moved: `REVIEW/usertasks.md` → `REVIEW/deprecated/usertasks.md` (+ banner).
+Modified: `AGENTS.md`, `REVIEW/Phase15.md`.
+
+### Verification
+
+- `git status` — 4 files changed, no code touched.
+- Every outstanding item in the new file was traced back to a source in the
+  archive before being written (Task 22 item 7 → section 1; Tasks 17.2 + 18
+  item 2 → section 2; Tasks 18/20/21 electron-main items → section 3;
+  Tasks 11/12/14 leftovers → section 4; Task 21 item 2 + Task 22 item 6 +
+  Task 18 item 3 → section 5).
+- No `Task N` reference in the live file points anywhere except the archive
+  note.
+
+### Triage
+
+`no OOS`. `no deferred`. `no UT` — nothing new surfaced that needs triage; the
+live list was reorganized, not changed.---
+
+## Run log — 2026-10-04 — upstream reporting package for UP-1
+
+### 1. Date
+
+2026-10-04.
+
+### 2. Description of actions
+
+Documentation/packaging session, no code touched. The owner accepted the
+recommendation to report the upstream fixes to GDevelop (`usertasks.md`
+section 5, item 3) and asked for a self-contained package: a
+`REVIEW/upstream/` folder holding the affected files with the proposed fixes
+and comments, plus a summary document.
+
+- **`REVIEW/upstream/upstream.md`** (320 lines) — the self-contained report.
+  Structured so a reviewer who knows coding but not this repository can read
+  it alone: what the issue is (with the original code quoted), why it matters,
+  what the risk is if unaddressed, what the fix does rule by rule, which
+  behaviours change, how it was tested, and what was deliberately not changed.
+- **`REVIEW/upstream/UP-1-local-file-download/`** — the four affected files
+  (two new, two modified), each with a top banner describing the general
+  issue and inline comments on the particulars, plus two patch files for the
+  changes that are one-liners in a large file.
+- Recovered the pre-fix versions from git (`741c6cb7ed~1`) so the "before"
+  code quoted in the report is the real thing, not a recollection.
+
+### 3. Bugs found
+
+- **Two claims I made in the first draft of the call-site document were
+  wrong, and verifying them caught it.** I wrote that `path.dirname(targetPath)`
+  was the "export dialog user-chosen location" case and that a `basePath: ''`
+  call site was an untidy leftover from this patch. Both false:
+  `path.dirname(targetPath)` is in `CloudProjectResourcesHandler.js` (the
+  cloud-project resource download), and the `basePath: ''` is in
+  `ObjectExporterDialog.js` calling `archiveFiles`, which is the
+  **browser-side** zip archiver in `Utils/BrowserArchiver.js` and never
+  touches these IPC channels at all. Corrected in the document, and the
+  `archiveFiles` non-relationship is now called out explicitly so the next
+  reader does not "fix" it.
+  Root cause of the error: I described the call sites from the shape of the
+  earlier diff rather than grepping the current tree for the four spellings
+  that reach the privileged side. The grep produced the true inventory —
+  **10 renderer call sites total**, 9 for `local-file-download` and 1 for
+  `local-file-save-from-arraybuffer` — which is what the document now says.
+
+### 4. Issues found
+
+- **`local-file-save-from-arraybuffer` has exactly one caller**
+  (`LocalFileResourceMover.js`), and `archiveFiles` shares the `basePath`
+  argument name without sharing the channel. Both facts are recorded in the
+  package so the completeness check a reviewer needs ("did they miss a call
+  site?") is answerable by grepping four spellings.
+- **The seven other upstream findings (UP-2…UP-8) are tabulated but not
+  packaged.** They are not security issues, each needs its own discussion, and
+  the report offers to prepare them on request. UP-2 (preview-close fan-out)
+  and UP-7 (instance-id prefix over-match) are the two with any real user
+  impact.
+- **The one manual step in the patch cannot be automated here**: confirming
+  that no legitimate call site is now refused because its `filePath` escapes
+  its declared `basePath`. We verified it on our fork end to end; the package
+  says so and says it is the one check the suite cannot do for a new branch.
+
+### 5. Files worked on
+
+Created: `REVIEW/upstream/upstream.md`;
+`REVIEW/upstream/UP-1-local-file-download/newIDE/app/src/Utils/LocalFileDownloadCore.js`
+(annotated copy), `.../LocalFileDownloadCore.spec.js` (annotated copy),
+`.../Utils/LocalFileDownloader.js` (annotated copy, renderer side),
+`.../newIDE/electron-app/app/LocalFileDownloader.js` (annotated copy),
+`.../patches/main.js.diff`, `.../patches/renderer-callers.diff`.
+
+Nothing under `newIDE/` was modified — the copies live only in
+`REVIEW/upstream/`.
+
+### Verification
+
+- Both CommonJS copies pass `node --check` (so the added comment banners did
+  not break anything a reviewer would have to fix before running them).
+- No NUL bytes in any copied file.
+- Every line number quoted in `renderer-callers.diff` was re-verified against
+  the current tree (`LocalElectronExport.js:157`,
+  `LocalHTML5Export.js:159`, `LocalCordovaExport.js:157`,
+  `LocalOnlineElectronExport.js:153`, `LocalOnlineWebExport.js:144`,
+  `LocalOnlineCordovaExport.js:157`, `LocalOnlineCordovaIosExport.js:156`,
+  `LocalFacebookInstantGamesExport.js:180`,
+  `CloudProjectResourcesHandler.js:64-71`, `LocalFileResourceMover.js:70-88`).
+- No code changed, so no gate re-run was needed.
+
+### Triage
+
+`no OOS`. `no deferred`. `no UT` — UP-2…UP-8 are recorded in
+`upstream.md` §9 as an offer, not as outstanding work. `usertasks.md` section
+5 item 3 is now actioned.
+---
+
+## Run log — 2026-10-04 (session 2) — second upstream package, UP-2 … UP-8
+
+### 1. Date
+
+2026-10-04.
+
+### 2. Description of actions
+
+Follow-on to the UP-1 package. The owner accepted the offer to package the
+remaining seven upstream findings.
+
+- **`REVIEW/upstream/UP-2-to-UP-8-correctness-and-lifetime/`** — a README with
+  a summary table and a **recommended four-PR split**, six annotated patch
+  files, and the one genuinely new source file
+  (`PreviewClosedTracker.js` + its spec) in full.
+- Updated `upstream.md` §9, which had said these were "not included here", to
+  point at the new package.
+
+Deliberate shape decision: UP-1 got full annotated file copies because the
+whole file *was* the fix. These seven are one-to-six-line changes inside files
+that run from 600 to several thousand lines, so pasting those files in full
+would bury the fix. They are annotated diffs instead — issue in prose, then
+the change, then what to check, then the tests. Only `PreviewClosedTracker.js`
+(UP-2's substance) is a full file.
+
+### 3. Bugs found
+
+None in the repository — documentation only. One **self-inflicted** error
+caught during drafting: my first UP-2 write-up implied the bug "never crashes,
+which is why it survived". Checking the tree confirmed that is right, but the
+adjacent claim in the UP-2 file — that `onCaptureFinished` rejections were
+being swallowed by the tracker's own try/catch — needed checking, because the
+tracker's comment says the swallow is about a *later* audit (audit100226
+ELEC-21) rather than about UP-2. Both statements are in the package, correctly
+attributed.
+
+### 4. Issues found
+
+- **UP-2 changes an IPC payload shape** (`preview-window-closed` goes from
+  no-argument to one number). That is the only change across BOTH packages
+  with that property, and it is called out in the README and in `upstream.md`
+  because it is the one thing that could break an upstream listener we cannot
+  see.
+- **UP-7's fix spans five sites, not the two the original audit named.**
+  `resolveExistingInstanceIds` is called at `InstanceTools.js:488` and `:713`,
+  and `EditorFunctions/index.js:3657`, `:3884` and `:7180` — verified by grep.
+  The patch file tells reviewers to check all five, since "the right fix in
+  three places" is exactly the claim that regresses.
+- **UP-4's "six functions" needed a check to state correctly**: `Serializer.js`
+  has seven `} finally {` blocks, but one belongs to `withSerializationOptions`
+  and is not a wrapper deletion. The six wrapper deletions are the rest.
+- **UP-8 is a documentation patch, and says so loudly.** The "obvious fix"
+  (adding the missing `delete()`) is the one that crashes the sprite editor —
+  proven twice in our fork. The package asks for comments + inverse tests, and
+  explicitly defers the real question (libGD's `VectorPolygon2d` copy
+  semantics) to a separate discussion rather than smuggling a C++ change in.
+
+### 5. Files worked on
+
+Created: `REVIEW/upstream/UP-2-to-UP-8-correctness-and-lifetime/README.md`;
+six files under `.../patches/`; two under
+`.../newIDE/app/src/ExportAndShare/LocalPreviewers/LocalPreviewLauncher/`
+(the tracker and its spec, both annotated).
+Modified: `REVIEW/upstream/upstream.md` (§9).
+
+Nothing under `newIDE/` was modified.
+
+### Verification
+
+- Claim-by-claim re-checked against the tree: UP-7's five call sites (grep),
+  UP-4's six wrapper-deletion `finally` blocks (7 total minus the
+  `withSerializationOptions` one), UP-3's message at
+  `ApplyEventsChanges.js:770`, UP-2's `PreviewWindow.js` diff and the
+  launcher's `try/finally` shape, UP-6's `didModifyProject` diff.
+- `PreviewClosedTracker.js` copy carries its banner and still parses as the
+  same source it was copied from (8 spec cases copied alongside it).
+- No NUL bytes in any packaged file; no code changed, so no gate re-run.
+
+### Triage
+
+`no OOS`. `no deferred`. `no UT` — the packaging is done, and the four-PR
+split in the package README is a recommendation for the owner, not a pending
+decision.

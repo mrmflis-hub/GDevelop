@@ -1,0 +1,107 @@
+UP-4 + UP-5 — WASM wrapper objects leaked when an operation threw
+================================================================
+
+SEVERITY: low (memory), but it degrades a long session.  FILES: 2 (+ specs).
+
+THE ISSUE
+---------
+`libGD.js` is Emscripten: every `gd.Xxx` object you construct lives in the
+WASM heap and must be released with `.delete()`. The convention in this
+codebase is correct — `delete()` after use is everywhere — but it was being
+called on the SUCCESS path only.
+
+```js
+// BEFORE — newIDE/app/src/Utils/Serializer.js (one of six such functions)
+export function serializeToJSON(serializable, methodName = 'serializeTo', options) {
+  const serializedElement = new gd.SerializerElement();
+  serializable[methodName](serializedElement);   // <-- if this throws...
+  const json = gd.Serializer.toJSON(serializedElement);
+  serializedElement.delete();                     // <-- ...this never runs
+  return json;
+}
+```
+
+If `serializeTo` throws — a malformed object, a type confusion, an
+out-of-memory condition inside the WASM — the wrapper is never deleted and
+leaks for the rest of the session. The same shape existed in six functions in
+`Serializer.js` (including a `VectorString` returned to the caller) and once
+each for the exporter and the export options in
+`LocalPreviewLauncher.launchPreview`:
+
+```js
+// BEFORE — LocalPreviewLauncher/index.js
+const exporter = ...;
+const previewExportOptions = new gd.PreviewExportOptions(project, outputDir);
+exporter.exportProjectForPixiPreview(previewExportOptions);   // throws often
+exporter.delete();
+previewExportOptions.delete();
+```
+
+WHY THIS MATTERS MORE THAN "LOW"
+---------------------------------
+A preview export is the most failure-prone operation in the editor — a missing
+GDJS folder, a bad resource path, an event that will not generate — and it is
+the one a user retries. Ten failed exports leak ten exporters, and an
+`Exporter` holds a whole serialized project graph. The user-visible symptom is
+a preview tab that gets slower and then fails outright after a run of
+unsuccessful attempts, which reads as "the IDE broke" rather than "a leak".
+
+THE FIX
+-------
+`try { ... } finally { ... }` at all eight sites. In `Serializer.js` the six
+functions become, in shape:
+
+```diff
+   const serializedElement = new gd.SerializerElement();
+-  try {
+-    serializable[methodName](serializedElement);
+-    return gd.Serializer.toJSON(serializedElement);
+-  } finally {
+-    serializedElement.delete();
+-  }
++  try {
++    serializable[methodName](serializedElement);
++    return gd.Serializer.toJSON(serializedElement);
++  } finally {
++    // Released whether or not the (un)serialization threw: an exception
++    // path that skipped this leaked a WASM allocation for the session.
++    serializedElement.delete();
++  }
+```
+
+and in the launcher the two hot-reload `SerializerElement`s get the same
+treatment, plus an outer `finally` around the whole export:
+
+```diff
++    // The exporter and the export options are WASM wrappers: they must still
++    // be deleted, so wrap the work in a try/finally.
++    try {
+       exporter.exportProjectForPixiPreview(previewExportOptions);
+       ...
++    } finally {
++      exporter.delete();
++      previewExportOptions.delete();
++    }
+-  exporter.delete();
+-  previewExportOptions.delete();
+```
+
+One incidental cleanup while in there: `Serializer.js` had a duplicated
+invalid-JSON `catch` block, folded into a single helper with byte-identical
+logging. It is called out here only so a reviewer is not surprised by it in the
+diff.
+
+
+TESTS
+-----
+- `Serializer.spec.js` uses a fake `gd` whose serialize/unserialize paths
+  throw on demand, and asserts `delete` is still called. 14 cases across the
+  six functions.
+- The launcher spec asserts that a throwing export deletes BOTH the exporter
+  and the export options, and that the success path deletes each exactly once
+  (guarding against the double-delete that an over-eager `finally` would
+  introduce).
+
+This is a good test to copy upstream in spirit even where you do not apply the
+patch: "the object is released on the throw path" is otherwise very hard to
+notice, precisely because the leak is invisible until the heap runs out.

@@ -1,0 +1,89 @@
+UP-8 — `gd.Polygon2d` ownership on `push_back`: documented, not "fixed"
+==================================================================
+
+SEVERITY: low.  FILE: 2 comments (+ 2 specs).  THIS IS A DOCUMENTATION PATCH.
+
+WHY THIS ONE IS DIFFERENT FROM THE OTHERS
+------------------------------------------
+Every other finding in this package changes behaviour. This one does not, and
+that is the deliberate result of an investigation that went the other way.
+
+THE SITUATION
+-------------
+The collision-mask editor builds `gd::Polygon2d` objects in WASM and pushes
+them into a `gd::VectorPolygon2d` that lives inside the frame's collision
+masks:
+
+```js
+// newIDE/app/src/ObjectEditor/Editors/SpriteEditor/CollisionMasksEditor/PolygonsList.js
+const polygon = new gd.Polygon2d();
+...                                  // fill it
+collisionMask.push_back(polygon);    // <-- is `polygon` ours to delete()?
+```
+
+The Emscripten convention says a constructed object must be `delete()`d or it
+leaks. But `VectorPolygon2d::push_back` takes a copy into C++ memory — so the
+JS wrapper becomes garbage, and deleting it looked like the obviously correct
+thing to do.
+
+IT IS NOT. Deleting it corrupts the WASM heap.
+
+That is not a guess. We hit it, twice, and spent real time on it:
+
+- deleting the pushed wrapper produced "memory access out of bounds" crashes
+  in the sprite editor, reproducible from the same operation;
+- the SAME delete is safe on the standalone `VectorPolygon2d` used by
+  `PolygonHelper.spec`, where the vector is a local and not the live mask.
+
+So the rule is real but **binding-specific**: whether the pushed wrapper may
+be deleted depends on which vector received it, and nobody could tell that by
+reading the call site. That asymmetry is exactly the kind of thing the next
+maintainer gets wrong, and when they do it, the editor crashes rather than
+leaking.
+
+WHY WE DID NOT "FIX" IT
+-----------------------
+The obvious fix — add the missing `delete()` calls — is the one that crashes.
+The alternative fix (copy semantics on the libGD side, so the ownership
+question goes away) is a C++ change to `VectorPolygon2d`, which is a much
+larger decision for the upstream project than this patch can make.
+
+So the fix is to make the trap INHERENTLY VISIBLE:
+
+1. **Document the ownership transfer at both editor sites**, in terms that
+   say what happens if you get it wrong:
+
+   ```js
+   // Ownership transfer: `collisionMask` (the live mask vector) takes
+   // ownership of the polygon pushed into it, and the JS wrapper must NOT be
+   // deleted afterwards. Deleting a wrapper that was pushed into the live
+   // mask vector CORRUPTS THE WASM HEAP — this was reproduced, not
+   // theorised. See `createCollisionMaskFromBounds` below for the safe
+   // pattern.
+   ```
+
+2. **Extract the add/mask logic into exported pure-ish helpers**
+   (`addRectangleCollisionMaskTo`, `createCollisionMaskFromBounds`) so the
+   ownership rule lives in one place instead of being repeated at each call
+   site. Behaviour is identical; only the location of the code changed.
+
+3. **Pin it with INVERSE regression tests** — this is the part worth
+   stealing even if you apply nothing else:
+
+   ```js
+   expect(pushBackSpy).toHaveBeenCalled();
+   expect(deleteSpy).not.toHaveBeenCalled();
+   ```
+
+   A test that asserts a leak does not happen cannot catch a deletion either.
+   The test has to assert the ABSENCE of the leak. Anyone who later "fixes"
+   the leak gets a red test that says why they should not.
+
+
+WHAT WE ARE ASKING FOR
+----------------------
+Take the comments and the inverse tests. If upstream wants to make the
+question disappear, that is a separate and welcome discussion about
+`VectorPolygon2d`'s copy semantics on the libGD side — but it should be a
+decision, not an accident discovered by whoever crashes the sprite editor
+next.

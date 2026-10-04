@@ -1,0 +1,67 @@
+UP-1 — newIDE/electron-app/app/main.js
+=========================================
+
+THE GENERAL ISSUE
+-----------------
+`main.js` is where the two unconfined IPC channels were registered. The
+handlers took two renderer-supplied arguments (a URL and a destination path)
+and passed them straight to the privileged download/write functions, which
+validated nothing.
+
+This diff is the whole change to this file: thread the new required
+`basePath` argument through. There is no validation logic here on purpose —
+that lives in `LocalFileDownloadCore`, which is imported by
+`LocalFileDownloader.js` and runs in this process. Keeping `main.js` a dumb
+registrar is what makes it obvious that no check was skipped.
+
+
+DIFF
+----
+
+--- a/newIDE/electron-app/app/main.js
++++ b/newIDE/electron-app/app/main.js
+@@
+   // LocalFileDownloader events:
+-  ipcMain.handle('local-file-download', async (event, url, outputPath) => {
+-    const result = await downloadLocalFile(url, outputPath);
+-    return result;
+-  });
++  ipcMain.handle(
++    'local-file-download',
++    async (event, url, outputPath, basePath) => {
++      const result = await downloadLocalFile(url, outputPath, basePath);
++      return result;
++    }
++  );
+   ipcMain.handle(
+     'local-file-save-from-arraybuffer',
+-    async (event, arrayBuffer, outputPath) => {
++    async (event, arrayBuffer, outputPath, basePath) => {
+       const result = await saveLocalFileFromArrayBuffer(
+         arrayBuffer,
+-        outputPath
++        outputPath,
++        basePath
+       );
+       return result;
+     }
+   );
+
+
+NOTES FOR THE REVIEWER
+----------------------
+1. `basePath` is deliberately NOT defaulted. A caller that forgets to send it
+   gets `Invalid download request.` / `Invalid save request.` — a loud
+   refusal. We chose that over a permissive fallback such as "default to the
+   user's temp directory" because a default is exactly the kind of thing a new
+   call site inherits without anyone noticing it is insecure.
+
+2. There is no `event.senderFrame` check or similar. The trust boundary being
+   addressed here is "the renderer is not fully trusted input for these two
+   channels"; adding renderer sandboxing is a much larger design change and
+   is out of scope for this patch. See section 8 of `upstream.md`.
+
+3. Both handlers still return the same thing they always did
+   (`downloadLocalFile` resolves `true`; `saveLocalFileFromArrayBuffer`
+   resolves undefined). The only difference is that a violating request now
+   rejects with a readable `Error` instead of succeeding.

@@ -125,7 +125,7 @@ Status as of 2026-09-24 (update at the end of every session):
   closeAllPreviews fix). Evals 30 → 41 tasks. QA Tasks 13/14 open.
 - **All 12 phases are now implemented and committed.** On top of them, the
   owner approved and the 2026-09-24 second session implemented the
-  **external-item live-redraw channel** (usertasks Task 15):
+  **external-item live-redraw channel** (usertasks Task 15, now `deprecated/usertasks.md`):
   `onExternalLayoutModifiedOutsideEditor` / `onExternalEventsModifiedOutsideEditor`
   fan-outs through MainFrame → the external editor containers, wired to
   the BYOK tools (and the MCP host) so AI writes to external
@@ -275,10 +275,14 @@ Status as of 2026-09-24 (update at the end of every session):
     includes the owner-designed features F1–F3),
   - `REVIEW/deferred.md` — deliberately postponed / by-design items, with
     reasoning,
-  - `REVIEW/usertasks.md` — the answered decision record + human QA
-    (Tasks 1, 2, 6, 7 open).
+  - `REVIEW/usertasks.md` — **the live outstanding list** (rewritten
+    2026-10-03: Phase 15 desktop QA, the v3 RAG bundle rebuild/upload, the
+    accumulated Electron-main QA, four edge behaviours, three revisitable
+    decisions). The historical record — every completed checklist and every
+    answered decision — moved to `REVIEW/deprecated/usertasks.md`.
 - **Owner decisions:** all 16 decisions of 2026-09-22 are **answered**
-  (canonical record in `usertasks.md`; dispositions in the triage docs), as
+  (canonical record in `deprecated/usertasks.md`; dispositions in the triage
+  docs), as
   are the 5 Phase 10 decisions (D10-1…D10-5, answered 2026-09-23 by the
   "implement this" order on the presented recommendations), the
   2026-09-24 surface-audit backlog (the owner picked 10 candidates,
@@ -442,7 +446,7 @@ npm run format                             Prettier write
   always dirties it). `newIDE\electron-app` additionally needs `npm install
   --ignore-scripts` at its root and in `electron-app\app` for its
   check-format/node checks — the Electron binary itself stays undownloaded
-  until a desktop session (usertasks Task 1).
+  until a desktop session (usertasks Task 1, now `deprecated/usertasks.md`).
 - **Flow quirk:** flow clients can hang when their stdout is a pipe; if `npm
   run flow` stalls, kill stale `flow.exe` processes and run
   `node_modules\flow-bin\flow-win64-v0.299.0\flow.exe check` directly. If
@@ -507,7 +511,7 @@ manual in the same session and say so in the worklog.
   upload must be a rebuilt v3 bundle. Gates: 229 suites / 2527 tests
   (2526 passed + 1 pre-existing skip + the documented one-suite flake,
   third family member), lint 0/0, Flow 0, prettier clean (app +
-  electron-app). Owner follow-ups: usertasks Task 18.
+  electron-app). Owner follow-ups: usertasks Task 18 (now `deprecated/usertasks.md`).
 
 - **audit011026 completion session 2026-10-02 (owner-ordered, all gates
   green, uncommitted):** the owner ordered every remaining audit finding
@@ -549,7 +553,7 @@ manual in the same session and say so in the worklog.
   per full run — the documented O4 family, now with five+ members), lint
   0/0, Flow 0, prettier clean (app + electron-app). Permanent record:
   `REVIEW/audit011026.md` (every token `[fixed]`). Owner follow-ups:
-  usertasks Task 18 (now including the completion session in the commit
+  usertasks Task 18 (now `deprecated/usertasks.md`, including the completion session in the commit
   review and four new desktop-QA additions).
 
 - **Second full BYOK audit 2026-10-02 (audit100226, uncommitted; owner

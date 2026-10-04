@@ -1,0 +1,144 @@
+UP-1 — renderer call-site updates (the mechanical part of the change)
+=====================================================================
+
+THE GENERAL ISSUE
+-----------------
+The confinement for the `local-file-download` / `local-file-save-from-arraybuffer`
+IPC channels needs to know which folder a given download is allowed to land
+in. That folder is known only at the call site. So making the channel safe is
+a two-sided change: the privileged side validates, and every renderer caller
+has to declare what its base is.
+
+This file lists the renderer-side edits that accompany the core. They are
+deliberately boring, and that is the point — a security patch whose call-site
+changes all look obviously correct is a security patch whose call-site changes
+were actually reviewed. There are exactly TEN call sites across the whole
+repository; the full inventory is below so it can be checked for completeness.
+
+
+PATTERN 1 — the exporters (8 of the 10 call sites)
+--------------------------------------------------
+Files in `newIDE/app/src/ExportAndShare/LocalExporters/`:
+
+| File | line | `basePath` passed |
+|---|---|---|
+| `LocalElectronExport.js` | 157 | `context.exportState.outputDir` |
+| `LocalHTML5Export.js` | 159 | `context.exportState.outputDir` |
+| `LocalCordovaExport.js` | 157 | `context.exportState.outputDir` |
+| `LocalOnlineElectronExport.js` | 153 | `temporaryOutputDir` |
+| `LocalOnlineWebExport.js` | 144 | `temporaryOutputDir` |
+| `LocalOnlineCordovaExport.js` | 157 | `temporaryOutputDir` |
+| `LocalOnlineCordovaIosExport.js` | 156 | `temporaryOutputDir` |
+| `LocalFacebookInstantGamesExport.js` | 180 | `temporaryOutputDir` |
+
+Each already had the variable holding the folder it was exporting into; it
+simply was not passed through. One added line each:
+
+```diff
+     await downloadUrlsToLocalFiles({
+       urlContainers: [...],
++      basePath: context.exportState.outputDir,   // or temporaryOutputDir
+       onProgress: ...,
+       throwIfAnyError: ...,
+     });
+```
+
+WHY THIS IS CORRECT: every `filePath` handed to this helper is a path INSIDE
+the export output folder — the exporter is building a directory tree there and
+each downloaded resource is placed somewhere under it. So declaring that
+folder as the base admits every legitimate download and nothing else. There is
+no per-call judgement here, which is the property that makes these eight safe
+to review at a glance.
+
+Note that `basePath` was ALREADY a required field of
+`downloadUrlsToLocalFiles`' input type — it was already a compile-time
+requirement, and the implementation just ignored it. No call site needed its
+types loosened; if a reviewer finds one that did, that is a finding.
+
+
+PATTERN 2 — the cloud-project resource download (the interesting one)
+---------------------------------------------------------------------
+File: `newIDE/app/src/ProjectsStorage/CloudStorageProvider/CloudProjectResourcesHandler.js:64-71`
+
+```diff
+       await downloadUrlsToLocalFiles({
+         urlContainers: [ { url: resourceUrl, filePath: targetPath } ],
++        basePath: path.dirname(targetPath),
+         onProgress: () => {},
+         throwIfAnyError: false,
+       });
+```
+
+This is the one call site worth reading twice, because it is the one where the
+destination is chosen by something other than the code: `targetPath` comes
+either from a save dialog (`askUserForDownloadDestination`) or from the OS
+downloads folder. `path.dirname(targetPath)` is therefore correct and
+deliberate — the folder the USER picked is the trust anchor for that one
+download, and it is declared explicitly rather than defaulted.
+
+It is also the call site with the most security relevance, because
+`resourceUrl` is derived from the project: a shared or downloaded `.json`
+project file names its resources, so both the URL and (indirectly) the
+destination are attacker-controllable inputs. Before the fix, a project could
+name `https://attacker.example/x.png` and the cloud session cookie would have
+gone with it.
+
+
+PATTERN 3 — the resource mover (`save-from-arraybuffer`, the only caller)
+-------------------------------------------------------------------------
+File: `newIDE/app/src/ProjectsStorage/LocalFileStorageProvider/LocalFileResourceMover.js:70-88`
+
+```diff
+ const downloadBlobToLocalFile = async (
+   blobUrl: string,
+   filePath: string,
++  basePath: string
+ ): Promise<void> => {
+   ...
+   await ipcRenderer.invoke(
+     'local-file-save-from-arraybuffer',
+     arrayBuffer,
+     filePath,
++    basePath
+   );
+ };
+```
+
+`local-file-save-from-arraybuffer` has exactly ONE caller in the whole
+repository, and this is it — which is good news for review completeness. It is
+the channel that writes project resources (images, sounds, fonts) to their real
+location on disk, and its base is the project's own folder: a resource named
+by the project can only land inside the project.
+
+
+HOW TO CHECK COMPLETENESS
+-------------------------
+Search the renderer for the four spellings that reach the privileged side:
+
+```
+downloadUrlsToLocalFiles(          -> 9 call sites (8 exporters + cloud handler)
+local-file-download                 -> 1 send site (inside LocalFileDownloader.js)
+local-file-save-from-arraybuffer    -> 1 send site (inside LocalFileResourceMover.js)
+downloadBlobToLocalFile(            -> 1 call site (inside the same mover)
+```
+
+Each send must pass a base. In our tree all of them do, and the full-suite
+type check (`npm run flow`) plus the lint pass are what prove it — an omitted
+base is a runtime refusal, not a compile error, so the code review is the real
+check here, not the compiler.
+
+A note on something that LOOKS related but is not: `archiveFiles` in
+`newIDE/app/src/Utils/BrowserArchiver.js` also takes a `basePath` argument, and
+`ObjectExporterDialog.js` passes `''` to it. That is the browser-side zip
+archiver and it never touches these IPC channels, so it is outside this
+change. Do not "fix" it as part of this patch.
+
+
+BEHAVIOUR CHANGE FOR CALLERS
+----------------------------
+A call whose `filePath` falls outside its declared `basePath` now fails with
+`Refused: the download target is outside the base folder.` instead of
+succeeding. In our tree no legitimate call site hit that — verified by running
+the online-export and cloud-resource paths end to end, and worth re-verifying
+the same way on any branch this is applied to. That end-to-end check is the one
+manual step in this patch that the automated suite cannot do for you.

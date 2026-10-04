@@ -1,0 +1,64 @@
+UP-6 — an explicit `didModifyProject: false` was collapsed to `undefined`
+======================================================================
+
+SEVERITY: low (contract).  FILE: 1 (+ spec).
+
+THE ISSUE
+---------
+`processEditorFunctionCalls` returns a `didModifyProject` flag that callers use
+to decide whether to prompt for a save. One branch honours an explicitly
+reported value from the tool — added for `run_script`, which can apply
+project-changing calls and THEN fail, so its "did modify" is not derivable
+from success:
+
+```js
+// BEFORE
+const didModifyProject =
+  meta && typeof meta.didModifyProject === 'boolean'
+    ? meta.didModifyProject || undefined     // <-- the bug
+    : editorFunctionDef && editorFunctionDef.modifiesProject && success
+    ? true
+    : undefined;
+```
+
+The `|| undefined` looks like a no-op but is not: it maps an explicit `false`
+onto `undefined`. The function's type is `boolean | undefined`, where
+`undefined` means "not reported" and `false` means "reported, did not
+modify". The line threw away the only distinction the type exists to make.
+
+THE FIX
+-------
+```diff
+       const didModifyProject =
+         meta && typeof meta.didModifyProject === 'boolean'
+-          ? meta.didModifyProject || undefined
++          ? meta.didModifyProject
+           : editorFunctionDef && editorFunctionDef.modifiesProject && success
+           ? true
+           : undefined;
+```
+
+and the result type is widened to state the contract the code now actually
+honours:
+
+```diff
+-  didModifyProject?: boolean | void,
++  didModifyProject: boolean | void,
+```
+
+We checked every consumer before doing this: they are all truthiness checks
+(`if (didModifyProject)`), so none of them can tell the difference today. The
+type change is therefore safe, and it makes the fix's intent visible to the
+next person who writes a consumer that DOES care about the difference — which
+is exactly the consumer this bug would have bitten.
+
+
+TESTS
+-----
+- an explicit `false` from the tool survives as `false`, not `undefined`;
+- the two other branches are unchanged: `true` stays `true`, and a tool that
+  reports nothing still falls back to `modifiesProject && success`.
+
+If upstream prefers to leave this alone, the minimum defensible change is to
+delete the `|| undefined` and leave the type as it was — the behavioural fix
+is one token and is correct regardless.

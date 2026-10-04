@@ -3,7 +3,7 @@
 Status: planned 2026-10-02; all 13 decisions answered (last five on 2026-10-03).
 **All six steps IMPLEMENTED 2026-10-03** (uncommitted), all four gates green at
 252 suites / 2959 tests. A15-1's last hop, A15-2 and A15-7/A15-8 still need the
-owner's desktop QA (`usertasks.md` Task 22 item 7).
+owner's desktop QA (item 1 of `usertasks.md`).
 Owner decisions D15-1…D15-13 recorded canonically in `usertasks.md`.
 Depends on: Phases 1–14 + `audit011026` (all committed or staged for the
 owner's review).

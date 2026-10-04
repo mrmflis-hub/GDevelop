@@ -1,0 +1,75 @@
+UP-3 — `replace_event_but_keep_existing_sub_events` silently deleted the sub-events
+=================================================================================
+
+SEVERITY: medium (silent data loss).  FILE: 1 (+ spec).
+
+THE ISSUE
+---------
+`applyEventsChanges` supports a replacement relation called
+`replace_event_but_keep_existing_sub_events`, whose whole contract is that the
+replaced event's children survive and are re-attached to the first replacement
+event. The code did this:
+
+```js
+// BEFORE — newIDE/app/src/EditorFunctions/ApplyEventsChanges.js
+if (newEvents.getEvent(0).canHaveSubEvents()) {
+  existingSubEvents.moveTo(newEvents.getEvent(0));
+} else {
+  // <-- no else branch at all
+}
+```
+
+When the first replacement event cannot host sub-events — a comment event, or
+a condition — the sub-events were simply dropped. The caller received
+`success: true`. The condition below then destroyed the originals:
+
+```js
+existingEvent.getEvents().clear();   // the sub-events are gone, silently
+```
+
+The user loses events with no error and no undo trail. This is the worst
+shape a correctness bug can have: destructive, silent, and reachable from an
+ordinary authoring request ("replace this event but keep what it contained"
+against a list whose replacement starts with a comment).
+
+THE FIX
+-------
+Report the loss instead of hiding it. The cleanup still runs — the relation's
+primary effect is the replacement, and failing that would leave the project in
+a half-applied state, which is worse — but the caller is now told:
+
+```diff
+               existingSubEvents.moveTo(newEvents.getEvent(0));
++            } else {
++              // The sub-events cannot be moved to the first new event: report
++              // the loss instead of silently dropping them.
++              errors.push(
++                `Cannot preserve sub-events: the first replacement event at path [${pathForLog}] does not support sub-events.`
++              );
+             }
+```
+
+Note the message names the PATH of the offending event, because the caller
+needs to be able to say "this specific event" rather than "something went
+wrong". That is the same convention the surrounding code already uses.
+
+
+WHY NOT FAIL THE WHOLE CALL
+---------------------------
+Returning an error without applying anything would leave the original event
+intact, which is arguably cleaner — but it also means the primary requested
+edit does not happen, and the caller has no partial state to inspect. The
+existing convention in this function is "apply what you can, collect what
+failed into `errors`"; this fix follows it rather than inventing a second
+policy. Reviewers who prefer the stricter behaviour would change the call site
+rather than this branch.
+
+
+TESTS
+-----
+Added to `ApplyEventsChanges.spec.js`:
+- a target event with 2 sub-events replaced by a list whose FIRST event is a
+  comment → the call reports an error naming the path, and (asserted) the
+  sub-events are not silently re-homed elsewhere;
+- the regression: a standard-event-first replacement still preserves the
+  sub-events exactly as before.

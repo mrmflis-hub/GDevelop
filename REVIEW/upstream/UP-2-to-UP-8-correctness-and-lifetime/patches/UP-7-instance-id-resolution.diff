@@ -1,0 +1,146 @@
+UP-7 — a short instance-id prefix could silently widen a destructive operation
+================================================================================
+
+SEVERITY: low-to-medium (wrong instances mutated).  FILE: 1 (+ spec),
+applied at FIVE call sites.
+
+THE ISSUE
+---------
+Instance ids are reported to tools and to the AI truncated, because full uuids
+are long. Every place that turns a requested id back into an instance matched
+with a plain prefix test:
+
+```js
+// BEFORE — the pattern, repeated at five sites
+for (const instance of iteratedInstances) {
+  if (instance.getPersistentUuid().startsWith(instanceId)) {
+    matches.push(instance);
+  }
+}
+```
+
+`startsWith` is the intended behaviour for a TRUNCATED id — that is why the
+ids are truncated — but it has no notion of ambiguity. Two instances whose
+uuids share a short prefix are both matched, and the caller then modifies or
+erases **both**:
+
+- `delete_instances` / `put_2d_instances` (2D)
+- `put_3d_instances` erase and modify paths
+- the instance-variables scope
+
+A request like "delete the player at 1,2" that resolves to a prefix shared by
+two instances does the wrong thing silently. It is rare — uuids are long — but
+it is the kind of rare that destroys someone's scene, and it is reachable by
+an AI model that paraphrases or truncates an id it was shown.
+
+
+THE FIX
+-------
+A small resolver with an explicit precedence, exported so it can be tested
+without a WASM scene:
+
+```
+resolveExistingInstanceIds(iteratedInstances, requestedIds)
+  → { ok: true, matches: Map<id, instance>, notFound: Array<id> }
+  | { ok: false, error: string }        // ambiguous: the WHOLE call fails
+```
+
+Precedence, in order:
+
+1. **Exact full-uuid match wins.** Always checked first, so a caller that
+   passes a complete uuid is never affected by the rules below.
+2. **A uniquely-matching prefix resolves.** This preserves the existing
+   (intended) truncated-id behaviour when it is unambiguous.
+3. **An ambiguous prefix fails the whole call**, with an error naming the
+   candidate ids so the caller can re-request with more characters.
+4. **An unknown id is a `notFound` entry**, unchanged from before — that is an
+   ordinary miss, not an ambiguity.
+
+Rule 3 is the one that matters and the one worth arguing about: it refuses to
+act rather than guessing. The alternative — acting on the first match — is the
+behaviour we are removing, and it is worse because the failure is silent.
+
+
+THE RESOLVER (excerpt — the full file is in the repository)
+
+```js
+export type ExistingInstanceIdsResolution =
+  | {|
+      ok: true,
+      matches: Map<string, gdInitialInstance>,
+      notFound: Array<string>,
+    |}
+  | {| ok: false, error: string |};
+
+export const collectIteratedInstances = (
+  initialInstances: gdInitialInstancesContainer
+): Array<IteratedInstance> => {
+  const iteratedInstances: Array<IteratedInstance> = [];
+  iterateOnInstances(initialInstances, instance => {
+    iteratedInstances.push({
+      persistentUuid: instance.getPersistentUuid(),
+      instance,
+    });
+  });
+  return iteratedInstances;
+};
+
+/**
+ * Resolve the ids given in `existing_instance_ids` against the collected
+ * instances of the container. A requested id is either the full persistent
+ * uuid of an instance, or an unambiguous prefix of one (ids are reported
+ * truncated by `describe_instances`). An id that is a prefix of SEVERAL
+ * instance uuids is a targeting mistake: the whole resolution fails so the
+ * caller refuses to erase/modify all of them, instead of silently widening
+ * the operation like a plain `uuid.startsWith(id)` match would.
+ */
+export const resolveExistingInstanceIds = (
+  iteratedInstances: Array<IteratedInstance>,
+  requestedIds: Array<string>
+): ExistingInstanceIdsResolution => {
+  const matches = new Map<string, gdInitialInstance>();
+  const notFound: Array<string> = [];
+  ...
+```
+
+`collectIteratedInstances` exists so the container is walked ONCE per call
+rather than once per requested id — the original code re-walked it inside the
+id loop, which is O(n·m) on a large scene.
+
+
+THE FIVE CALL SITES
+-------------------
+Each replaced its own ad-hoc loop with:
+
+```diff
+-  const instancesToModify = [];
+-  for (const instanceId of existingInstanceIds) { ...startsWith... }
++  const iteratedInstances = collectIteratedInstances(initialInstances);
++  const resolution = resolveExistingInstanceIds(
++    iteratedInstances,
++    existingInstanceIds
++  );
++  if (!resolution.ok) return makeFailure(resolution.error);
+```
+
+1. `InstanceTools.js` — 2D modify (`put_2d_instances`)
+2. `InstanceTools.js` — 2D erase (`delete_instances`)
+3. `EditorFunctions/index.js` — `put_3d_instances` erase
+4. `EditorFunctions/index.js` — `put_3d_instances` modify
+5. `EditorFunctions/index.js` — instance-variables scope
+
+Note 3–5 are NOT in the file the original audit pointed at: the same pattern
+was found alive in `EditorFunctions/index.js` and fixed there too. Reviewers
+should check all five, not two.
+
+
+TESTS
+-----
+Added to `InstanceTools.spec.js`, and asserted at the shared resolver:
+- an ambiguous prefix mutates NOTHING — asserted for 2D, for 3D, and for the
+  instance-variables path, because "the right fix in three places" is exactly
+  the claim that regresses;
+- a full uuid still resolves (regression);
+- a uniquely-matching prefix still resolves (regression — this is the case the
+  truncation exists for, and it must keep working or the feature regresses);
+- an unknown id still produces the not-found failure (regression).

@@ -1,0 +1,126 @@
+UP-2 — route "preview-window-closed" to the launch that owns the window
+===================================================================
+
+SEVERITY: medium.  FILES: 3 (+1 new, +1 spec).
+
+THE ISSUE
+---------
+GDevelop can open several preview windows at once (multi-window previews, and
+the gameplay-test runner opening its own). Each launch registers its own
+`onCaptureFinished` callback, and `PreviewWindow.js` closes by broadcasting a
+message on the shared `preview-window-closed` channel — with NO information
+about which window closed:
+
+```js
+// BEFORE — newIDE/electron-app/app/PreviewWindow.js
+previewWindow.on('closed', () => {
+  openEvent.sender.send('preview-window-closed');
+});
+```
+
+On the renderer side the launcher compensated by removing ALL listeners and
+re-registering its own on every launch:
+
+```js
+// BEFORE — LocalPreviewLauncher/index.js
+ipcRenderer.removeAllListeners('preview-window-closed');
+ipcRenderer.on('preview-window-closed', onPreviewWindowClosed);
+```
+
+That combination has two failure modes, both of them real:
+
+1. **The surviving listener holds the wrong launch's state.** `removeAllListeners`
+   wipes the other launch's handler, so after launching a second preview only
+   the newest launch's `captureOptions` remain reachable. If the FIRST window
+   closes, the second launch's `onCaptureFinished` runs — the wrong callback,
+   with the wrong capture options. Screenshots can be attributed to the wrong
+   run.
+2. **A close for an unrelated window fires the callback.** Any preview window
+   closing — including one opened by a completely different part of the app —
+   triggers whichever listener is currently registered.
+
+Neither is a crash, which is why it survived: it is a wrong-attribution bug
+that shows up as "the capture finished early" or "a capture finished for a
+preview I never took".
+
+THE FIX
+-------
+Carry the window's identity in the message and route on it. Three parts:
+
+1. **`PreviewWindow.js` reads the window id AT CREATION TIME and sends it.**
+   This detail matters: by the time the `closed` event fires the window is
+   already destroyed, so `previewWindow.id` inside the handler reads a
+   destroyed object. The id has to be captured before that.
+
+2. **`openPreviewWindow` returns the ids it created**, so the launcher can
+   register them against the launch that opened them.
+
+3. **`PreviewClosedTracker.js` (new, included in full in this package)** holds
+   the window-id → capture-options map and routes a close to the right
+   launch. The launcher then keeps ONE stable listener instead of tearing
+   down and re-adding listeners per launch.
+
+The tracker also swallows a rejection from `onCaptureFinished`. The caller
+fires it from an IPC listener with `void`, so an async throw became an
+unhandled rejection that could take the whole renderer down — and a failing
+capture upload is exactly the kind of thing that throws. The window is gone
+either way, so logging is the right behaviour.
+
+
+DIFFS
+-----
+(1) newIDE/electron-app/app/PreviewWindow.js
+
+```diff
+   const createdWindowIds = [];
+   ...
+-      previewWindow.on('closed', () => {
++      // Read the id now: the window is destroyed when the "closed" event
++      // fires, so the id must not be read from `previewWindow` in its
++      // handler.
++      const windowId = previewWindow.id;
++      createdWindowIds.push(windowId);
++      previewWindow.on('closed', () => {
+         ...
+-        openEvent.sender.send('preview-window-closed');
++        // The closed window id is sent so that launchers can find the launch
++        // that owns the window (and its capture options).
++        openEvent.sender.send('preview-window-closed', windowId);
+       });
+   ...
++  return createdWindowIds;
+```
+
+(2) LocalPreviewLauncher/index.js — structural, summarised rather than
+diffed inline because the file is large; the behavioural change is:
+
+- `openPreviewWindow(...)` now yields the created window ids;
+- after a successful launch, `previewClosedTracker.own(windowIds, captureOptions)`
+  replaces re-registering a listener;
+- a single `preview-window-closed` listener, registered once, calls
+  `previewClosedTracker.handleClosed(windowId)`;
+- on unmount, `previewClosedTracker.releaseAll()` instead of leaving a stale
+  listener behind.
+
+(3) PreviewClosedTracker.js — new file, full source included alongside this
+patch.
+
+
+COMPATIBILITY NOTE FOR REVIEWERS
+---------------------------------
+The IPC payload of `preview-window-closed` changes from no-argument to one
+number. Any other listener on that channel will receive an argument it did not
+expect. In this tree the only listeners are the launcher's, but if upstream has
+others, they should tolerate an extra parameter. Nothing outside the preview
+launcher subscribes to this channel.
+
+
+TESTS
+-----
+`PreviewClosedTracker.spec.js` (included in this package) covers:
+two launches, then closing the FIRST window's id — each launch's
+`onCaptureFinished` fires exactly once for its OWN window and never for the
+other's; double-close fires once; an unknown window id is ignored; a
+re-launch replaces the mapping; multi-window launches are all tracked; and
+`releaseAll` empties the map. A component-wiring spec asserts the launcher
+actually registers the tracker.
