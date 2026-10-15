@@ -728,18 +728,18 @@ export default class SceneEditor extends React.Component<Props, State> {
   };
 
   onResourceExternallyChanged = async (resourceInfo: {|
-    identifier: string,
+    fileIdentifier: string,
   |}) => {
     const { project } = this.props;
 
     const resourceNames = project
       .getResourcesManager()
-      .getResourceNamesWithFile(resourceInfo.identifier)
+      .getResourceNamesWithFile(resourceInfo.fileIdentifier)
       .toJSArray();
     if (resourceNames.length === 0) {
       console.warn(
         `A resource with file "${
-          resourceInfo.identifier
+          resourceInfo.fileIdentifier
         }" was changed, but no resource(s) with this file were found.`
       );
       return;

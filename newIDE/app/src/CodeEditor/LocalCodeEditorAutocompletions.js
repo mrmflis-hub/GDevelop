@@ -1,6 +1,7 @@
 //@flow
 import { findGDJS } from '../GameEngineFinder/LocalGDJSFinder';
 import optionalRequire from '../Utils/OptionalRequire';
+import { getForkAssetCompletionEntries } from '../Fork/AssetPipeline/ForkAssetCatalog';
 const fs = optionalRequire('fs');
 const path = optionalRequire('path');
 
@@ -15,6 +16,19 @@ const excludedFiles = [
 ];
 
 export const setupAutocompletions = (monaco: any) => {
+  // Fork (Phase 17.5): the project's resource names as an extra lib, so
+  // assets author by NAME (the only thing the runtime resolves). The
+  // catalog is registered by whoever holds the project (the Assets view);
+  // with none registered yet this is a no-op — the completions then start
+  // appearing once the view (or the AI tools) has fed it.
+  const forkAssetCompletionEntries = getForkAssetCompletionEntries();
+  forkAssetCompletionEntries.forEach(entry => {
+    monaco.languages.typescript.javascriptDefaults.addExtraLib(
+      entry.content,
+      entry.filePath
+    );
+  });
+
   const importAllJsFilesFromFolder = (folderPath: string) =>
     fs.readdir(folderPath, (error: ?Error, filenames: Array<string>) => {
       if (error) {

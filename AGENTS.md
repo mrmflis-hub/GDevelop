@@ -695,4 +695,136 @@ manual in the same session and say so in the worklog.
   clean (app + electron-app); two consecutive full runs green. Owner
   follow-ups: usertasks Task 21.
 
-*Last updated: 2026-10-03.*
+- **Phase 16 IMPLEMENTED 2026-10-07** (ordered in chat; `REVIEW/Phase16.md`,
+  uncommitted): build-time asset compression that shrinks the EXPORT copy and
+  never the project's originals. `Fork/AssetBuild/` holds the pure planner
+  (`ForkAssetPlan.js`: extension-driven kind, in-place same-format transforms,
+  explicit reasoned skips, byte/failure summary), the renderer port
+  (`ForkAssetOptimizerPort.js`: export-folder listing, plan, IPC, per-file
+  before/after report, never throws), the pipeline wrapper
+  (`ForkAssetOptimizingExportPipeline.js`: overrides `launchCompression` so the
+  optimizer runs after `launchResourcesDownload` and before the online zip, and
+  as the manual path's tail; injects the one-shot report host into
+  `renderExportFlow`; a straight pass-through while the setting is off or on a
+  non-desktop runtime), the fork-owned settings store + the Preferences "Build"
+  tab, the report dialog/store, and the AI surface. The Electron main gained the
+  thin applier `ForkAssetOptimizer.js` (`fork-asset-optimize-apply` +
+  `-capabilities`, lazy `sharp`/`ffmpeg-static` requires, per-entry path
+  confinement, temp+rename so a failure leaves the file exactly as exported) —
+  and `sharp`/`ffmpeg-static` are installed in `electron-app/app`.
+  The upstream touchpoints are exactly `[A16-6]`'s three:
+  `electron-app/app/main.js` (one registration),
+  `ExportAndShare/LocalExporters/index.js` (the two wrapped pipelines) and
+  `MainFrame/Preferences/PreferencesDialog.js` (the Build tab); the C++ exporter
+  and `ProjectResourcesCopier` are untouched. Verified beyond the specs by a real
+  applier run: a synthetic export copy lost 73 % of a PNG and 67 % of an MP3
+  under the same file names, the optimized files still decode, and the project
+  folder's hashes were unchanged. AI access per `[D16-9]`:
+  `report_asset_optimization` (projection, writes nothing — the project's
+  serialized state is asserted byte-identical) and
+  `set_asset_optimization_settings`, both dispatchable but never in
+  `BYOK_CORE_TOOL_NAMES` (the dispatch cap went 69 → 71, the owner-approved
+  raise) and both reachable through `search_tools`; prompt `byok-v13`, budget
+  measured 12,688 tokens (under the 15k cap). 261 suites / 3,045 tests + 1
+  pre-existing skip, lint 0/0, Flow 0, prettier clean (app + electron-app).
+  Owner follow-ups: `usertasks.md` §6 — `[P16-qa]` desktop QA, `[P16-abi]` the
+  Electron-ABI rebuild for `sharp`, and the 71 → 75 cap raise for Phases 17–19.
+
+- **Phases 17 + 18 IMPLEMENTED 2026-10-08** (ordered in chat; both uncommitted,
+  see the 2026-10-08 worklog entry for the full inventory). **Phase 17
+  (tag-driven asset management, `REVIEW/Phase17.md`, steps 17.1–17.8 all
+  built):** `Fork/AssetPipeline/` holds the pure tag model
+  (`ForkAssetTags.js` — tags ride the existing resource `metadata` JSON, never
+  a new source of truth per `[D17-2]`), the many-to-many virtual tree
+  (`ForkAssetTree.js`, an "Untagged" bucket, display order only per
+  `[A17-6]`), the metadata-only writer (`ForkAssetTagStore.js`), the optional
+  defensive index (`ForkAssetIndex.js` + the Electron IPC
+  `electron-app/app/ForkAssetIndex.js` with one `main.js` registration),
+  auto-registration of dropped files (`ForkAssetRegistration.js` +
+  `ForkAssetAutoRegister.js` — watcher-origin keying, idempotent, never
+  deletes a user resource, gated by the `autoRegister` setting, default on),
+  the Assets view (`ForkAssetsView.js`, a TreeView panel hosted as a
+  `'assets-view'` editor entry in `ResourcesEditor/index.js` with a toolbar
+  toggle, plus `ForkAssetTagEditor.js` in the properties entry), the
+  name-based aliases (`ForkAssetCatalog.js` + `ForkAssetAliasHelper.js` —
+  Monaco completions through a fork hook in
+  `LocalCodeEditorAutocompletions.js`; NO ES `import`, spec-asserted), and
+  hot-reload (`ForkAssetReload.js` + `ForkAssetAutoReload.js`, a "Reload from
+  disk" entry in `ResourcesList/index.js`; a launched preview does NOT reload
+  — recorded with evidence in `deferred.md` `[P17-preview-reload]`). The
+  integration session REVERTED the subagent's `kind` hint on
+  `LocalFileResourcesWatcher` (it broke the shared `StorageProvider`
+  interface's Flow invariance — the fork now classifies by statting; see
+  `outofscoped.md` `[P17-kind-hint]`), which is why that file carries no
+  Phase-17 diff. AI access per `[D17-10]`: `list_assets` and `set_asset_tags`
+  (thin adapters in `Byok/ByokAssetTools.js` over
+  `Fork/AssetPipeline/ForkAssetToolsHandlers.js`; `set_asset_tags` is atomic
+  and flags `didModifyProject`). **Phase 18 (event-sheet guardrails,
+  `REVIEW/Phase18.md`, steps 18.1–18.4 all built):** `Fork/Guardrails/` holds
+  the pure rule engine (`ForkGuardrailRules.js` — the four `[D18-2]` rules
+  with stable ids, ancestor-stack recursion, the tree builder's exact
+  nodePath encoding incl. the folded-list discipline, disabled-subtree
+  silencing, never mutates), the settings store (`ForkGuardrailSettings.js`,
+  on-by-default master + per-rule mutes), the badge
+  (`ForkGuardrailBadge.js` — inline styles only, settings popover, filters at
+  render time so toggles need no tree rebuild), and the scan handler
+  (`ForkGuardrailToolHandler.js`, scenes only, read-only). Upstream wiring
+  exactly `[A18-5]`'s budget: `EventsTree/index.js` (ancestor stack +
+  `guardrails` node field + badge render + forwarding, mirroring
+  `isValidElseEvent`), `SortableEventsTree.js` (type only),
+  `Renderers/EventRenderer.js` (props type only), NO CSS. AI access per
+  `[D18-6]`: `scan_scene_events` (`Byok/ByokGuardrailTools.js`, writes
+  nothing). The three new tools are dispatchable but never in
+  `BYOK_CORE_TOOL_NAMES`; the dispatch cap went 71 → 75 (the `[P1719-cap]`
+  recommendation, covering Phase 19's tool); prompt **byok-v14**, budget
+  measured 12,633 tokens (under the 15k cap). 282 suites / 3,242 tests + 1
+  pre-existing skip, lint 0/0, Flow 0, prettier clean (app + electron-app).
+  Owner follow-ups: `usertasks.md` §6 — `[P17-qa]` + `[P18-qa]` desktop QA.
+
+- **Deferred-limitation closure + Phase 19 IMPLEMENTED 2026-10-09 (owner
+  ordered both in chat; uncommitted, see the 2026-10-09 worklog entry).**
+  **[P17-preview-reload] closed:** a changed asset now also refreshes
+  LAUNCHED previews — `Fork/AssetPipeline/ForkAssetPreviewReload.js` is a
+  small registry seam; both reload paths (the auto-reload flush — once per
+  burst, only when something reloaded — and the manual "Reload from disk")
+  notify it, and the MainFrame registers the preview hop
+  (`relaunchAndThenHardReloadAllPreviews`, gated on previews actually
+  running). The refresh is a re-export + hard reload (the game restarts):
+  an in-place refresh is impossible without engine changes — the runtime's
+  resource caches are URL-keyed, `_loadTexture` early-returns on a cache
+  hit, and cache-busting URLs only exist in the in-game edition
+  (`ResourceLoader.getFullUrl`). **[P18-while-conditions-unscanned]
+  closed:** `getEventInstructions` gained a `whileConditions` branch; a
+  Once in a While's own guard fires `G18-once-in-loop` (the guard is
+  re-checked every iteration — the While event itself is the loop),
+  duplicate-once scans the guard as its own list, and the picking advisory
+  counts guard conditions as picking; real-gd specs included. **Phase 19
+  (sprite-sheet import, `REVIEW/Phase19.md`, steps 19.1–19.5, prompt
+  `byok-v15`):** `Fork/SpriteSheet/` holds the pure plan (exact-tiling
+  rows-columns / margin-slack frame-size, refusal before any write), the
+  renderer port (injected IPC + image-size deps; frames land in
+  `<project>/<GameName>Assets/`), the validate-then-mutate assembly
+  (registers through `importByokProjectResources`, mirrors the upstream
+  wrapper-ownership sequence exactly, rolls back registrations on failure),
+  the import dialog (live canvas slice preview, refuses a non-dividing
+  grid) and the tool handler; the Electron main gained the confined,
+  never-overwriting slicer `electron-app/app/ForkSpriteSheet.js` reusing
+  Phase 16's `sharp`; `SpriteEditor/index.js` gained the "Import sprite
+  sheet" button (the one upstream editor touchpoint). BYOK:
+  `import_sprite_sheet` (approval-gated, never in `BYOK_CORE_TOOL_NAMES`)
+  — `BYOK_TOOL_NAMES` now sits AT the 75 cap (the next dispatchable tool
+  needs a new raise). **Built by two implementation subagents (the owner's
+  max-2 rule; A: 19.1–19.3, B: 19.4–19.5) plus orchestrator integration**;
+  subagent A shipped an inverted `newNameGenerator` predicate (its
+  "exists" answered the opposite question) that hung jest INFINITELY —
+  four spinning `react-app-rewired` node processes burned CPU until
+  killed; root-caused and fixed, the trap is recorded in the worklog and
+  the A-progress file. A read-only verification subagent also re-verified
+  every outofscoped.md "closed" fix in-tree (all VERIFIED; two nits fixed:
+  a leftover DEBUG console.log in `ApplyEventsChanges.spec.js` and the
+  PROMPT-6 doc pointer in `outofscoped.md`). 292 suites / 3,341 tests + 1
+  pre-existing skip, lint 0/0, Flow 0, prettier clean (app + electron-app).
+  Owner follow-ups: `usertasks.md` §6 — `[P19-qa]` desktop QA (needs the
+  `[P16-abi]` Electron-ABI `sharp` rebuild first).
+
+*Last updated: 2026-10-09.*

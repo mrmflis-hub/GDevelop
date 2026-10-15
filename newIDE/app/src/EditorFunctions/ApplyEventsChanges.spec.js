@@ -1168,15 +1168,8 @@ describe('applyEventsChanges', () => {
       fakeGeneratedEventId
     );
 
-    console.log(
-      'DEBUG applied=',
-      result.applied,
-      'errors=',
-      JSON.stringify(result.errors),
-      'types=',
-      JSON.stringify(getEventTypes(sceneEventsList))
-    );
-    // Nothing was destroyed: the scene is exactly as it was.
+    // An empty replacement is refused outright (nothing destroyed), so the
+    // scene is exactly as it was.
     expect(getEventTypes(sceneEventsList)).toEqual([
       'BuiltinCommonInstructions::Standard',
       'BuiltinCommonInstructions::Repeat',

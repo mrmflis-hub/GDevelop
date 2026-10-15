@@ -267,7 +267,7 @@ const editWithLocalExternalEditor = async ({
     if (!file) return;
 
     triggerOnResourceExternallyChanged({
-      identifier: file,
+      fileIdentifier: file,
     });
   });
 

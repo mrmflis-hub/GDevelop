@@ -103,6 +103,9 @@ import { requestAskAiPrefill } from '../AiGeneration/AskAiPrefill';
 import { renderGameCodeEditorContainer } from '../AiGeneration/Byok/GameCode/GameCodePane';
 import { registerByokGameCodeOpener } from '../AiGeneration/Byok/GameCode/ByokGameCodeOpenCommand';
 import { ByokMcpServerHost } from '../AiGeneration/Byok/Mcp/useByokMcpServer';
+import { ForkAssetReportDialogHost } from '../Fork/AssetBuild/ForkAssetReportDialog';
+import useForkAssetPipelineLifecycles from '../Fork/AssetPipeline/useForkAssetPipelineLifecycles';
+import { registerForkAssetPreviewReloader } from '../Fork/AssetPipeline/ForkAssetPreviewReload';
 import { renderResourcesEditorContainer } from './EditorContainers/ResourcesEditorContainer';
 import { renderGlobalEventsSearchEditorContainer } from './EditorContainers/GlobalEventsSearchEditorContainer';
 import { type RenderEditorContainerPropsWithRef } from './EditorContainers/BaseEditor';
@@ -771,6 +774,13 @@ const MainFrame = (props: Props): React.MixedElement => {
     isProjectSplitInMultipleFiles: currentProject
       ? currentProject.isFolderProject()
       : false,
+  });
+  // Fork (Phase 17 OOS [P17-auto-register-mount]): the asset pipeline
+  // lifecycles (auto-register dropped files, auto-reload changed assets),
+  // keyed on the open project so they run whatever editor is open.
+  useForkAssetPipelineLifecycles({
+    project: currentProject,
+    onProjectModified: triggerUnsavedChanges,
   });
 
   const gamesList = useGamesList();
@@ -5662,6 +5672,22 @@ const MainFrame = (props: Props): React.MixedElement => {
     [onResourceExternallyChanged]
   );
 
+  // Fork (Phase 17 [P17-preview-reload]): when the asset pipeline reloaded a
+  // changed asset on the editor side (the debounced auto-reload or the manual
+  // "Reload from disk"), also refresh any LAUNCHED (separate-window) previews.
+  // They serve copied files from their export folder and the runtime cannot
+  // re-fetch a changed file in place, so they are re-exported and hard-reloaded
+  // (the running game restarts — the only preview refresh without engine
+  // changes). Nothing happens when no preview is running.
+  React.useEffect(
+    () =>
+      registerForkAssetPreviewReloader(() => {
+        if (!hasNonEditionPreviewsRunning) return;
+        relaunchAndThenHardReloadAllPreviews();
+      }),
+    [hasNonEditionPreviewsRunning, relaunchAndThenHardReloadAllPreviews]
+  );
+
   useMainFrameCommands({
     i18n,
     project: state.currentProject,
@@ -6321,6 +6347,10 @@ const MainFrame = (props: Props): React.MixedElement => {
           inert in the web build, and drives the loopback endpoint from the
           BYOK preferences. */}
       <ByokMcpServerHost />
+      {/* Fork (Phase 16 [P16-report-host]): the asset-optimization size
+          report, shown once after the export that produced it — mounted
+          here (not in an export flow) so every export path reports. */}
+      <ForkAssetReportDialogHost />
       {selectedInAppTutorialInfo && (
         <StartInAppTutorialDialog
           open

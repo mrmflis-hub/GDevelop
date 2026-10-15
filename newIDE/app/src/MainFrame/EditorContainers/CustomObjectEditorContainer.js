@@ -170,7 +170,7 @@ export class CustomObjectEditorContainer extends React.Component<RenderEditorCon
     });
   }
 
-  onResourceExternallyChanged(resourceInfo: {| identifier: string |}) {
+  onResourceExternallyChanged(resourceInfo: {| fileIdentifier: string |}) {
     const { editor } = this;
     if (editor) {
       editor.onResourceExternallyChanged(resourceInfo);

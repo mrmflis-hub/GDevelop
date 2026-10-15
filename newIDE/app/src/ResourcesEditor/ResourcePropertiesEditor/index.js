@@ -190,7 +190,7 @@ const ResourcePropertiesEditor: React.ComponentType<{
         const newResourceFile = selectedResources[0].getFile();
         resource.setFile(newResourceFile);
         triggerOnResourceExternallyChanged({
-          identifier: newResourceFile,
+          fileIdentifier: newResourceFile,
         });
 
         // Important, we are responsible for deleting the resources that were given to us.
@@ -229,7 +229,7 @@ const ResourcePropertiesEditor: React.ComponentType<{
           setValue: (resource: gdResource, newValue: string) => {
             resource.setFile(newValue);
             triggerOnResourceExternallyChanged({
-              identifier: newValue,
+              fileIdentifier: newValue,
             });
           },
           onEditButtonClick: () => {

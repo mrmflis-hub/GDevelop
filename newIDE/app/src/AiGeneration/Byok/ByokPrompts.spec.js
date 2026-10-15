@@ -126,9 +126,15 @@ describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
   it('pins the prompt version', () => {
     // Bumped to byok-v11 in audit011026 (read_doc_page + example fixes);
     // byok-v12 in Phase 15.3 (the game-code section + the five game-code
-    // tools). byok-v10 was Phase 14; byok-v9 was Phase 13; byok-v8 was
+    // tools); byok-v13 in Phase 16.5 (the build-size retrieval-map line and
+    // the task-catalog entry for the two asset-optimization tools);
+    // byok-v14 in Phases 17.7 + 18.3 (the asset-tag and guardrail
+    // retrieval-map lines and their task-catalog entries);
+    // byok-v15 in Phase 19.5 (the sprite-sheet task-catalog entry that
+    // surfaces import_sprite_sheet through search_tools).
+    // byok-v10 was Phase 14; byok-v9 was Phase 13; byok-v8 was
     // Phase 12 (discovery + runtime guidance).
-    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v12');
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v15');
   });
 
   it('teaches the F2 obligatory to-do list and per-item progress updates', () => {

@@ -7,26 +7,39 @@
  * unsubscribing must remove ONLY its own listener — this is the regression
  * spec for the game-code auto-reloader, which subscribes next to the
  * resource watcher instead of replacing it.
+ *
+ * Also pins the [P17-kind-hint] payload (the chokidar event kind rides
+ * along the path) and the [P17-B1] bound on the per-file debouncer cache.
  */
 
 import optionalRequire from '../../Utils/OptionalRequire';
-import { setupResourcesWatcher } from './LocalFileResourcesWatcher';
+import {
+  getForkWatcherDebouncerCount,
+  setupResourcesWatcher,
+} from './LocalFileResourcesWatcher';
 
 jest.mock('../../Utils/OptionalRequire');
 
 // $FlowFixMe[cannot-resolve-module] - a Node builtin, used by this spec only.
 const nodePath = require('path');
 
-type ChangedHandler = (event: any, changedPath: string) => void;
+type ChangedHandler = (
+  event: any,
+  changedPath: string,
+  changedEventKind?: string
+) => void;
 
 const mockFn = (fn: Function): JestMockFn<any, any> => fn;
 
 const registeredHandlers: Map<string, Array<ChangedHandler>> = new Map();
 
-const fireProjectFileChanged = (changedPath: string) => {
+const fireProjectFileChanged = (
+  changedPath: string,
+  changedEventKind?: string
+) => {
   const handlers = registeredHandlers.get('project-file-changed') || [];
   for (const handler of handlers.slice()) {
-    handler({}, changedPath);
+    handler({}, changedPath, changedEventKind);
   }
 };
 
@@ -75,7 +88,7 @@ describe('setupResourcesWatcher', () => {
     await Promise.resolve();
   };
 
-  it('delivers a forward-slash, project-relative identifier per file', async () => {
+  it('delivers a forward-slash, project-relative file identifier with the event kind', async () => {
     const callback = mockFn(jest.fn());
     if (!setupResourcesWatcher) throw new Error('Expected a watcher setup.');
     setupResourcesWatcher({
@@ -83,12 +96,57 @@ describe('setupResourcesWatcher', () => {
       callback,
     });
 
-    fireProjectFileChanged(nodePath.join('work', 'MyGameCode', 'spawn.js'));
+    fireProjectFileChanged(
+      nodePath.join('work', 'MyGameCode', 'spawn.js'),
+      'add'
+    );
     await flushDebounce();
 
     expect(callback).toHaveBeenCalledTimes(1);
     expect(callback).toHaveBeenCalledWith({
-      identifier: 'MyGameCode/spawn.js',
+      fileIdentifier: 'MyGameCode/spawn.js',
+      event: 'add',
+    });
+  });
+
+  it('forwards a deletion as an unlink event', async () => {
+    const callback = mockFn(jest.fn());
+    if (!setupResourcesWatcher) throw new Error('Expected a watcher setup.');
+    setupResourcesWatcher({
+      fileIdentifier: nodePath.join('work', 'game.json'),
+      callback,
+    });
+
+    fireProjectFileChanged(nodePath.join('work', 'hero.png'), 'unlink');
+    await flushDebounce();
+
+    expect(callback).toHaveBeenCalledWith({
+      fileIdentifier: 'hero.png',
+      event: 'unlink',
+    });
+  });
+
+  it('reads an unknown or missing event kind as a change', async () => {
+    const callback = mockFn(jest.fn());
+    if (!setupResourcesWatcher) throw new Error('Expected a watcher setup.');
+    setupResourcesWatcher({
+      fileIdentifier: nodePath.join('work', 'game.json'),
+      callback,
+    });
+
+    fireProjectFileChanged(nodePath.join('work', 'hero.png'));
+    await flushDebounce();
+    fireProjectFileChanged(nodePath.join('work', 'hero.png'), 'something-new');
+    await flushDebounce();
+
+    expect(callback).toHaveBeenCalledTimes(2);
+    expect(callback).toHaveBeenNthCalledWith(1, {
+      fileIdentifier: 'hero.png',
+      event: 'change',
+    });
+    expect(callback).toHaveBeenNthCalledWith(2, {
+      fileIdentifier: 'hero.png',
+      event: 'change',
     });
   });
 
@@ -109,7 +167,10 @@ describe('setupResourcesWatcher', () => {
     unsubscribeResources();
     expect(countListeners()).toBe(1);
 
-    fireProjectFileChanged(nodePath.join('work', 'resources', 'hero.png'));
+    fireProjectFileChanged(
+      nodePath.join('work', 'resources', 'hero.png'),
+      'change'
+    );
     await flushDebounce();
 
     // The remaining consumer still sees the events; the one that
@@ -144,13 +205,16 @@ describe('setupResourcesWatcher', () => {
     });
 
     unsubscribe();
-    fireProjectFileChanged(nodePath.join('work', 'MyGameCode', 'main.js'));
+    fireProjectFileChanged(
+      nodePath.join('work', 'MyGameCode', 'main.js'),
+      'add'
+    );
     await flushDebounce();
 
     expect(callback).not.toHaveBeenCalled();
   });
 
-  it('still debounces per file (a burst for one file fires once)', async () => {
+  it('still debounces per file (a burst for one file fires once, last kind wins)', async () => {
     const callback = mockFn(jest.fn());
     if (!setupResourcesWatcher) throw new Error('Expected a watcher setup.');
     setupResourcesWatcher({
@@ -158,11 +222,48 @@ describe('setupResourcesWatcher', () => {
       callback,
     });
 
-    fireProjectFileChanged(nodePath.join('work', 'MyGameCode', 'main.js'));
+    fireProjectFileChanged(
+      nodePath.join('work', 'MyGameCode', 'main.js'),
+      'add'
+    );
     jest.advanceTimersByTime(100);
-    fireProjectFileChanged(nodePath.join('work', 'MyGameCode', 'main.js'));
+    fireProjectFileChanged(
+      nodePath.join('work', 'MyGameCode', 'main.js'),
+      'change'
+    );
     await flushDebounce();
 
     expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledWith({
+      fileIdentifier: 'MyGameCode/main.js',
+      event: 'change',
+    });
+  });
+
+  it('bounds the per-file debouncer cache ([P17-B1])', async () => {
+    const callback = mockFn(jest.fn());
+    if (!setupResourcesWatcher) throw new Error('Expected a watcher setup.');
+    setupResourcesWatcher({
+      fileIdentifier: nodePath.join('work', 'game.json'),
+      callback,
+    });
+
+    // More distinct files than the cache holds: the oldest entries are
+    // evicted, so the cache never exceeds the bound (before the fix, every
+    // path ever watched kept a debouncer for the whole session).
+    for (let index = 0; index < 1200; index++) {
+      fireProjectFileChanged(
+        nodePath.join('work', `file-${index}.png`),
+        'change'
+      );
+    }
+    expect(getForkWatcherDebouncerCount()).toBeLessThanOrEqual(1000);
+    await flushDebounce();
+
+    // A debouncer removes itself once it fired, so after the burst nothing
+    // is retained at all (an evicted-but-pending closure still fires — the
+    // fix bounds RETENTION, not delivery).
+    expect(getForkWatcherDebouncerCount()).toBe(0);
+    expect(callback).toHaveBeenCalledTimes(1200);
   });
 });

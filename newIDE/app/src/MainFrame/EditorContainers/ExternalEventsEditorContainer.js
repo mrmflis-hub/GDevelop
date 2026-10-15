@@ -126,7 +126,9 @@ export class ExternalEventsEditorContainer extends React.Component<
     );
   }
 
-  onResourceExternallyChanged = (resourceInfo: {| identifier: string |}) => {
+  onResourceExternallyChanged = (resourceInfo: {|
+    fileIdentifier: string,
+  |}) => {
     if (this.editor) this.editor.onResourceExternallyChanged(resourceInfo);
   };
 

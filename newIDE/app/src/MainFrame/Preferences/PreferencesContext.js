@@ -22,6 +22,10 @@ import {
   DEFAULT_BYOK_RAG_SETTINGS,
   type ByokRagSettings,
 } from '../../AiGeneration/Byok/Rag/ByokRagTypes';
+import {
+  DEFAULT_FORK_ASSET_BUILD_SETTINGS,
+  type ForkAssetBuildSettings,
+} from '../../Fork/AssetBuild/ForkAssetBuildSettings';
 
 const electron = optionalRequire('electron');
 const remote = optionalRequire('@electron/remote');
@@ -263,6 +267,9 @@ export type PreferencesValues = {|
   automaticallyUseCreditsForAiRequests: boolean,
   byok: ByokSettings,
   byokRag: ByokRagSettings,
+  // Fork (Phase 16 [P16-settings-blob]): the build-time asset optimization
+  // settings, owned and accessed through ForkAssetBuildSettings.js.
+  forkAssetBuild: ForkAssetBuildSettings,
   automaticallyApplyAiRequestEditsByProjectId: { [string]: boolean },
   useBackgroundSerializerForSaving: boolean,
   disableNpmScriptConfirmation: boolean,
@@ -467,6 +474,7 @@ export const initialPreferences = {
     automaticallyUseCreditsForAiRequests: false,
     byok: DEFAULT_BYOK_SETTINGS,
     byokRag: DEFAULT_BYOK_RAG_SETTINGS,
+    forkAssetBuild: DEFAULT_FORK_ASSET_BUILD_SETTINGS,
     automaticallyApplyAiRequestEditsByProjectId: {},
     useBackgroundSerializerForSaving: false,
     disableNpmScriptConfirmation: false,

@@ -87,10 +87,14 @@ describe('validateByokToolSchemas', () => {
     // every turn, so the guard exists to force a conscious decision when
     // the surface grows again.
     // The cap moved to 48 (Phase 8), 56 (Phase 11), 62 (Phase 12), 64,
-    // then 69 (Phase 15.3, the five game-code tools — owner-approved: it
-    // guards the dispatch whitelist, not the advertised wire payload) —
+    // then 69 (Phase 15.3, the five game-code tools), then 71 (Phase 16.5,
+    // the two asset-optimization tools), then 75 (Phases 17.7 + 18.3 took
+    // the list to 74 with the two asset-tag tools and scan_scene_events; the
+    // raise covers Phase 19's sprite-sheet tool too — owner-approved per the
+    // usertasks §6 [P1719-cap] recommendation, like every raise: it guards
+    // the dispatch whitelist, not the advertised wire payload) —
     // see the counting comment in ByokToolSchema.js.
-    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(69);
+    expect(BYOK_TOOL_NAMES.length).toBeLessThanOrEqual(75);
     expect(BYOK_TOOL_NAMES.length).toBeGreaterThanOrEqual(30);
     expect(validateByokToolSchemas()).toEqual([]);
   });

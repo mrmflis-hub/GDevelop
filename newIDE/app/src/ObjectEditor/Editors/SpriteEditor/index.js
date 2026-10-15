@@ -31,6 +31,7 @@ import {
   setCollisionMaskOnAllFrames,
 } from './Utils/SpriteObjectHelper';
 import SemiControlledTextField from '../../../UI/SemiControlledTextField';
+import ForkSpriteSheetDialog from '../../../Fork/SpriteSheet/ForkSpriteSheetDialog';
 
 const gd: libGDevelop = global.gd;
 
@@ -61,6 +62,9 @@ export default function SpriteEditor({
     collisionMasksEditorOpen,
     setCollisionMasksEditorOpen,
   ] = React.useState(false);
+  const [spriteSheetImportOpen, setSpriteSheetImportOpen] = React.useState(
+    false
+  );
   const forceUpdate = useForceUpdate();
   const spriteConfiguration = gd.asSpriteConfiguration(objectConfiguration);
   const animations = spriteConfiguration.getAnimations();
@@ -200,17 +204,27 @@ export default function SpriteEditor({
                 />
               )}
               {!isChildObject && (
-                <RaisedButton
-                  label={<Trans>Add an animation</Trans>}
-                  primary
-                  onClick={() => {
-                    if (!animationList.current) {
-                      return;
-                    }
-                    animationList.current.addAnimation();
-                  }}
-                  icon={<Add />}
-                />
+                <>
+                  {/* Phase 19.4: slice a sprite sheet into the frames of a new
+                      animation (desktop-only — the dialog shows its notice
+                      elsewhere). Custom-object children are excluded: the
+                      pipeline resolves the target by object name. */}
+                  <FlatButton
+                    label={<Trans>Import sprite sheet</Trans>}
+                    onClick={() => setSpriteSheetImportOpen(true)}
+                  />
+                  <RaisedButton
+                    label={<Trans>Add an animation</Trans>}
+                    primary
+                    onClick={() => {
+                      if (!animationList.current) {
+                        return;
+                      }
+                      animationList.current.addAnimation();
+                    }}
+                    icon={<Add />}
+                  />
+                </>
               )}
             </ResponsiveLineStackLayout>
           </Column>
@@ -352,6 +366,19 @@ export default function SpriteEditor({
                 }
               />
             </Dialog>
+          )}
+          {spriteSheetImportOpen && (
+            <ForkSpriteSheetDialog
+              project={project}
+              objectName={objectName}
+              onClose={didImport => {
+                setSpriteSheetImportOpen(false);
+                if (didImport) {
+                  forceUpdate();
+                  if (onObjectUpdated) onObjectUpdated();
+                }
+              }}
+            />
           )}
         </>
       )}

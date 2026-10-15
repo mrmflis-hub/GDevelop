@@ -10,6 +10,7 @@ import { type EventsScope } from '../../../InstructionOrExpression/EventsScope';
 import { type ScreenType } from '../../../UI/Responsive/ScreenTypeMeasurer';
 import { type WindowSizeType } from '../../../UI/Responsive/ResponsiveWindowMeasurer';
 import { ProjectScopedContainersAccessor } from '../../../InstructionOrExpression/EventsScope';
+import type { ForkGuardrailEventDiagnostic } from '../../../Fork/Guardrails/ForkGuardrailRules';
 
 export type EventRendererProps = {
   project: gdProject,
@@ -55,6 +56,7 @@ export type EventRendererProps = {
 
   idPrefix: string,
   isValidElseEvent?: boolean,
+  guardrails?: $ReadOnlyArray<ForkGuardrailEventDiagnostic>,
   highlightedSearchText?: ?string,
   highlightedSearchMatchCase?: boolean,
 };

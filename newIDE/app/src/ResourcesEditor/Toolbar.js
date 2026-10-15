@@ -4,6 +4,7 @@ import React, { PureComponent } from 'react';
 import FolderIcon from '../UI/CustomSvgIcons/Folder';
 import TrashIcon from '../UI/CustomSvgIcons/Trash';
 import EditIcon from '../UI/CustomSvgIcons/Edit';
+import TagIcon from '../UI/CustomSvgIcons/Tag';
 import { ToolbarGroup } from '../UI/Toolbar';
 import ToolbarSeparator from '../UI/ToolbarSeparator';
 import IconButton from '../UI/IconButton';
@@ -15,13 +16,16 @@ type Props = {|
   canDelete: boolean,
   onToggleProperties: () => void,
   isPropertiesShown: boolean,
+  // Fork (Phase 17.4): the tag-driven Assets view toggle.
+  onToggleAssetsView: () => void,
+  isAssetsViewShown: boolean,
 |};
 
 type State = {||};
 
 export class Toolbar extends PureComponent<Props, State> {
   render(): any {
-    const { canDelete, isPropertiesShown } = this.props;
+    const { canDelete, isPropertiesShown, isAssetsViewShown } = this.props;
 
     return (
       <ToolbarGroup lastChild>
@@ -46,6 +50,15 @@ export class Toolbar extends PureComponent<Props, State> {
           selected={isPropertiesShown}
         >
           <EditIcon />
+        </IconButton>
+        <IconButton
+          size="small"
+          color="default"
+          onClick={this.props.onToggleAssetsView}
+          tooltip={t`Open the assets view (by tags)`}
+          selected={isAssetsViewShown}
+        >
+          <TagIcon />
         </IconButton>
         <IconButton
           size="small"

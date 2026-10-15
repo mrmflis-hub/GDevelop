@@ -29,6 +29,7 @@ import ErrorBoundary from '../../UI/ErrorBoundary';
 import CompactSelectField from '../../UI/CompactSelectField';
 import ByokSettingsTab from '../../AiGeneration/Byok/ByokSettingsTab';
 import ByokRagSettingsTab from '../../AiGeneration/Byok/Rag/ByokRagSettingsTab';
+import ForkAssetBuildSettingsTab from '../../Fork/AssetBuild/ForkAssetBuildSettingsTab';
 const electron = optionalRequire('electron');
 
 type Props = {|
@@ -119,6 +120,7 @@ const PreferencesDialog = ({
             { value: 'shortcuts', label: <Trans>Keyboard Shortcuts</Trans> },
             { value: 'byok', label: <Trans>BYOK</Trans> },
             { value: 'rag', label: <Trans>RAG</Trans> },
+            { value: 'build', label: <Trans>Build</Trans> },
             ...(electron
               ? [{ value: 'folders', label: <Trans>Folders</Trans> }]
               : []),
@@ -728,6 +730,11 @@ const PreferencesDialog = ({
       {currentTab === 'rag' && (
         <ColumnStackLayout noMargin>
           <ByokRagSettingsTab />
+        </ColumnStackLayout>
+      )}
+      {currentTab === 'build' && (
+        <ColumnStackLayout noMargin>
+          <ForkAssetBuildSettingsTab />
         </ColumnStackLayout>
       )}
     </Dialog>

@@ -7,6 +7,10 @@ import ResourcesList, { type ResourcesListInterface } from '../ResourcesList';
 import ResourcePropertiesEditor, {
   type ResourcePropertiesEditorInterface,
 } from './ResourcePropertiesEditor';
+// Fork (Phase 17.4): the tag-driven Assets view and the per-resource tag
+// editor — both fork-owned, mounted here as extra editors of the mosaic.
+import ForkAssetsView from '../Fork/AssetPipeline/ForkAssetsView';
+import ForkAssetTagEditor from '../Fork/AssetPipeline/ForkAssetTagEditor';
 import Toolbar from './Toolbar';
 import EditorMosaic, { type EditorMosaicInterface } from '../UI/EditorMosaic';
 import ResourcesLoader from '../ResourcesLoader';
@@ -115,6 +119,8 @@ export default class ResourcesEditor extends React.Component<Props, State> {
         }
         onToggleProperties={this.toggleProperties}
         isPropertiesShown={openedEditorNames.includes('properties')}
+        onToggleAssetsView={this.toggleAssetsView}
+        isAssetsViewShown={openedEditorNames.includes('assets-view')}
         canDelete={!!this.state.selectedResource}
         onDeleteSelection={() =>
           this.deleteResource(this.state.selectedResource)
@@ -277,6 +283,13 @@ export default class ResourcesEditor extends React.Component<Props, State> {
     this.editorMosaic.toggleEditor('properties', 'left');
   };
 
+  // Fork (Phase 17.4): the tag-tree Assets view opens/closes like the
+  // properties panel (the flat list stays the central editor).
+  toggleAssetsView = () => {
+    if (!this.editorMosaic) return;
+    this.editorMosaic.toggleEditor('assets-view', 'right');
+  };
+
   _onResourceSelected = (selectedResource: ?gdResource) => {
     this.setState(
       {
@@ -289,7 +302,9 @@ export default class ResourcesEditor extends React.Component<Props, State> {
     );
   };
 
-  onResourceExternallyChanged = (resourceInfo: {| identifier: string |}) => {
+  onResourceExternallyChanged = (resourceInfo: {|
+    fileIdentifier: string,
+  |}) => {
     if (this._propertiesEditor) {
       this._propertiesEditor.forceUpdate();
     }
@@ -306,26 +321,48 @@ export default class ResourcesEditor extends React.Component<Props, State> {
         type: 'secondary',
         title: t`Properties`,
         renderEditor: () => (
-          <I18n>
-            {({ i18n }) => (
-              <ResourcePropertiesEditor
-                key={selectedResource ? selectedResource.ptr : undefined}
-                resources={selectedResource ? [selectedResource] : []}
-                project={project}
-                resourcesLoader={this.resourcesLoader}
-                ref={propertiesEditor =>
-                  (this._propertiesEditor = propertiesEditor)
-                }
-                onResourcePathUpdated={() => {
-                  if (this._resourcesList) {
-                    this._resourcesList.checkMissingPaths();
+          <>
+            <I18n>
+              {({ i18n }) => (
+                <ResourcePropertiesEditor
+                  key={selectedResource ? selectedResource.ptr : undefined}
+                  resources={selectedResource ? [selectedResource] : []}
+                  project={project}
+                  resourcesLoader={this.resourcesLoader}
+                  ref={propertiesEditor =>
+                    (this._propertiesEditor = propertiesEditor)
                   }
-                }}
-                resourceManagementProps={resourceManagementProps}
-                i18n={i18n}
+                  onResourcePathUpdated={() => {
+                    if (this._resourcesList) {
+                      this._resourcesList.checkMissingPaths();
+                    }
+                  }}
+                  resourceManagementProps={resourceManagementProps}
+                  i18n={i18n}
+                />
+              )}
+            </I18n>
+            {selectedResource ? (
+              <ForkAssetTagEditor
+                key={'fork-tags-' + selectedResource.ptr}
+                resource={selectedResource}
               />
-            )}
-          </I18n>
+            ) : null}
+          </>
+        ),
+      },
+      // Fork (Phase 17.4): the tag-driven Assets view (D17-4) — a primary,
+      // chrome-less pane next to the flat list, opened from the toolbar's
+      // tag icon. The upstream flat ResourcesList stays the central editor.
+      'assets-view': {
+        type: 'primary',
+        noTitleBar: true,
+        renderEditor: () => (
+          <ForkAssetsView
+            project={project}
+            selectedResource={selectedResource}
+            onSelectResource={this._onResourceSelected}
+          />
         ),
       },
       'resources-list': {

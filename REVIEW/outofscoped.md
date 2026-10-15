@@ -10,7 +10,67 @@ verified** (all gates green) — the permanent record then lives only in
 Rules for agents: see `AGENTS.md` §5.2. If nothing new belongs here at the
 end of a session, the worklog entry says `no OOS`.
 
-## Status: EMPTY — the 2026-10-03 session closed every entry
+## Open — Phase 16 (build-time asset compression), 2026-10-07
+
+Phase 16 shipped implemented, tested and gate-green (see the 2026-10-07
+worklog entry). These are the things noticed during that session that should be
+tackled but were outside its scope: the phase's upstream budget is explicit and
+tight (`[A16-6]`: two files plus the Preferences tab entry), so anything that
+would have touched a fourth upstream file, or that is a refinement rather than
+an acceptance criterion, is recorded here instead.
+
+- `[P16-image-floor]` **The "too small to bother" floor is a byte threshold
+  (4096), a proxy for a dimension question.** A real guard would read the
+  image dimensions; the byte floor avoids decoding every candidate.
+  Where: `ForkAssetPlan.js:FORK_ASSET_IMAGE_FLOOR_BYTES`.
+  → update 2026-10-08: left as a deliberate proxy, on purpose. For a
+  build-time optimizer the question the floor answers is "is there anything
+  to GAIN", and bytes answer that better than dimensions do: a 5000×4000
+  flat-color PNG under 4 KB is already near-optimally compressed (nothing to
+  regain), while a 16×16 noise icon can be 100 KB (a real win). Dimensions
+  would proxy visual size, which the exporter does not care about, and
+  getting them means decoding (or at least header-sniffing) every candidate
+  in the listing — exactly the cost the floor exists to avoid. Revisit only
+  if real export reports ever show a meaningful miss.
+- `[P16-projection]` **The savings projection is a fixed low/high band per
+  transform, not a measurement.** Honest (it says "estimate") but coarse; the
+  real ratios could be learned from the export reports.
+  Where: `ForkAssetToolsHandlers.js:FORK_ASSET_PROJECTION_RATIOS`.
+  → update 2026-10-08: left as-is — learning the real ratios needs
+  accumulated per-transform export-report data, which does not exist yet
+  (the feature shipped yesterday and is opt-in). The honest estimate band
+  stays until there are reports to average.
+- `[P16-main-test]` **The Electron applier has no unit tests** — the Electron
+  package has no test runner (AGENTS.md §6), so it is kept thin and was verified
+  by a real Node run against a synthetic export copy (recorded in the worklog:
+  73 % off a PNG, 67 % off an MP3, same names, project hashes unchanged). If a
+  runner is ever added to `electron-app`, the applier is the first candidate.
+  Where: `newIDE/electron-app/app/ForkAssetOptimizer.js`.
+  → update 2026-10-08: still no runner (adding one is infrastructure the
+  owner has not ordered). The applier was re-verified today with the same
+  discipline — a real Node run against an ffmpeg-generated animated GIF
+  (frames and total duration preserved, 3264 → 2589 bytes) and a synthetic
+  PNG (721638 → 1313 bytes), plus the new folder-guard refusals.
+
+## Open — found by the 2026-10-09 verification subagent
+
+- `[O-MCP1-start-spec]` **The MCP queue's armed-at-task-START property has no
+  spec that could fail against a revert.** The restructure is real and wired
+  (`ByokMcpToolHost.js:193-223`: the timeout timer is created inside
+  `previousTail.then`, chain extended synchronously), but the only queue spec
+  (`B-MCP-3`) enqueues its single follower at t≈0, which behaves identically
+  under the old enqueue-armed code and the new start-armed code — the
+  distinguishing property is a follower enqueued while a predecessor is
+  already RUNNING (it must not start its timeout until it starts running).
+  Where: `Mcp/ByokMcpToolHost.js` + `ByokMcpToolHost.spec.js`.
+  Blocks it: nothing but time — a staggered-burst spec with fake timers.
+- `[O-RAG-restore-branch-spec]` **The `loadPersistedByokRagIndex` Qdrant
+  restart-recovery branch has no direct spec** (`Rag/ByokRagSearch.spec.js:17`
+  mocks the module away). The primitives it calls (store `search`/`inspect`,
+  the build service's Qdrant branch) ARE spec'd, so this is a wiring-level
+  gap only. Where: `Rag/ByokRagSearch.js` around the persisted-index loader.
+
+## Closed — the 2026-10-03 session closed every entry that was open then
 
 The owner ordered "implement all outofscoped.md items; where a user decision
 is needed use your recommended solution". **Every entry this file carried is
@@ -58,8 +118,10 @@ in `deferred.md` as by-design with their numbers, so nothing is silently lost.
 - **`A1002-PROMPT-3/4/5/6/7`** — the guard now catches bare tool mentions
   and scans every knowledge section at full size; the missing placement
   relation is taught; the drifted docblocks are corrected. (One of the four
-  alleged docblock drifts turned out to be a **false finding** — see
-  `deferred.md`.)
+  alleged docblock drifts turned out to be a **false finding** — recorded in
+  the 2026-10-03 worklog entry's "Issues found", where the `max_chars`
+  capability is cited at its real implementation in
+  `EditorFunctions/index.js`.)
 - **`A1002-SCRIPT-3/4/5`** — judge token accounting, six `docs-min` eval
   queries added to the shared set (24 → 30), and the locale-dependent
   comparator replaced with a byte-wise one.

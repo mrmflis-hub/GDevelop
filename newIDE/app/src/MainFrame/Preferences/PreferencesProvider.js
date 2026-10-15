@@ -33,6 +33,11 @@ import { type GamesDashboardOrderBy } from '../../GameDashboard/GamesList';
 import { type ByokSettings } from '../../AiGeneration/Byok/ByokTypes';
 import { type ByokRagSettings } from '../../AiGeneration/Byok/Rag/ByokRagTypes';
 import {
+  getForkAssetBuildSettings,
+  subscribeForkAssetBuildSettings,
+  type ForkAssetBuildSettings,
+} from '../../Fork/AssetBuild/ForkAssetBuildSettings';
+import {
   CHECK_APP_UPDATES_TIMEOUT,
   PERIODIC_APP_UPDATES_TIMEOUT,
 } from '../../Utils/GlobalFetchTimeouts';
@@ -96,6 +101,7 @@ export const getInitialPreferences = (): {
   autosaveOnPreview: boolean,
   byok: ByokSettings,
   byokRag: ByokRagSettings,
+  forkAssetBuild: ForkAssetBuildSettings,
   backdropClickBehavior: string,
   blockPreviewAndExportOnDiagnosticErrors: boolean,
   codeEditorThemeName: string,
@@ -172,6 +178,7 @@ const getPreferences = (): PreferencesValues => {
 export default class PreferencesProvider extends React.Component<Props, State> {
   _periodicUpdateCheckTimeout: ?TimeoutID = null;
   _periodicUpdateCheckInterval: ?IntervalID = null;
+  _unsubscribeForkAssetBuildSettings: ?() => void = null;
 
   // $FlowFixMe[missing-local-annot]
   state = {
@@ -442,11 +449,26 @@ export default class PreferencesProvider extends React.Component<Props, State> {
       () => this._checkUpdates(),
       PERIODIC_APP_UPDATES_TIMEOUT
     );
+    // Fork (Phase 16 [P16-settings-blob]): persist the asset-build settings
+    // into this provider's blob. The settings store itself only keeps an
+    // in-memory value (its setters can run outside React); this bridge makes
+    // THIS provider the single writer of the whole `gd-preferences` item, so
+    // its full-blob writes below can never clobber a setting changed there.
+    this._unsubscribeForkAssetBuildSettings = subscribeForkAssetBuildSettings(
+      () => {
+        this._setMultipleValues({
+          forkAssetBuild: getForkAssetBuildSettings(),
+        });
+      }
+    );
   }
 
   componentWillUnmount() {
     clearTimeout(this._periodicUpdateCheckTimeout);
     clearInterval(this._periodicUpdateCheckInterval);
+    if (this._unsubscribeForkAssetBuildSettings) {
+      this._unsubscribeForkAssetBuildSettings();
+    }
   }
 
   _setMultipleValues(updates: ProjectSpecificPreferencesValues) {

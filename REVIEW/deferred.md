@@ -474,3 +474,81 @@ are merged into `index.html` inside `ExportIndexFile`, which runs AFTER
 Deferred because the phase document is the owner's, and amending it is better
 done together with step 15.4, which is where the consequence lands.
 When: at the start of step 15.4.
+---
+
+## Deferred 2026-10-07 (Phase 16 — build-time asset compression)
+
+*These are the deliberate non-goals of the new feature, written down so the
+scope is readable without the phase plan. Each one is a real decision with a
+reason, not an oversight.*
+
+`[P16-audio-codec]` **No cross-codec/container audio transcode — by design
+(`Phase16.md` §5).** The optimizer re-encodes LOSSY audio in its own container
+at a lower bitrate (mp3→mp3, ogg→ogg, m4a/aac/opus likewise) and never converts
+a file to a different codec. Changing the codec/container changes playback
+guarantees (device support, seeking), which is a separate decision; `[D16-6]`
+pins the policy at "same format, same file name". Lossless audio (`.wav`,
+`.flac`) is skipped WITH a reason that the export report shows, so nothing is
+silently dropped. Revisit when: the owner wants a real WAV→OGG/Opus build step —
+the shape would be a new opt-in per-format transform in `ForkAssetPlan.js` plus
+a matching branch in the applier.
+
+`[P16-format-migration]` **No image format migration — by design
+(`Phase16.md` §5).** Images are re-encoded in place, same format; a PNG never
+becomes a JPEG or a WebP. The runtime resolves assets by resource name and the
+resource's declared extension, so a per-asset format change is an authoring
+decision (and a transparency trap), not build compression. PNG is therefore the
+one format guaranteed to stay lossless and alpha-preserving. Revisit when:
+never as an automatic step; a Phase-17-style explicit per-asset tool could offer
+it with the user watching.
+
+`[P16-preview-not-optimized]` **Previews are not optimized — by design
+(`[D16-5]`).** Only the two EXPORT paths are wrapped; the preview launcher drives
+`gd.Exporter` directly and is not one of the pipelines this phase touches.
+Previews are re-exported constantly (including on every game-code hot reload) and
+their size does not matter, so re-encoding every asset on each preview launch
+would be a large, unwanted cost. Recorded so a future reader does not read the
+omission as a missed path. Revisit when: never, unless a preview ever needs it —
+that would be its own setting and its own wrapper over `LocalPreviewLauncher`.
+
+`[P16-sharp-abi]` **`sharp` needs an Electron-ABI build — operational, tracked
+in `usertasks.md` as `[P16-abi]`.** `sharp` is installed in
+`newIDE/electron-app/app` with its Node-ABI prebuild; the Electron main process
+needs the Electron-ABI binary, and the rebuild is an app-packaging step
+(`electron-rebuild` / `electron-builder install-app-deps`) that needs a desktop
+session. The feature degrades gracefully until then: the capabilities probe
+reports no image encoder, the planner skips images with a reason, and the Build
+tab says so. This entry only points at the live item — the action lives in
+`usertasks.md`.
+
+`[P16-projection-is-an-estimate]` **The savings projection is an estimate, by
+construction — and that is the honest answer.** `report_asset_optimization`
+returns a documented low/high band per transform rather than a measured number,
+because the real gain depends on how the source was already compressed and
+nothing outside the encoder can know it. The message and the tool description
+both say "estimate"; the exact numbers come from the export report. Revisit
+when: the export reports have accumulated enough data to replace the bands with
+measured ratios (recorded as `[P16-projection]` in `outofscoped.md`).
+
+## 2026-10-08 — Phases 17 + 18 recorded limitations (both RESOLVED 2026-10-09)
+
+`[P17-preview-reload]` **A changed binary asset does NOT hot-reload a launched
+(separate-window) preview — only the in-editor surfaces reload.** RESOLVED
+2026-10-09 (the owner ordered the preview hop built): the reload paths now
+also notify a preview-reload seam. The refresh is a re-export + hard reload
+of the preview windows — upstream's own `relaunchAndThenHardReloadAllPreviews`
+sequence — because an in-place refresh is impossible without engine changes
+(the runtime's resource caches are keyed by URL, `_loadTexture` returns early
+for a cached texture, and cache-busting URLs are only added in the in-game
+edition, `ResourceLoader.getFullUrl`). The running game restarts; that is the
+honest cost. See `Fork/AssetPipeline/ForkAssetPreviewReload.js` and the
+2026-10-09 worklog entry.
+
+`[P18-while-conditions-unscanned]` **The guardrail engine read the
+`conditions` and `actions` lists only — a While event's `whileConditions`
+list was not scanned in v1.** RESOLVED 2026-10-09: `getEventInstructions`
+gained a `whileConditions` branch and all three condition-reading rules use
+it — a Once in a While's own guard fires `G18-once-in-loop` (the guard is
+re-checked every iteration, so the While event itself is the loop), the
+duplicate-once rule scans the guard list as its own list, and the picking
+advisory counts guard conditions as picking. Real-gd spec coverage included.

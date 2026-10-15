@@ -234,6 +234,28 @@ const effectChangeProperty = objectProperty('One effect change.', {
   'write_game_code_file',
   'delete_game_code_file',
   'reload_game_code',
+  // Build-time asset optimization (Phase 16.5, D16-9): the savings
+  // projection over the project's resources and the settings the export
+  // reads (Fork/AssetBuild). Both are read/config — neither writes to the
+  // project, and both are advertised only through search_tools.
+  'report_asset_optimization',
+  'set_asset_optimization_settings',
+  // Tag-driven asset management (Phase 17.7, D17-10): the tagged asset
+  // listing and the tag writer over the resource metadata (Fork/
+  // AssetPipeline). list_assets reads; set_asset_tags writes the metadata
+  // (a project change). Both advertised only through search_tools.
+  'list_assets',
+  'set_asset_tags',
+  // Event-sheet guardrails (Phase 18.3, D18-6): the read-only trap report
+  // over the project's scenes (Fork/Guardrails) — the same diagnostics the
+  // events sheet shows as inline badges. Advertised only through
+  // search_tools.
+  'scan_scene_events',
+  // Sprite-sheet import (Phase 19.5, D19-1): slice one local image along an
+  // explicit grid into frame files + a new animation of a Sprite object.
+  // Intercepted (ByokSpriteSheetTools), desktop-guarded by the handler,
+  // advertised only through search_tools.
+  'import_sprite_sheet',
 ];
 
 /**
@@ -2160,6 +2182,169 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
       required: [],
     },
   },
+  {
+    name: 'report_asset_optimization',
+    description:
+      "Estimate how much smaller the game's export would be with the build-time asset optimization on: every image and audio resource of the project is planned (PNG re-compressed losslessly, JPEG/WebP at the quality setting, lossy audio re-encoded) and the projected per-file and total savings are returned as a low-high range. Writes NOTHING — the compression only runs at export, on the export copy, and the project's original files are never touched.",
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'set_asset_optimization_settings',
+    description:
+      'Change the build-time asset optimization settings the exporter reads (the same ones as Preferences > Build). Only the knobs you pass are updated; the rest keep their value. The changes take effect at the next export.',
+    parameters: {
+      type: 'object',
+      properties: {
+        enabled: booleanProperty(
+          'Turn the optimization on (true) or off (false) for exports.'
+        ),
+        png_level: numberProperty(
+          'PNG zlib compression level, 0 (fast) to 9 (smallest, still lossless).'
+        ),
+        jpeg_quality: numberProperty(
+          'JPEG quality, 1-100 (85 is visually lossless at game resolutions).'
+        ),
+        webp_quality: numberProperty(
+          'WebP quality, 1-100 (its own knob, separate from JPEG).'
+        ),
+        optimize_manual_exports: booleanProperty(
+          'Also optimize the "export to a folder" path, not only the one-click online build.'
+        ),
+        audio_enabled: booleanProperty(
+          'Re-encode lossy audio (mp3, ogg, m4a, aac, opus) at a lower bitrate.'
+        ),
+        audio_bitrate_kbps: numberProperty(
+          'The target audio bitrate in kbps, 32-320 (128 is the default).'
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'list_assets',
+    description:
+      "List the project's assets (resources) with their tags: name, kind, file and the tag list of each. Filter with tag (only assets carrying that tag — the same grouping the Assets view uses) or untagged_only (only assets with no tag). Tags are cosmetic lowercase labels used to organise assets; they never change load order, resource names or export naming.",
+    parameters: {
+      type: 'object',
+      properties: {
+        tag: stringProperty(
+          'Only list the assets carrying this tag (case-insensitive).'
+        ),
+        untagged_only: booleanProperty(
+          'Only list the assets that carry no tag at all.'
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'set_asset_tags',
+    description:
+      'Set the tags of one or more project assets (by resource name). Tags are free-form lowercase labels (no slashes, no control characters, max 64 chars) stored in the resource metadata and saved with the project. Modes: "set" replaces the tags, "merge" adds them (the default), "remove" removes the listed tags, "clear" removes all tags (tags argument ignored). The call is atomic: an invalid tag or an unknown asset name refuses the whole change.',
+    parameters: {
+      type: 'object',
+      properties: {
+        asset_names: arrayProperty(
+          'The resource names of the assets to tag (see list_assets for the exact names).',
+          stringProperty('One resource name.')
+        ),
+        tags: arrayProperty(
+          'The tags to apply, interpreted per mode.',
+          stringProperty('One tag (lowercase, no slashes).')
+        ),
+        mode: enumProperty('How to combine the tags with the existing ones.', [
+          'set',
+          'merge',
+          'remove',
+          'clear',
+        ]),
+      },
+      required: ['asset_names'],
+    },
+  },
+  {
+    name: 'scan_scene_events',
+    description:
+      'Scan one scene (or every scene) for event-sheet guardrail traps and return the read-only diagnostics: rule id (G18-once-in-loop, G18-wait-in-loop, G18-action-without-picking, G18-duplicate-once), severity, message and event path. The events sheet shows the same findings as inline badges. Writes nothing — use add_scene_events to fix what it reports.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scene_name: stringProperty(
+          'Only scan this scene. Omit to scan every scene of the project.'
+        ),
+        rule_ids: arrayProperty(
+          'Only run these guardrail rules (by id). Omit to run all four.',
+          stringProperty('One rule id, e.g. G18-once-in-loop.')
+        ),
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'import_sprite_sheet',
+    description:
+      'Slice one local sprite-sheet image (a texture atlas) along an explicit grid into frame PNG files written into the project assets folder, register them, and append them as a new animation (or the frames of an existing animation name) of a Sprite object, in reading order (row-major). Desktop app only. The grid must divide the image: "rows-columns" derives the frame size so the cells tile exactly; "frame-size" derives the cell count. Nothing is written when the grid does not divide the image or the object does not exist.',
+    parameters: {
+      type: 'object',
+      properties: {
+        object_name: stringProperty(
+          'Name of the Sprite object to import into (searched in the scenes, then in the global objects).'
+        ),
+        source_path: stringProperty(
+          'The sprite sheet image to slice: an absolute path, or a path relative to the project folder.'
+        ),
+        grid: objectProperty(
+          'The explicit grid to slice with. No automatic detection: count the rows and columns yourself (or the frame size).',
+          {
+            mode: enumProperty(
+              'How the grid is stated: "rows-columns" gives the cell COUNT (the frame size is derived so the cells tile the image exactly); "frame-size" gives the frame SIZE (the cell count is derived by flooring).',
+              ['rows-columns', 'frame-size']
+            ),
+            rows: {
+              type: 'integer',
+              description:
+                'Number of rows ("rows-columns" mode; there is no default — pass rows and columns together).',
+            },
+            columns: {
+              type: 'integer',
+              description:
+                'Number of columns ("rows-columns" mode; there is no default — pass rows and columns together).',
+            },
+            frame_width: {
+              type: 'integer',
+              description:
+                'Frame width in pixels ("frame-size" mode; no default — pass frame_width and frame_height together).',
+            },
+            frame_height: {
+              type: 'integer',
+              description:
+                'Frame height in pixels ("frame-size" mode; no default — pass frame_width and frame_height together).',
+            },
+            margin: {
+              type: 'integer',
+              description:
+                'Outer border of the sheet on all four sides, in pixels (default 0).',
+            },
+            spacing: {
+              type: 'integer',
+              description:
+                'Gap between frames, horizontally and vertically, in pixels (default 0).',
+            },
+          }
+        ),
+        animation_name: stringProperty(
+          'Name of the animation to create or append to on the object (default "Imported").'
+        ),
+        fps: numberProperty('Frames per second of the animation (default 10).'),
+        loop: booleanProperty('Whether the animation loops (default true).'),
+      },
+      required: ['object_name', 'source_path', 'grid'],
+    },
+  },
 ];
 
 /**
@@ -2341,6 +2526,19 @@ export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
   'write_game_code_file',
   'delete_game_code_file',
   'reload_game_code',
+  // Phase 16.5 asset-build tools: no registry entry either (the thin
+  // adapters in ByokAssetTools over Fork/AssetBuild), and the Phase 17.7
+  // asset-tag tools (the same file over Fork/AssetPipeline).
+  'report_asset_optimization',
+  'set_asset_optimization_settings',
+  'list_assets',
+  'set_asset_tags',
+  // Phase 18.3 guardrail tool: no registry entry (the thin adapter in
+  // ByokGuardrailTools over Fork/Guardrails).
+  'scan_scene_events',
+  // Phase 19.5 sprite-sheet tool: no registry entry (the thin adapter in
+  // ByokSpriteSheetTools over Fork/SpriteSheet).
+  'import_sprite_sheet',
 ];
 
 const BYOK_ONLY_TOOL_NAMES_SET: Set<string> = new Set(BYOK_ONLY_TOOL_NAMES);
@@ -2413,16 +2611,21 @@ export const validateByokToolSchemas = (
   }
   // The dispatchable list grew phase by phase: 62 names at the end of
   // Phase 12, plus search_tools in Phase 13.5 (63), then 64; Phase 15.3
-  // raised it to 69 with the five game-code tools (the owner approved the
-  // raise — it guards the DISPATCH whitelist, not the wire payload: the
-  // ADVERTISED set is the much smaller core list (BYOK_CORE_TOOL_NAMES),
-  // which is what the 13.5 token budget guards; this cap only stops the
-  // dispatchable whitelist from growing unnoticed).
-  if (BYOK_TOOL_NAMES.length > 69) {
+  // raised it to 69 with the five game-code tools, Phase 16.5 to 71 with
+  // the two asset-optimization tools, and Phases 17.7 + 18.3 to 74 with the
+  // two asset-tag tools and scan_scene_events — the cap moved to 75 in the
+  // same owner-approved raise that covers Phase 19's sprite-sheet tool (the
+  // usertasks §6 [P1719-cap] recommendation), which Phase 19.5 then used:
+  // the list now sits AT the cap (75/75), so the NEXT dispatchable tool
+  // needs a new raise. It guards the DISPATCH whitelist, not the wire
+  // payload: the ADVERTISED set is the much smaller core list
+  // (BYOK_CORE_TOOL_NAMES), which is what the 13.5 token budget guards;
+  // this cap only stops the dispatchable whitelist from growing unnoticed.
+  if (BYOK_TOOL_NAMES.length > 75) {
     problems.push(
       `The default tool set has ${
         BYOK_TOOL_NAMES.length
-      } tools — the cap is 69.`
+      } tools — the cap is 75.`
     );
   }
 

@@ -19,6 +19,7 @@ import {
 } from './GameCodePaneState';
 import GameCodeTree from './GameCodeTree';
 import { type ByokGameCodeStore } from './ByokGameCodeStore';
+import { type SetupResourcesWatcher } from '../../../ProjectsStorage/LocalFileStorageProvider/LocalFileResourcesWatcher';
 import { ensureByokGameCodeCarrier } from './ByokGameCodeCarrier';
 
 /**
@@ -61,11 +62,7 @@ type GameCodePaneProps = {|
   reloadGameCode?: ?ByokGameCodePaneReloadFunction,
   /** The chat pane renderer; the default is the standalone Ask AI editor. */
   renderChatEditor?: RenderEditorContainerPropsWithRef => React.Node,
-  setupWatcher?: (watcherOptions: {|
-    callback: (event: {| identifier: string |}) => void,
-    fileIdentifier: string,
-    options?: { isProjectSplitInMultipleFiles: boolean },
-  |}) => () => void,
+  setupWatcher?: SetupResourcesWatcher,
   debounceDelayMs?: number,
 |};
 

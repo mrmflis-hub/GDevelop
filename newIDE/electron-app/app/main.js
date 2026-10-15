@@ -58,6 +58,12 @@ const { registerByokMcpServer } = require('./ByokMcpServer');
 const { registerByokRagFileHandlers } = require('./ByokRagFiles');
 const { registerByokResourceDownload } = require('./ByokResourceDownload');
 const { registerByokGameCodeFiles } = require('./ByokGameCode');
+// Phase 16.2: the build-time asset optimizer applier (desktop-only, opt-in).
+const { registerForkAssetOptimizer } = require('./ForkAssetOptimizer');
+// Phase 19.2: the sprite-sheet slicer (confined, never-overwriting writes).
+const { registerForkSpriteSheetSlicer } = require('./ForkSpriteSheet');
+// Phase 17.2: the fork asset-index sidecar IPC (confined to the project folder).
+const { registerForkAssetIndexFiles } = require('./ForkAssetIndex');
 const {
   ensureStarted: ensureByokQdrantStarted,
   registerByokQdrant,
@@ -528,6 +534,18 @@ app.on('ready', function() {
   // re-checks every path against the folder it derives from the project
   // file.
   registerByokGameCodeFiles(ipcMain);
+  // Phase 16.2: the build-time asset optimizer — the renderer owns the policy
+  // (Fork/AssetBuild/ForkAssetPlan.js) and the plan; this side only applies it
+  // in place (ForkAssetOptimizer.js) and reports before/after bytes.
+  registerForkAssetOptimizer(ipcMain);
+  // Phase 19.2: crop a sprite sheet atlas into frame PNGs inside the
+  // project's assets folder (ForkSpriteSheet.js) — the renderer owns the
+  // plan (Fork/SpriteSheet/ForkSpriteSheetPlan.js) and the naming.
+  registerForkSpriteSheetSlicer(ipcMain);
+  // Phase 17.2: the optional <project>/assets-index.json sidecar — the
+  // renderer owns the format and the "metadata is the authority" rule; this
+  // side only reads/writes the one confined file.
+  registerForkAssetIndexFiles(ipcMain);
   // The managed Qdrant (BYOK RAG) starts with the app once installed.
   // Called directly (not via app.on('ready')): this code already runs
   // inside the one 'ready' emission, and a listener registered during an
@@ -713,9 +731,15 @@ app.on('ready', function() {
     (event, folderPath, options) => {
       const subscriptionId = setupWatcher(
         folderPath,
-        changedFilePath => {
+        // Fork (Phase 17 [P17-kind-hint]): the second argument is the
+        // chokidar event type ('add' | 'change' | 'unlink').
+        (changedFilePath, changedEventKind) => {
           if (!event.sender.isDestroyed()) {
-            event.sender.send('project-file-changed', changedFilePath);
+            event.sender.send(
+              'project-file-changed',
+              changedFilePath,
+              changedEventKind
+            );
           }
         },
         options

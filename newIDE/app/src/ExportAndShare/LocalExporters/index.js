@@ -8,6 +8,7 @@ import { localOnlineCordovaExportPipeline } from './LocalOnlineCordovaExport';
 import { localOnlineCordovaIosExportPipeline } from './LocalOnlineCordovaIosExport';
 import { localOnlineElectronExportPipeline } from './LocalOnlineElectronExport';
 import { localOnlineWebExportPipeline } from './LocalOnlineWebExport';
+import { makeForkAssetOptimizingExportPipeline } from '../../Fork/AssetBuild/ForkAssetOptimizingExportPipeline';
 import { cordovaExporter } from '../GenericExporters/CordovaExport';
 import { onlineWebExporter } from '../GenericExporters/OnlineWebExport';
 import { html5Exporter } from '../GenericExporters/HTML5Export';
@@ -22,6 +23,18 @@ export const localOnlineWebExporter: Exporter = {
   ...onlineWebExporter,
   exportPipeline: localOnlineWebExportPipeline,
 };
+
+// Phase 16.3 (D16-4): the fork wraps the two desktop pipelines so the
+// build-time asset optimizer runs between the resource download and the
+// packaging — inside `launchCompression`, before the zip on the online path
+// and as the manual path's tail. The wrapper is a pass-through while the
+// feature is off (A16-5); the C++ exporter is never touched.
+const forkOptimizingOnlineElectronExportPipeline = makeForkAssetOptimizingExportPipeline(
+  localOnlineElectronExportPipeline
+);
+const forkOptimizingElectronExportPipeline = makeForkAssetOptimizingExportPipeline(
+  localElectronExportPipeline
+);
 
 export const localAutomatedExporters: Array<Exporter> = [
   // $FlowFixMe[incompatible-type]
@@ -42,7 +55,7 @@ export const localAutomatedExporters: Array<Exporter> = [
   // $FlowFixMe[incompatible-type]
   {
     ...onlineElectronExporter,
-    exportPipeline: localOnlineElectronExportPipeline,
+    exportPipeline: forkOptimizingOnlineElectronExportPipeline,
   },
   // $FlowFixMe[incompatible-type]
   {
@@ -65,6 +78,6 @@ export const localManualExporters: Array<Exporter> = [
   // $FlowFixMe[incompatible-type]
   {
     ...electronExporter,
-    exportPipeline: localElectronExportPipeline,
+    exportPipeline: forkOptimizingElectronExportPipeline,
   },
 ];

@@ -3125,7 +3125,7 @@ type OutOfEditorChanges = {|
 
 export type EventsSheetInterface = {|
   updateToolbar: () => void,
-  onResourceExternallyChanged: ({| identifier: string |}) => void,
+  onResourceExternallyChanged: ({| fileIdentifier: string |}) => void,
   onEventsModifiedOutsideEditor: (changes: OutOfEditorChanges) => void,
   scrollToEventPath: (eventPath: EventPath) => void,
   setGlobalSearchResults: (

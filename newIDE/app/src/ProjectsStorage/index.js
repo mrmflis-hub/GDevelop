@@ -5,6 +5,7 @@ import { type MessageDescriptor } from '../Utils/i18n/MessageDescriptor.flow';
 import { type AppArguments } from '../Utils/Window';
 import { type AuthenticatedUser } from '../Profile/AuthenticatedUserContext';
 import { type MenuItemTemplate } from '../UI/Menu/Menu.flow';
+import { type ResourcesWatcherCallbackPayload } from './LocalFileStorageProvider/LocalFileResourcesWatcher';
 import {
   type ShowAlertFunction,
   type ShowConfirmFunction,
@@ -214,7 +215,7 @@ export type StorageProvider = {|
   /** Resources external changes */
   setupResourcesWatcher?: ({|
     fileIdentifier: string,
-    callback: ({| identifier: string |}) => void,
+    callback: ResourcesWatcherCallbackPayload => void,
     options?: any,
   |}) => () => void,
 |};

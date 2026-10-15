@@ -105,9 +105,14 @@ export const makeByokMcpToolDescriptors = (options: {|
  * the text every future BYOK chat injects into its system prompt. A
  * read-only external agent could therefore persist an injection there
  * (audit100226 MCP-7), so it is refused in read-only mode by name.
+ * `set_asset_optimization_settings` (Phase 16.5) joins them: it is also
+ * `modifiesProject: false` (it writes app preferences, not the project) and
+ * durably changes what every later export writes to disk — the same
+ * "read-only must not persist" rule applies.
  */
 const BYOK_MCP_DURABLE_WRITE_TOOL_NAMES: Set<string> = new Set([
   'update_project_notes',
+  'set_asset_optimization_settings',
 ]);
 
 /** True for a tool that persists agent state outside the project. */

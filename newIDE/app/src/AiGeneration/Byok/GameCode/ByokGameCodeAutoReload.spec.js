@@ -21,12 +21,15 @@ const makeFakeProject = () => ({
 });
 
 const makeFakeWatcher = () => {
-  let registeredCallback: ?({ identifier: string }) => void = null;
+  let registeredCallback: ?({
+    fileIdentifier: string,
+    event: ?string,
+  }) => void = null;
   let unsubscribeCount = 0;
   const setupWatcher = mockFn(
     jest.fn(
       (watcherOptions: {
-        callback: ({ identifier: string }) => void,
+        callback: ({ fileIdentifier: string, event: ?string }) => void,
         fileIdentifier: string,
       }) => {
         registeredCallback = watcherOptions.callback;
@@ -38,9 +41,9 @@ const makeFakeWatcher = () => {
   );
   return {
     setupWatcher,
-    fire: (identifier: string) => {
+    fire: (identifier: string, eventKind: ?string = null) => {
       if (!registeredCallback) throw new Error('No callback registered.');
-      registeredCallback({ identifier });
+      registeredCallback({ fileIdentifier: identifier, event: eventKind });
     },
     getUnsubscribeCount: () => unsubscribeCount,
   };
@@ -232,6 +235,27 @@ describe('startByokGameCodeAutoReload', () => {
     });
 
     watcher.fire(`${FOLDER_NAME}/character/spawn.js`);
+    jest.advanceTimersByTime(150);
+    await flushAsync();
+
+    expect(onReload).toHaveBeenCalledWith({
+      changedRelativePath: `${FOLDER_NAME}/character/spawn.js`,
+      wasDeleted: true,
+    });
+  });
+
+  it('flags an unlink event as deleted even when the store still reads it', async () => {
+    const watcher = makeFakeWatcher();
+    const onReload = jest.fn(() => Promise.resolve());
+    makeAutoReload({
+      onReload,
+      setupWatcher: watcher.setupWatcher,
+      // The store still serves the file (a stale cache): the watcher's
+      // 'unlink' kind is authoritative ([P17-kind-hint]).
+      store: (makeFakeStore(['main.js', 'character/spawn.js']): any),
+    });
+
+    watcher.fire(`${FOLDER_NAME}/character/spawn.js`, 'unlink');
     jest.advanceTimersByTime(150);
     await flushAsync();
 

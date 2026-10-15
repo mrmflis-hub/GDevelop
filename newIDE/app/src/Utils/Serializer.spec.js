@@ -387,3 +387,145 @@ describe('Serializer wrapper lifecycle (fake gd)', () => {
     expect(state.fromJSObjectElements[0].deleteCount).toBe(1);
   });
 });
+
+/**
+ * [P16-serializer-trap-guard] — keep the `gd.Serializer.toJSON(<project>)`
+ * WASM-heap trap CLOSED. The one-argument form is only safe on a freshly
+ * created `SerializerElement` (see `serializeToJSON` above for the correct
+ * pattern); called on a project or any other serializable it corrupts the
+ * libGD heap AND poisons the module for the rest of the Jest file, so the
+ * failure cascades into unrelated tests with a misleading error (hit while
+ * writing Phase 16; no production code does it today — this guard keeps it
+ * that way).
+ *
+ * The rule enforced: every `Serializer.toJSON(` call in production source
+ * must pass a SECOND argument (the two-argument form) or, when it has a
+ * single argument, be on the documented allowlist below (e.g. a call on a
+ * variable literally named like a SerializerElement).
+ */
+// $FlowFixMe[cannot-resolve-module] - a Node builtin, used by this spec only.
+const guardFs = require('fs');
+// $FlowFixMe[cannot-resolve-module] - a Node builtin, used by this spec only.
+const guardPathModule = require('path');
+
+/**
+ * One-argument calls whose argument is VERIFIED to be a SerializerElement
+ * created for the call (the safe form), keyed as `<file>|<call text>`.
+ */
+const SINGLE_ARGUMENT_ALLOWLIST: Set<string> = new Set([
+  // serializeToJSON and friends: `serializedElement` is a fresh
+  // `new gd.SerializerElement()` deleted in the same function.
+  'Utils/Serializer.js|Serializer.toJSON(serializedElement)',
+  // The background saver: `element` is the SerializerElement returned by
+  // `deserializeBinarySnapshot` and deleted right after the call.
+  'Utils/BackgroundSerializer.worker.js|Serializer.toJSON(element)',
+  // The game-code hot reload's exporter-element helper: `element` is a
+  // fresh `new gd.SerializerElement()` deleted in the finally block.
+  'AiGeneration/Byok/GameCode/ByokGameCodeHotReload.js|Serializer.toJSON(element)',
+  // The preview launchers (local + service-worker): both elements are fresh
+  // `new gd.SerializerElement()` deleted right after the call.
+  'ExportAndShare/LocalExporters/LocalPreviewLauncher/index.js|Serializer.toJSON(projectDataElement)',
+  'ExportAndShare/LocalExporters/LocalPreviewLauncher/index.js|Serializer.toJSON(runtimeGameOptionsElement)',
+  'ExportAndShare/BrowserExporters/BrowserSWPreviewLauncher/index.js|Serializer.toJSON(projectDataElement)',
+  'ExportAndShare/BrowserExporters/BrowserSWPreviewLauncher/index.js|Serializer.toJSON(runtimeGameOptionsElement)',
+  // A COMMENT documenting the historical trap (the audit's O1 finding), not
+  // a call — the scanner reads text, not syntax.
+  'AiGeneration/Byok/ByokSettingsTab.js|Serializer.toJSON(scene.getEvents())',
+]);
+
+const SERIALIZER_TO_JSON_PATTERN = /Serializer\s*\.\s*toJSON\s*\(/g;
+
+/**
+ * Split a call's argument list on TOP-LEVEL commas only, so nested calls
+ * (`toJSON(makeElement(a, b))`) are not split mid-argument.
+ */
+const countTopLevelArguments = (argumentList: string): number => {
+  let depth = 0;
+  let count = 1;
+  for (let index = 0; index < argumentList.length; index++) {
+    const character = argumentList[index];
+    if (character === '(' || character === '[' || character === '{') {
+      depth += 1;
+      continue;
+    }
+    if (character === ')' || character === ']' || character === '}') {
+      depth -= 1;
+      continue;
+    }
+    if (character === ',' && depth === 0) count += 1;
+  }
+  return count;
+};
+
+const findOneArgumentToJSONCalls = (content: string): Array<string> => {
+  const findings: Array<string> = [];
+  let match = SERIALIZER_TO_JSON_PATTERN.exec(content);
+  while (match) {
+    const afterParenthesis = content.slice(match.index + match[0].length);
+    let depth = 1;
+    let end = 0;
+    while (end < afterParenthesis.length && depth > 0) {
+      const character = afterParenthesis[end];
+      if (character === '(') depth += 1;
+      if (character === ')') depth -= 1;
+      end += 1;
+    }
+    const argumentList = afterParenthesis.slice(0, Math.max(end - 1, 0));
+    if (countTopLevelArguments(argumentList) === 1) {
+      findings.push(`Serializer.toJSON(${argumentList})`);
+    }
+    match = SERIALIZER_TO_JSON_PATTERN.exec(content);
+  }
+  return findings;
+};
+
+const listSourceFiles = (directory: string): Array<string> => {
+  const files: Array<string> = [];
+  for (const entry of guardFs.readdirSync(directory)) {
+    if (entry === 'locales' || entry === '__snapshots__') continue;
+    const absolute = guardPathModule.join(directory, entry);
+    const stat = guardFs.statSync(absolute);
+    if (stat.isDirectory()) {
+      files.push(...listSourceFiles(absolute));
+      continue;
+    }
+    if (entry.endsWith('.js') && !entry.endsWith('.spec.js')) {
+      files.push(absolute);
+    }
+  }
+  return files;
+};
+
+describe('the one-argument Serializer.toJSON guard', () => {
+  it('has no production call that is not the two-argument safe form', () => {
+    // Root the walk at src/ so the allowlist keys read like import paths.
+    // $FlowFixMe[cannot-resolve-name] - used by this spec only.
+    const srcRoot = guardPathModule.join(__dirname, '..');
+    const offenders: Set<string> = new Set();
+    for (const file of listSourceFiles(srcRoot)) {
+      const relative = guardPathModule
+        .relative(srcRoot, file)
+        .replace(/\\/g, '/');
+      const content = guardFs.readFileSync(file, 'utf8');
+      for (const finding of findOneArgumentToJSONCalls(content)) {
+        if (SINGLE_ARGUMENT_ALLOWLIST.has(`${relative}|${finding}`)) continue;
+        offenders.add(`${relative}: ${finding}`);
+      }
+    }
+    expect(Array.from(offenders).sort()).toEqual([]);
+  });
+
+  it('would catch the trap (the guard is not vacuous)', () => {
+    expect(
+      findOneArgumentToJSONCalls('gd.Serializer.toJSON(project);')
+    ).toEqual(['Serializer.toJSON(project)']);
+    expect(
+      findOneArgumentToJSONCalls('gd.Serializer.toJSON(element, project);')
+    ).toEqual([]);
+    expect(
+      findOneArgumentToJSONCalls(
+        'gd.Serializer.toJSON(makeElement(a, b), project);'
+      )
+    ).toEqual([]);
+  });
+});

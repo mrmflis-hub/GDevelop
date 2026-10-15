@@ -428,6 +428,40 @@ describe('ByokMcpTools: read-only refuses durable agent-state writes (MCP-7)', (
     ).toBe(true);
   });
 
+  it('blocks set_asset_optimization_settings in read-only mode (Phase 16.5)', () => {
+    // Also modifiesProject:false — it writes app preferences, not the
+    // project — but it durably changes what every later export writes to
+    // disk, so a read-only external agent must not persist it either.
+    expect(
+      byokMcpCallIsAllowed(
+        { modifiesProject: false },
+        { enabled: true },
+        'read-only',
+        'set_asset_optimization_settings'
+      )
+    ).toBe(false);
+    // Its read-only sibling stays allowed.
+    expect(
+      byokMcpCallIsAllowed(
+        { modifiesProject: false },
+        {},
+        'read-only',
+        'report_asset_optimization'
+      )
+    ).toBe(true);
+  });
+
+  it('allows it in read-write mode', () => {
+    expect(
+      byokMcpCallIsAllowed(
+        { modifiesProject: false },
+        { enabled: true },
+        'read-write',
+        'set_asset_optimization_settings'
+      )
+    ).toBe(true);
+  });
+
   it('leaves genuinely read-only tools allowed in read-only mode', () => {
     expect(
       byokMcpCallIsAllowed(

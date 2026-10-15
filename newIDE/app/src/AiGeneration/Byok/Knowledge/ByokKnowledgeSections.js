@@ -314,6 +314,30 @@ export const BYOK_TASK_CATALOG: Array<{|
       'search_tools "restore" → restore_project_point with a message id.',
     toolQuery: 'restore',
   },
+  {
+    task: 'Shrink the exported build (compress the game assets)',
+    guidance:
+      'search_tools "asset optimization" → report_asset_optimization (projected per-file savings, reads only) and set_asset_optimization_settings; the compression itself runs at export, on the export copy.',
+    toolQuery: 'asset optimization',
+  },
+  {
+    task: 'Organise the game assets (list, tag, find untagged)',
+    guidance:
+      'search_tools "asset tags" → list_assets (by tag or untagged) and set_asset_tags (set/merge/remove/clear; the tags are cosmetic and saved with the project).',
+    toolQuery: 'asset tags',
+  },
+  {
+    task: 'Find event-sheet traps (Once in a loop, unpicked actions)',
+    guidance:
+      'search_tools "guardrail" → scan_scene_events (read-only report: rule id, severity, event path; the events sheet badges the same findings).',
+    toolQuery: 'guardrail',
+  },
+  {
+    task: 'Import a sprite sheet (slice one image into animation frames)',
+    guidance:
+      'search_tools "sprite sheet" → import_sprite_sheet (desktop: an explicit grid — rows/columns or frame size — slices a local image into a new animation of a Sprite object).',
+    toolQuery: 'sprite sheet',
+  },
 ];
 
 const buildTaskCatalogLines = (): Array<string> =>
@@ -327,6 +351,9 @@ const RETRIEVAL_MAP_SECTION_TEXT = [
   '- the WHOLE corpus at once (grep the docs): search_knowledge(query) — the engine reference, the docs, the skills and the runnable EventScript examples in one search (you can grep the full engine documentation on-device).',
   '- the whole wiki, minified and bundled offline (the docs-min chunks): browse by category map first — search_knowledge("docs", tags: ["map"]) returns one map per wiki category (every page as path — title — summary); pull a page\'s minified chunks with a content search (tags: ["docs-min"]), and read_doc_page(path) when the minified page is not enough.',
   '- skills: load_skill(name) — the playbooks listed in the Available skills section.',
+  '- build size: search_tools "asset optimization" → report_asset_optimization (projected per-file savings of an export, reads only) and set_asset_optimization_settings; the compression runs at export, on the export copy, and never touches the project.',
+  '- asset tags: search_tools "asset tags" → list_assets (the project assets by tag or untagged) and set_asset_tags (set/merge/remove/clear the cosmetic tags; saved with the project, and the Assets view of the Resources editor browses them).',
+  '- event-sheet guardrails: search_tools "guardrail" → scan_scene_events (the read-only trap report of a scene: Once-in-loop, Wait-in-loop, actions no condition picks, duplicate Once — the events sheet shows the same findings as badges).',
   '',
   'Common tasks and the search that solves them:',
   ...buildTaskCatalogLines(),

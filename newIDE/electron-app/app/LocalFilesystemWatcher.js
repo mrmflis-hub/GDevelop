@@ -51,15 +51,13 @@ const setupWatcher = (folderPath, fileWiseCallback, serializedOptions) => {
         pollInterval: 100,
       },
     })
-    .on(
-      'change',
-      // TODO: Is it safe to let it like that since the OS could for some reason
-      // do never-ending operations on the folder or its children, making the debounce
-      // never ending.
-      fileWiseCallback
-    )
-    .on('unlink', fileWiseCallback)
-    .on('add', fileWiseCallback);
+    // Fork (Phase 17 [P17-kind-hint]): forward the chokidar event TYPE next
+    // to the path, so the renderer can tell an added file from a changed one
+    // — and observe a deletion. The event name is passed verbatim
+    // ('add' | 'change' | 'unlink').
+    .on('change', filePath => fileWiseCallback(filePath, 'change'))
+    .on('unlink', filePath => fileWiseCallback(filePath, 'unlink'))
+    .on('add', filePath => fileWiseCallback(filePath, 'add'));
 
   subscriptionCancelers[newSubscriptionId] = () => watcher.unwatch(folderPath);
 

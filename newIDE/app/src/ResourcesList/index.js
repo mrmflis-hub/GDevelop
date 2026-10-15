@@ -9,7 +9,11 @@ import Background from '../UI/Background';
 import SearchBar from '../UI/SearchBar';
 import KeyboardShortcuts from '../UI/KeyboardShortcuts';
 import { filterResourcesList } from './EnumerateResources';
-import { getResourceFilePathStatus } from './ResourceUtils';
+import { getResourceFilePathStatus, isURL } from './ResourceUtils';
+// Fork (Phase 17.6): the manual "Reload from disk" over the existing
+// external-change path.
+import { reloadForkResourceFromDisk } from '../Fork/AssetPipeline/ForkAssetReload';
+import { triggerOnResourceExternallyChanged } from '../MainFrame/ResourcesWatcher';
 import { type MenuItemTemplate } from '../UI/Menu/Menu.flow';
 import {
   type ResourceKind,
@@ -254,6 +258,22 @@ const ResourcesList: React.ComponentType<{
               label: i18n._(t`Delete`),
               click: () => deleteResource(resource),
             },
+            // Fork (Phase 17.6): reload a local file from disk through the
+            // existing external-change path (URL cache burst + editors).
+            ...(!isURL(resource.getFile()) && resource.getFile()
+              ? [
+                  {
+                    label: i18n._(t`Reload from disk`),
+                    click: () => {
+                      reloadForkResourceFromDisk({
+                        resource,
+                        triggerOnResourceExternallyChanged,
+                      });
+                      forceUpdateList();
+                    },
+                  },
+                ]
+              : []),
             { type: 'separator' },
             {
               label: i18n._(t`Remove unused...`),

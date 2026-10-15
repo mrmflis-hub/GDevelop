@@ -367,6 +367,18 @@ const AboutDialog = ({ onClose, updateStatus }: Props) => {
                   {getServiceWorkerStatusLabel(serviceWorkerUpdateStatus)}
                 </Text>
               )}
+              <Text size="sub-title">
+                <Trans>AI and external tools</Trans>
+              </Text>
+              <Text>
+                <Trans>
+                  The built-in AI assistant can also be driven by external AI
+                  apps (Claude Desktop, VS Code, ZCode and others) through the
+                  MCP server in Preferences. Those apps can connect to other MCP
+                  servers too, so they can act as a bridge to extra tools while
+                  they work on your project.
+                </Trans>
+              </Text>
             </ColumnStackLayout>
           </Line>
         </React.Fragment>

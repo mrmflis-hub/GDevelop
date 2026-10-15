@@ -5454,3 +5454,1085 @@ Nothing under `newIDE/` was modified.
 `no OOS`. `no deferred`. `no UT` — the packaging is done, and the four-PR
 split in the package README is a recommendation for the owner, not a pending
 decision.
+
+---
+
+## Run log — 2026-10-06 — Phase 16 + Phase 17 planning documents (owner-ordered)
+
+### 1. Date
+
+2026-10-06.
+
+### 2. Description of actions
+
+The owner asked which commonly-requested GDevelop features could be built in
+the fork under the BYOK/Monaco principle (all new code in our own files, minimal
+upstream edits, keep tracking upstream), then narrowed to two proposals — (A)
+compressing/optimizing assets during the build step, and (B) a unified,
+tag-driven asset-management pipeline — and ordered planning documents for both.
+
+- Assessment, first question: five read-only Explore subagents over the
+  extension surfaces (editor-shell tabs/dialogs/home, events-sheet structure,
+  the variables system, GDJS audio + 3D runtime, and assets/sprite-sheets/3D
+  navigation). Verdicts folded into the two phase docs' backgrounds.
+- Assessment, second question: four read-only Explore subagents over the export
+  pipeline, the game-code runtime loading path, and the resource/watcher
+  pipeline, plus direct reads of `ByokGameCodeCore.js`,
+  `ByokGameCodeCarrier.js`, `ByokGameCodeManifest.js` and `GameCodeTree.js`.
+- Wrote `REVIEW/Phase16.md` (build-time asset compression) and
+  `REVIEW/Phase17.md` (tag-driven asset management), following the Phase 14/15
+  structure: background vs. the tree, proposed decisions with recommendations,
+  per-step files / upstream touchpoints / acceptance criteria, a phase gate, and
+  an explicit out-of-scope section. Decisions were marked `[proposed]` and a
+  `usertasks.md` §6 entry was added for the answers.
+- Owner answers received in the same session (2026-10-06): the two dependencies
+  were **approved**, and the namespace was **answered** — feature code stays in a
+  non-AI `Fork/` namespace but must be reachable by the AI. Both docs were
+  updated to record this, gaining an AI-access step each (16.5 / 17.7) that
+  registers thin BYOK tool adapters delegating to the fork modules, advertised
+  through `search_tools` so the prompt budget is unaffected; the remaining
+  decisions were marked as standing on the recommendations.
+
+No code changed.
+
+### 3. Bugs found
+
+None in the repository — planning only. Three corrections were made to the
+owner's proposals and are the substance of the docs:
+
+- No separate asset manifest is needed (Phase 16): the resource manager plus the
+  flat export folder already are the input; a manifest would be a second source
+  of truth.
+- The game-code tree cannot be reused as a tag system (Phase 17): its grouping
+  is the physical folder path, which is load-order- and namespace-bearing
+  (`ByokGameCodeCore.js:277-292`, `:302-345`) and `.js`-only — the opposite of
+  cosmetic many-to-many asset tags. Only the architecture (pure module +
+  `UI/TreeView`) is reusable.
+- `@assets` ES imports cannot work (Phase 17): the exported game ships classic
+  `<script src>` tags (`ExporterHelper.cpp:1155`) with no module system, so an
+  `import` is a parse-time SyntaxError; assets are addressed by resource name
+  (`ResourceLoader.ts:609`). Reframed as name-based aliases + Monaco completions.
+
+### 4. Issues found
+
+- Phase 16 requires two new dependencies (`sharp`, `ffmpeg-static`), which
+  AGENTS.md §4 forbids without explicit approval; `sharp` is native and needs an
+  Electron-ABI rebuild. Escalated to `usertasks.md` §6 (`[D16-3]`).
+- Both phases propose a new non-AI fork namespace `newIDE/app/src/Fork/…` rather
+  than the BYOK namespace — flagged for the owner (`[D16-1]`, `[D17-1]`).
+- Upstream-touchpoint budgets are proposed (Phase 16: two files plus a
+  Preferences tab entry; Phase 17: the watcher bridge, the resource context
+  menu/provider actions, the completions hook, the Assets-view host, one
+  `main.js` registration) and await approval through the decision sets.
+
+### 5. Files worked on
+
+Created: `REVIEW/Phase16.md`, `REVIEW/Phase17.md`.
+Modified: `REVIEW/usertasks.md` (§6, new pending decisions), `REVIEW/worklog.md`.
+
+Nothing under `newIDE/` was modified.
+
+### Verification
+
+- Every `file:line` in both docs was produced by a read-only subagent or a
+  direct read this session, and spot re-checked against the source
+  (`ExportPipeline.flow.js` lifecycle, `ProjectResourcesCopier` flat copy,
+  `ResourceLoader.getResource`, `ExporterHelper.cpp:1155`, the resource-metadata
+  JSON convention in `ResourceUtils.js`, the watcher chain).
+- No code changed, so no gate re-run.
+
+### Triage
+
+`no OOS`. `no deferred`. UT: `usertasks.md` §6 — reduced to a single remaining
+item, the BYOK dispatch-whitelist cap raise (69 → enough for the four new tools),
+which needs the same owner approval Phase 15.3's raise took. The dependency
+approval and the namespace are answered.
+
+---
+
+## Run log — 2026-10-06 (session 2) — Phase 18 + Phase 19 planning documents; BYOK-as-MCP-client assessment
+
+### 1. Date
+
+2026-10-06.
+
+### 2. Description of actions
+
+The owner asked for two more fork features "as clean as" Phase 16/17, then named
+them — Phase 18 = event-sheet guardrails, Phase 19 = sprite-sheet import — and
+asked whether the BYOK AI layer can act as an MCP **client** (consume external MCP
+servers, e.g. Spine).
+
+- Four read-only Explore subagents: (a) the BYOK tool registry + dispatch
+  contract; (b) the MCP layer inventory and client feasibility; (c) the
+  event-sheet guardrail injection points; (d) the sprite model + import path.
+- Wrote `REVIEW/Phase18.md` (event-sheet guardrails) and `REVIEW/Phase19.md`
+  (sprite-sheet import), following the Phase 14–17 structure — background vs. the
+  tree, decisions, per-step files/upstream touchpoints/ACs, a phase gate, and an
+  out-of-scope section — each with a BYOK AI-access step (18.3 / 19.5) using the
+  shared non-AI `Fork/` namespace + thin `Byok` adapter pattern.
+- Answered the MCP question in chat: feasible but greenfield client code (see
+  "Issues found"); no phase doc written, offered as a possible Phase 20.
+
+No code changed.
+
+### 3. Bugs found
+
+None.
+
+### 4. Issues found
+
+- The MCP layer is **server-only** — ten modules, all inbound (`ByokMcpProtocol`,
+  `ByokMcpTools`, `ByokMcpToolHost`, `ByokMcpServer`, the stdio adapter). There is
+  no client transport, no `@modelcontextprotocol/sdk` dependency, and the tool
+  registry is a **closed static whitelist** with mandatory 1:1 schemas
+  (`ByokToolSchema.js:115`/`:2421`) and a dispatch set built once
+  (`ByokOrchestrator.js:175`). So BYOK-as-MCP-client needs a runtime tool store +
+  generated schemas + advertisement/dispatch extension, plus a client transport,
+  handshake and outbound consent gating. Reusable: the JSON-RPC framing
+  (`ByokMcpProtocol.js:125-149`), the stdio pump (`gdevelop-mcp-stdio.js`), and
+  the outbound JSON/child-process patterns (`ByokQdrant.js:198-217`).
+- The dispatch-cap raise now covers **six** new tools (Phases 16–19, 2+2+1+1);
+  `usertasks.md` §6 updated to recommend raising the cap to 75.
+- Phase 19's crop needs arbitrary-binary writes, which no existing handler
+  provides (`byok-game-code-write` is string-only; `local-file-download` is
+  HTTP-only) — hence the new `fork-sprite-sheet-slice` handler, or the renderer
+  blob-URL fallback.
+
+### 5. Files worked on
+
+Created: `REVIEW/Phase18.md`, `REVIEW/Phase19.md`.
+Modified: `REVIEW/usertasks.md` (§6), `REVIEW/worklog.md`.
+
+Nothing under `newIDE/` was modified.
+
+### Verification
+
+- Every `file:line` in both phase docs came from a read-only subagent this
+  session and was spot-checked against the source: the `isElseEventValid`
+  precedent (`helpers.js:133` → `EventsTree/index.js:1019` → `ElseEvent.js`), the
+  animation-building calls (`AnimationList.js:490-516`, `SpritesList.js:202-216`),
+  the tool contract (`BYOK_EXTRA_TOOLS`, `ByokToolSchema.js` whitelist/cap), and
+  the MCP module directions.
+- No code changed, so no gate re-run.
+
+### Triage
+
+`no OOS`. `no deferred`. UT: `usertasks.md` §6 — the dispatch-whitelist cap raise,
+now covering Phases 16–19 (recommended 69 → 75).
+
+---
+
+## Run log — 2026-10-06 (session 3) — MCP client declined; bridge tip added to the MCP card and About dialog
+
+### 1. Date
+
+2026-10-06.
+
+### 2. Description of actions
+
+The owner declined a BYOK MCP **client** (a lot of work, fragile), on the
+reasoning that the external AI apps (VS Code, ZCode, Claude Desktop) are
+themselves MCP clients and can bridge to other MCP servers, so the fork does not
+need to. The owner asked to document the suggestion in a help/about surface and
+mark the MCP aspect resolved.
+
+- Added a user-visible tip to the MCP settings card
+  (`AiGeneration/Byok/Mcp/ByokMcpSettingsCard.js`): external MCP-capable AI apps
+  can bridge to other MCP servers (e.g. a Spine exporter) while driving GDevelop,
+  and GDevelop itself only exposes its own tools over MCP.
+- Added an "AI and external tools" note to the About dialog
+  (`MainFrame/AboutDialog.js`).
+- Both strings use Lingui `<Trans>`; no `locales` file touched.
+- Updated `usertasks.md` §6 (MCP client resolved — declined, documented).
+
+No application logic changed.
+
+### 3. Bugs found
+
+None.
+
+### 4. Issues found
+
+- `MainFrame/AboutDialog.js` is an upstream file; the edit is one small additive
+  block in the About tab, justified by the owner's explicit request and recorded
+  here as the session's upstream touchpoint.
+
+### 5. Files worked on
+
+Modified: `newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpSettingsCard.js`,
+`newIDE/app/src/MainFrame/AboutDialog.js`, `REVIEW/usertasks.md`,
+`REVIEW/worklog.md`.
+
+### Verification
+
+- `npx prettier --list-different` on both files is clean (the card needed one
+  `--write` pass for the JSX re-wrap); `npx eslint --max-warnings=0` on both
+  reports 0 warnings.
+- Only JSX text changed, so the full Jest suite was not run for this
+  string-only change.
+
+### Triage
+
+`no OOS`. `no deferred`. UT unchanged: the `usertasks.md` §6 dispatch-cap raise
+remains the only open item.
+
+---
+
+## Run log — 2026-10-07 — Phase 16 implemented: build-time asset compression (the export copy shrinks, the project never changes)
+
+**Agent:** orchestrating agent, no subagents (the phase is self-contained; the
+work is mostly pure code + specs, and AGENTS.md §7 keeps code writing with the
+orchestrator). Two background Jest runs were used to wait on the full suite.
+
+### 1. Date
+
+2026-10-07.
+
+### 2. Description of actions
+
+Implemented `REVIEW/Phase16.md` end to end — all 6 steps and every phase-gate
+AC (`[A16-1]`…`[A16-9]`), following the doc's intent rather than its literal
+line numbers (AGENTS.md §8). The feature compresses the **export copy** in
+place, under the same file names, and never touches the project's originals;
+it is desktop-only and opt-in.
+
+**16.1 — the pure planner.** `Fork/AssetBuild/ForkAssetPlan.js`: extension-driven
+kind (`.png/.jpg/.jpeg/.webp` images, lossy audio containers), an explicit
+`imageExtensions`/`audioExtensions` policy, in-place same-format transforms
+(PNG = lossless zlib level, no palette quantization; JPEG/WebP = the quality
+knob; a transparent PNG therefore can never be planned as a JPEG), explicit
+reasoned skips (empty file, below the byte floor, unsupported image format —
+which is where GIF/BMP/TIFF/SVG land, unsupported audio, lossless audio, audio
+switched off, no encoder), and `summarizeForkAssetPlanResults` (before/after
+totals, optimized/failed counts, largest wins, and no claimed win on a file
+whose re-encode grew). No fs, no sharp, no Electron.
+
+**16.2 — the port and the Electron applier.** `ForkAssetOptimizerPort.js`
+lists the export folder (injectable `fs`/`path`), plans, invokes the IPC, and
+folds the answer into a report — a whole-channel failure degrades EVERY planned
+file to "unchanged", a per-file error degrades just that file, a missing answer
+is "unchanged", and nothing throws (`[D16-7]`). `electron-app/app/ForkAssetOptimizer.js`
+is the thin applier: `fork-asset-optimize-apply` + `fork-asset-optimize-capabilities`,
+`sharp`/`ffmpeg-static` required LAZILY (a missing/broken native module must not
+break app start), per-entry path confinement inside the folder it was given
+(`..`, absolute targets and ADS colons refused), a size cap, and temp+rename so
+a failure anywhere leaves the exported file exactly as the exporter wrote it.
+`sharp` and `ffmpeg-static` were installed into `electron-app/app`
+(`[D16-3]`'s approved dependencies).
+
+**16.3 — the pipeline wrapper.** `ForkAssetOptimizingExportPipeline.js` spreads
+an upstream `ExportPipeline` and overrides `launchCompression` (which
+`ExportLauncher` always calls after `launchResourcesDownload`): the online path
+optimizes `resourcesDownloadOutput.temporaryOutputDir` BEFORE delegating to the
+upstream zip; the manual path optimizes `context.exportState.outputDir` and the
+override IS the tail (the upstream `launchCompression` is a no-op there). It
+delegates straight through — same upstream function, same arguments — when the
+setting is off, on a non-desktop runtime (no `fs`/no `ipcRenderer`), when no
+output folder resolves, or when the manual path is switched off. It also injects
+the report host into `renderExportFlow`, and only while the feature is on.
+`ExportAndShare/LocalExporters/index.js` now references the two wrapped
+pipelines.
+
+**16.4 — settings and the report.** A fork-owned settings store
+(`ForkAssetBuildSettings.js`: normalization + clamping, an in-memory cache, a
+localStorage key, never throwing), the Preferences **Build** tab
+(`ForkAssetBuildSettingsTab.js`: master toggle, PNG level, JPEG/WebP quality,
+"also optimize manual exports", the audio toggle + bitrate, and honest notes
+when an encoder or the desktop IPC is missing), and the one-shot report
+(`ForkAssetReportDialog.js` + `ForkAssetReportStore.js`: totals, largest wins,
+per-file encoder failures and per-file skips WITH their reasons, dismissed on
+close and dropped when the hosting export dialog unmounts). The Preferences tab
+list + content block are the third and last upstream touchpoint.
+
+**16.5 — AI access (`[D16-9]`).** `Fork/AssetBuild/ForkAssetToolsHandlers.js`
+(projection over the project's local image/audio resources — writes nothing;
+settings normalization + persist) and `AiGeneration/Byok/ByokAssetTools.js`
+(the thin `ByokExtraTool` adapters, `{success,message}` on every path, never
+throwing). Both names joined `BYOK_TOOL_NAMES` and `BYOK_ONLY_TOOL_NAMES`, and
+the dispatch-whitelist cap was raised 69 → 71 as the owner-approved raise;
+neither is in `BYOK_CORE_TOOL_NAMES`, so the advertised set is unchanged
+(28 tools). The prompt gained one retrieval-map line plus a task-catalog entry
+so `search_tools` surfaces both, and `BYOK_AGENT_PROMPT_VERSION` moved to
+`byok-v13`.
+
+**Also in this session (found while reviewing the new surface):** the MCP
+read-only gate (`ByokMcpTools.js`) names the tools that persist state without
+touching the project, so a read-only external client cannot durably change the
+app; `set_asset_optimization_settings` is exactly such a write (it changes what
+every later export writes to disk) and joined `update_project_notes` in that
+list, with specs on both modes.
+
+### 3. Bugs found
+
+All four were found and FIXED in this session (none left open); each is also
+listed in `REVIEW/outofscoped.md` where it is a refinement rather than a defect.
+
+1. **`gd.Serializer.toJSON(project)` corrupts the libGD WASM heap — and poisons
+   the module for the rest of the Jest file.**
+   - Where: my new spec `newIDE/app/src/Fork/AssetBuild/ForkAssetToolsHandlers.spec.js:55`
+     (the first draft of its `serialize` helper); the correct pattern lives in
+     `newIDE/app/src/Utils/Serializer.js:150` (`serializeToJSON`).
+   - Repro: in Jest, `const p = gd.ProjectHelper.createNewGDJSProject();`
+     then `gd.Serializer.toJSON(p);` → `RuntimeError: memory access out of
+     bounds`; every LATER `gd.ProjectHelper.createNewGDJSProject()` in the same
+     file then also fails (`memory access out of bounds`, and `.delete()` throws
+     `null function or function signature mismatch`), i.e. the failure cascades
+     into unrelated tests.
+   - Root cause: a project must be serialized through a `SerializerElement`
+     (`project.serializeTo(element)` then `gd.Serializer.toJSON(element)`); the
+     one-argument form is the project-self-serialization trap the IDE already
+     guards against. Fixed by serializing through the element; verified with
+     audit grep [14], which shows NO production code does this (only the
+     docblock of the fixed spec mentions the string).
+
+2. **The MCP read-only gate let a durable non-project write through (structural
+   gap, pre-existing, exposed by the new tool).**
+   - Where: `newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpTools.js:109`
+     (`BYOK_MCP_DURABLE_WRITE_TOOL_NAMES`).
+   - Repro: `byokMcpCallIsAllowed({ modifiesProject: false }, { enabled: true },
+     'read-only', 'set_asset_optimization_settings')` → `true` before the fix
+     (a read-only MCP client could persist a setting that changes every future
+     export).
+   - Root cause: the gate refuses by NAME, and the list contained only
+     `update_project_notes`; the rule it encodes ("a `modifiesProject:false`
+     tool that persists state is still a write for the read-only promise",
+     audit100226 MCP-7) was not applied to the new tool. Fixed: the name joined
+     the list, with a spec asserting both the refusal and that the read-only
+     sibling `report_asset_optimization` stays allowed.
+
+3. **Two of my own first-draft specs were wrong in ways that would have hidden
+   the behavior they claimed to prove** (the "a test that cannot reach its
+   scenario is worse than none" rule, `byok-regression-test-discipline`).
+   - (a) `ForkAssetOptimizingExportPipeline.spec.js`: the online-path test fed
+     `launchResourcesDownload` an export output WITHOUT `temporaryOutputDir`, so
+     the wrapper took the manual branch and the test asserted the online order
+     without ever exercising it. Root cause: I reused the manual-path fixture
+     for the online case. Fixed by passing the temporary dir.
+   - (b) The same file asserted "the flow is the upstream node" with `toBe` on a
+     freshly created React element, which can never hold (a new element each
+     call). Fixed to `toEqual` (deep element equality), which is the assertion
+     that actually pins "unchanged node".
+4. **`ForkAssetBuildSettingsTab.js`: an unused `JPEG_QUALITIES` constant** left
+   from the knob that became a free-number TextField — caught by the
+   zero-warning ESLint gate, removed.
+
+### 4. Issues found
+
+- **`sharp`'s prebuild is a Node-ABI build.** Nothing in this environment can
+  produce the Electron-ABI binary, so the packaged desktop app is the only place
+  the real encoder path runs. The design is defensive by construction (lazy
+  require → capabilities probe → reasoned skips + a Build-tab note), and the
+  encoder path itself was verified with real `sharp`/`ffmpeg` in Node (see
+  Verification). Recorded as `[P16-abi]` in `usertasks.md`.
+- **Two upstream files carried pre-existing uncommitted edits** that are NOT
+  mine and were not touched: `MainFrame/AboutDialog.js` and
+  `AiGeneration/Byok/Mcp/ByokMcpSettingsCard.js` (the 2026-10-06 MCP-bridge tip,
+  see the previous worklog entry). Called out so the commit review does not
+  attribute them to Phase 16.
+- **`[D16-9]`'s dispatch-cap raise was taken in-tree (69 → 71)** on the strength
+  of the owner's standing approval for that exact raise (Phase 15.3) plus the
+  2026-10-06 answer to `[D16-9]` ("AI access requested"). Flagged explicitly in
+  `usertasks.md` §6 as the one assumption in the phase, with the trivial
+  rollback (drop the two names from `BYOK_TOOL_NAMES`).
+- **The settings storage deviates from `[D16-8]`'s wording.** The UI is a
+  Preferences tab as specified; the *storage* is a fork-owned localStorage key
+  rather than a `PreferencesValues` field, because a `forkAssetBuild` value would
+  have needed `PreferencesContext.js` + `PreferencesProvider.js` on top of the
+  allowed tab entry — two files past `[A16-6]`'s budget. Recorded as
+  `[P16-settings-blob]` in `outofscoped.md`.
+- **The report host is injected through `renderExportFlow`.** Both wrapped
+  pipelines define it, so both paths show the report and no MainFrame mount was
+  needed (A16-6); a future export path that does not render that method would
+  show no report (`[P16-report-host]` in `outofscoped.md`).
+- **The prompt budget is 12,688 tokens** (prompt 6,590 + tools 6,098, 28
+  advertised tools) — under the 15k hard cap and slightly below the 12,703
+  Phase 15 recorded. The 8–10k aim remains unmet, as accepted in `deferred.md`.
+- **The `package-lock.json` diff is larger than the two added dependencies**, so
+  it was audited precisely rather than assumed: 46 NEW packages (the `sharp` +
+  `@img/sharp-*` platform binaries, `ffmpeg-static` and its `http-basic` chain),
+  **zero removals**, and exactly ONE pre-existing package whose resolved version
+  moved — `semver` 7.7.3 → 7.8.5. That bump is npm's hoisting, forced by
+  `sharp`'s own `semver: ^7.8.5`; every other dependent (`electron-updater
+  ^7.6.3`, `global-agent ^7.3.2`, `html-validate ^7.0.0`) accepts the same
+  range, so nothing else had to change and no API crossed a major version.
+  `npm install` also re-sorted the dependency keys in `package.json`
+  alphabetically (cosmetic). The manual E2E run loaded both new modules in Node,
+  so both trees resolve.
+
+### 5. Files worked on
+
+**Created — feature code (`newIDE/app/src/Fork/AssetBuild/`):**
+`ForkAssetBuildSettings.js`, `ForkAssetBuildSettings.spec.js`, `ForkAssetPlan.js`,
+`ForkAssetPlan.spec.js`, `ForkAssetOptimizerPort.js`, `ForkAssetOptimizerPort.spec.js`,
+`ForkAssetOptimizingExportPipeline.js`, `ForkAssetOptimizingExportPipeline.spec.js`,
+`ForkAssetReportStore.js`, `ForkAssetReportStore.spec.js`,
+`ForkAssetReportDialog.js`, `ForkAssetReportDialog.spec.js`,
+`ForkAssetBuildSettingsTab.js`, `ForkAssetBuildSettingsTab.spec.js`,
+`ForkAssetToolsHandlers.js`, `ForkAssetToolsHandlers.spec.js`.
+
+**Created — AI surface and the Electron applier:**
+`newIDE/app/src/AiGeneration/Byok/ByokAssetTools.js`,
+`newIDE/app/src/AiGeneration/Byok/ByokAssetTools.spec.js`,
+`newIDE/electron-app/app/ForkAssetOptimizer.js`.
+
+**Modified — the three upstream touchpoints of `[A16-6]`:**
+`newIDE/electron-app/app/main.js` (the `registerForkAssetOptimizer` require +
+one call),
+`newIDE/app/src/ExportAndShare/LocalExporters/index.js` (two wrapped pipelines
+in place of the raw ones),
+`newIDE/app/src/MainFrame/Preferences/PreferencesDialog.js` (the "Build" tab
+entry + its content block).
+
+**Modified — BYOK (our files):**
+`AiGeneration/Byok/ByokExtraTools.js` (registry merge + import),
+`AiGeneration/Byok/ByokToolSchema.js` (2 schemas, 2 names in
+`BYOK_TOOL_NAMES` + `BYOK_ONLY_TOOL_NAMES`, cap 69 → 71),
+`AiGeneration/Byok/ByokToolSchema.spec.js` (the cap assertion),
+`AiGeneration/Byok/ByokPrompts.js` (`byok-v13` + the docblock),
+`AiGeneration/Byok/ByokPrompts.spec.js` (the version pin),
+`AiGeneration/Byok/Knowledge/ByokKnowledgeSections.js` (build-size line +
+task-catalog entry),
+`AiGeneration/Byok/ByokPromptBudget.spec.js` (the new "teaches the asset tools"
+assertion),
+`AiGeneration/Byok/Mcp/ByokMcpTools.js` (the read-only durable-write list),
+`AiGeneration/Byok/Mcp/ByokMcpTools.spec.js` (both modes, plus the allowed
+read-only sibling).
+
+**Modified — dependencies:** `newIDE/electron-app/app/package.json`,
+`newIDE/electron-app/app/package-lock.json` (`sharp`, `ffmpeg-static`).
+
+**Modified — documentation:** `AGENTS.md` (§2 project state + date),
+`REVIEW/worklog.md` (this entry), `REVIEW/usertasks.md` (§6 rewritten around
+Phase 16 + the three live items), `REVIEW/outofscoped.md` (a new Phase 16
+section, 9 entries), `REVIEW/deferred.md` (a 2026-10-07 Phase 16 section, 5
+entries).
+
+**Read (not modified), the load-bearing ones:** `REVIEW/Phase16.md`,
+`REVIEW/Phase17.md`, `ExportAndShare/ExportPipeline.flow.js`,
+`ShareDialog/ExportLauncher.js`, `LocalExporters/LocalElectronExport.js` +
+`LocalOnlineElectronExport.js`, `Utils/LocalArchiver.js`,
+`Utils/OptionalRequire.js`, `Utils/Serializer.js`, `electron-app/app/ByokRagFiles.js`
++ `ByokGameCode.js` + `main.js`, `AiGeneration/Byok/{ByokExtraTools,ByokToolSchema,ByokPrompts,ByokGameCodeTools,ByokResourceTools.spec,ByokMcpTools,ByokPromptBudget.spec,ByokPromptGuard.spec}.js`,
+`Knowledge/ByokKnowledgeSections.js`, `Rag/{ByokRagTypes,ByokRagSettingsTab,ByokRagFileBackends}.js`,
+`Mcp/{ByokMcpTools,ByokMcpSettingsCard}.js`, `UI/Dialog.js`, `UI/Alert/*`,
+`UI/Checkbox.js`, `UI/TextField.js`, `UI/Slider.js`,
+`MainFrame/Preferences/{PreferencesDialog,PreferencesContext,PreferencesProvider}.js`.
+
+### Verification
+
+**The four gates (from `newIDE/app`, final frozen tree):**
+
+```
+npm test -- --watchAll=false --maxWorkers=1
+Test Suites: 261 passed, 261 total
+Tests:       1 skipped, 3045 passed, 3046 total   (JEST_EXIT=0; the skip is the
+             pre-existing one, no failure, no flake this run)
+
+npm run lint          → eslint src/ --max-warnings=0 → clean (0 problems)
+npm run flow          → Found 0 errors
+npm run check-format  → prettier --list-different "src/!(locales)/**/*.js" → (no files)
+cd ../electron-app && npm run check-format → prettier --list-different → (no files)
+```
+
+**A real end-to-end run of the applier (`electron-app/app` + the real `sharp`
+and `ffmpeg`), on a synthetic export to a temp folder — this is `[A16-1]`,
+`[A16-2]` and `[A16-3]` observed rather than asserted:**
+
+```
+--- A16-3 failure branches (same code path as a locked/unreadable file) ---
+[ { "file": "../MyGame/hero.png", "error": "Refused: the path escapes the export folder." },
+  { "file": "hero.png",  "error": "unknown image transform \"zzz\"" },
+  { "file": "game.json", "error": "Input file contains unsupported image format" } ]
+export dir listing unchanged by the failures: true
+
+--- A16-1: the export copy is smaller, same names ---
+exit ok: true   ms: 67
+ hero.png:  33636 ->  9100 bytes (-73%), error=null
+ music.mp3: 73395 -> 24494 bytes (-67%), error=null
+names still present: true
+no temp leftovers: true
+
+--- A16-2: the project folder is byte-identical ---
+project hashes identical: true
+project tree:  ["beep.wav:264644","game.json:54","hero.png:33636","music.mp3:73395"]
+export before: ["beep.wav:264644","game.json:54","hero.png:33636","music.mp3:73395"]
+
+--- A16-1: the optimized PNG still loads ---
+format: png  size: 800x800  hasAlpha: false
+optimized MP3 decodes: ok
+```
+
+**The prompt budget, printed by the spec itself:**
+
+```
+BYOK prompt budget above the 8-10k target: 12688 tokens
+  (prompt 6590 + tools 6098, 28 advertised tools).
+  largest prompt sections (full size):
+    eventscript-pack: 1319 / retrieval-map: 964 / math-physics-core: 479 /
+    engine-cheat-sheet: 385 / authoring-reach: 374 / js-api-core: 356
+```
+
+**Audit greps for the phase's artefacts and ACs** (all run from the repo root
+or `newIDE/app`, outputs verbatim):
+
+```
+[1] every file named in Phase16.md §3 exists on disk:
+  OK   newIDE/app/src/Fork/AssetBuild/ForkAssetPlan.js          (+ .spec.js)
+  OK   newIDE/electron-app/app/ForkAssetOptimizer.js
+  OK   newIDE/app/src/Fork/AssetBuild/ForkAssetOptimizerPort.js (+ .spec.js)
+  OK   newIDE/app/src/Fork/AssetBuild/ForkAssetOptimizingExportPipeline.js (+ .spec.js)
+  OK   newIDE/app/src/Fork/AssetBuild/ForkAssetBuildSettingsTab.js
+  OK   newIDE/app/src/Fork/AssetBuild/ForkAssetReportDialog.js
+  OK   newIDE/app/src/Fork/AssetBuild/ForkAssetToolsHandlers.js
+  OK   newIDE/app/src/AiGeneration/Byok/ByokAssetTools.js
+  (the ACs also required 5 files the doc did not name — see step 2)
+
+[3] the upstream files this phase changed (A16-6 budget = these three):
+  newIDE/app/src/ExportAndShare/LocalExporters/index.js
+  newIDE/app/src/MainFrame/Preferences/PreferencesDialog.js
+  newIDE/electron-app/app/main.js
+  (AboutDialog.js + Mcp/ByokMcpSettingsCard.js also show as modified — those are
+   the 2026-10-06 MCP-bridge edits, pre-existing and untouched: 10 and 12
+   additive lines, no deletions)
+  diffs: index.js = import + 2 wrapped pipelines + 2 array entries;
+         PreferencesDialog.js = import + tab option + content block;
+         main.js = require + one registerForkAssetOptimizer(ipcMain) call
+
+[4] C++ exporter / ProjectResourcesCopier / WASM bindings untouched:
+  git status --short -- Core GDJS Extensions GDevelop.js Binaries  →  0 changes
+
+[5] no .md file created outside /REVIEW:
+  none
+[13] src/locales untouched:  0 changes
+
+[6] no deprecated $Shape in the phase code (Partial is used):  none
+[7] the native encoders are required ONLY by the Electron main:
+  electron-app/app/ForkAssetOptimizer.js:5   const { execFile } = require('child_process');
+  electron-app/app/ForkAssetOptimizer.js:54  sharpModule = require('sharp');
+  electron-app/app/ForkAssetOptimizer.js:67  const resolved = require('ffmpeg-static');
+  renderer (src/Fork, ByokAssetTools): none
+[8] no TODO/FIXME/stub/"not implemented" in the phase code:  none
+    (4 prose hits only: "stub" in two spec docblocks/helpers and "placeholders"
+     in a comment; the one $FlowFixMe is the documented exact-spread cast)
+[9] no console.log left behind (console.info/warn/error are the house style):  none
+[10] the renderer never writes to disk (only the Electron applier does):
+  src/Fork: no writeFileSync/renameSync/unlinkSync/mkdirSync/createWriteStream
+  the applier's whole write surface:
+    ForkAssetOptimizer.js:146  fs.renameSync(tempPath, absolutePath)
+    ForkAssetOptimizer.js:149  if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath)
+    ForkAssetOptimizer.js:197  fs.renameSync(tempPath, absolutePath)
+    ForkAssetOptimizer.js:200  if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath)
+  (temp+rename only: a failure leaves the exported file untouched, A16-3)
+
+[11] tool-registry guards:
+  BYOK_TOOL_NAMES entries:              71   (was 69)
+  BYOK_NO_PROJECT_TOOL_NAMES entries:    3
+  BYOK_TOOL_SCHEMAS entries:            74   = 71 + 3  → the validator's
+                                              length check holds
+  BYOK_CORE_TOOL_NAMES entries:         28   (unchanged; the advertised set)
+  BYOK_ONLY_TOOL_NAMES entries:         45   (was 43)
+  cap in the validator:  BYOK_TOOL_NAMES.length > 71
+  cap in the spec:       toBeLessThanOrEqual(71)
+  the two new names, tools array:  ByokToolSchema.js:241 'report_asset_optimization'
+                                   ByokToolSchema.js:242 'set_asset_optimization_settings'
+  the two schemas:                 ByokToolSchema.js:2170 / :2180
+  absent from BYOK_CORE_TOOL_NAMES:  confirmed (the awk range prints nothing)
+
+[12] the prompt surfaces that teach the tools:
+  ByokKnowledgeSections.js:320  task catalog: 'search_tools "asset optimization"
+        → report_asset_optimization … set_asset_optimization_settings …'
+  ByokKnowledgeSections.js:321  toolQuery: 'asset optimization'
+  ByokKnowledgeSections.js:336  retrieval map: '- build size: search_tools "asset
+        optimization" → …'
+  ByokPrompts.js:52             BYOK_AGENT_PROMPT_VERSION = 'byok-v13'
+  (both lines survive the composed budget: the new ByokPromptBudget assertion
+   "carries the build-size line that teaches the asset tools" passes)
+
+[14] latent-trap grep: gd.Serializer.toJSON(<project>) anywhere in src/
+  → none (only the fixed spec's docblock names the string). The one place the
+    trap was hit is documented in "Bugs found" #1.
+```
+
+### Triage
+
+- **`outofscoped.md`** — a NEW "Phase 16" section with 9 entries, each with what
+  it is, where (`file`), and what blocks it: `[P16-settings-blob]` (the settings
+  live in a fork key, not `PreferencesValues` — the `[D16-8]` wording deviation,
+  blocked by `[A16-6]`), `[P16-gif]` (GIF/BMP/TIFF skipped as unsupported),
+  `[P16-image-floor]` (byte floor vs a dimension guard),
+  `[P16-paths]` (the applier trusts the renderer's `folderPath`; entries are
+  confined inside it), `[P16-audio-webp-knob]` (WebP reuses the JPEG quality),
+  `[P16-report-host]` (flow-injected, not a MainFrame host), `[P16-projection]`
+  (fixed bands vs measured ratios), `[P16-reasons-i18n]` (English reason prose),
+  `[P16-main-test]` (the Electron applier has no unit tests — no runner there).
+- **`deferred.md`** — a NEW 2026-10-07 section with the phase's deliberate
+  non-goals: `[P16-audio-codec]` (no cross-codec/container audio transcode),
+  `[P16-format-migration]` (no image format migration),
+  `[P16-preview-not-optimized]` (previews are not optimized, by design — a
+  preview is re-exported constantly), `[P16-sharp-abi]` (points at the live
+  `[P16-abi]` item in `usertasks.md`),
+  `[P16-projection-is-an-estimate]` (the projection is a labelled estimate).
+- **`usertasks.md` §6** — rewritten: `[P16-qa]` desktop QA (the export report,
+  both paths, the unchanged project hashes, a run of the optimized build, and
+  the feature-off byte-identity check), `[P16-abi]` the Electron-ABI rebuild for
+  `sharp`, and `[P1719-cap]` the remaining cap raise for Phases 17–19
+  (recommended 71 → 75). The section also states the `[D16-9]` cap-raise
+  assumption explicitly, with its rollback.
+
+
+---
+
+## 2026-10-08 — Phases 17 + 18 implemented (tag-driven asset management + event-sheet guardrails)
+
+**Date:** 2026-10-08. Ordered in chat ("implement Phase17.md and Phase18.md",
+with create-don't-defer, no-silent-landmines, subagent-delegation and
+outofscoped-closing instructions).
+
+### Description of actions
+
+Two implementation subagents ran in parallel (the user's ≤3 limit), the
+orchestrator wrote every shared-registry file afterwards (to avoid
+conflicts), then integrated, fixed Flow, and ran all gates.
+
+**Phase 17 (`Fork/AssetPipeline/`, 30 files incl. specs) — subagent A + the
+orchestrator:**
+- 17.1 `ForkAssetTags.js` — pure tag model over the resource `metadata` JSON
+  (the `ResourceUtils` merge convention; `resourceCustomProperties`/
+  `localFilePath` never clobbered; non-JSON metadata round-trips on no-op
+  writes), `normalizeForkAssetTag` with explicit `{ok,reason}` refusals
+  (empty/control-chars/slashes/backslash/>64 chars), vocabulary collector.
+- 17.1 `ForkAssetTree.js` — the many-to-many virtual tree (an asset under
+  every tag, "Untagged" bucket sorted last, display order only — `[A17-6]`).
+- 17.2 `ForkAssetTagStore.js` (metadata-only writer + refresh bus),
+  `ForkAssetIndex.js` (versioned defensive sidecar; metadata is the authority
+  both directions — spec-proven), `ForkAssetIndexCore.js` (plain-CJS
+  confinement core) + `electron-app/app/ForkAssetIndex.js` (thin IPC
+  `fork-asset-index-list/read/write`, atomic via `ByokAtomicWriteCore`) with
+  ONE `main.js` registration line.
+- 17.3 `ForkAssetRegistration.js` (the generalized game-code reconcile:
+  origin keying `setOrigin('fork-asset-watcher', relPath)`, path confinement,
+  applyResourceDefaults, removal only for watcher-origin + gone files,
+  idempotent) + `ForkAssetAutoRegister.js` (1 s debounce, settings-gated,
+  stats files itself — see Bugs #1) + `ForkAssetPipelineSettings.js`
+  (`autoRegister`/`autoReload`, both default on).
+- 17.4 `ForkAssetsView.js` (TreeView panel: tag filter, Untagged bucket, the
+  two pipeline toggles, click selects in the host) hosted as a new
+  `'assets-view'` primary editor entry in `ResourcesEditor/index.js` with a
+  Toolbar toggle (`ResourcesEditor/Toolbar.js` — a justified 4th upstream
+  file: without the toggle the entry is unreachable dead UI, EditorMosaic
+  only opens editors through toolbar toggles); `ForkAssetTagEditor.js`
+  (chips editor inside the properties entry, inline refusals,
+  `UnsavedChangesContext.triggerUnsavedChanges` on writes).
+- 17.5 `ForkAssetCatalog.js` (`{name,kind,file,tags}` catalog +
+  `addExtraLib` completions + a capped AI knowledge block) and
+  `ForkAssetAliasHelper.js` (exact-name resolver with suggestions; slash
+  names resolve; `FORK_ASSET_ALIAS_DOC`). Fork hook in
+  `LocalCodeEditorAutocompletions.js`. A spec asserts NO ES import / no
+  `@assets` specifier is ever emitted.
+- 17.6 `ForkAssetReload.js` (manual "Reload from disk" over the existing
+  `triggerOnResourceExternallyChanged`; context-menu entry in
+  `ResourcesList/index.js`) + `ForkAssetAutoReload.js` (gated debounce over
+  changed files).
+- 17.7 `ForkAssetToolsHandlers.js` (`listForkPipelineAssets`,
+  `setForkPipelineAssetTags` — set/merge/remove/clear, atomic refusals) +
+  the orchestrator's BYOK side: the two adapters in `Byok/ByokAssetTools.js`,
+  schemas + `BYOK_TOOL_NAMES` + `BYOK_ONLY_TOOL_NAMES` entries in
+  `ByokToolSchema.js`, retrieval-map + task-catalog lines in
+  `ByokKnowledgeSections.js`, prompt bump.
+
+**Phase 18 (`Fork/Guardrails/`, 9 files incl. specs) — subagent B + the
+orchestrator:**
+- 18.1 `ForkGuardrailRules.js` — the four `[D18-2]` rules
+  (`G18-once-in-loop` warning / `G18-wait-in-loop` warning (ForEach+Repeat,
+  not While) / `G18-action-without-picking` info / `G18-duplicate-once`
+  warning), `analyzeEventGuardrails` (ancestor stack; disabled subtrees
+  silenced) and `collectForkGuardrailDiagnostics` (mirrors the tree
+  builder's flattened-index `nodePath` discipline INCLUDING the folded
+  throwaway list). Object parameters resolve via instruction metadata
+  (the `Instruction.js` lookup) with a known-names fallback and total
+  degrade. Never mutates — spec-proven with the SAFE two-arg Serializer.
+- 18.2 `ForkGuardrailSettings.js` (on-by-default master + per-rule mutes,
+  the `ForkAssetBuildSettings` mechanism) + `ForkGuardrailBadge.js`
+  (Warning/info icon in a Tooltip, INLINE styles only, a settings popover
+  with the master switch + four rule checkboxes; subscribes to the store and
+  filters at render time, so toggling never needs a tree rebuild). Upstream
+  wiring exactly `[A18-5]`: `EventsTree/index.js` (ancestor-stack param,
+  `guardrails` node field beside `isValidElseEvent`, badge before the event
+  component — absolutely positioned top-right so cached row heights and DnD
+  are untouched — and the two forwarding sites), `SortableEventsTree.js`
+  (type only), `Renderers/EventRenderer.js` (props type only), NO CSS
+  (asserted by a spec). The wiring is pinned by a source-level spec proven
+  non-vacuous by revert (removed the badge render, saw red, restored).
+- 18.3 `ForkGuardrailToolHandler.js` (`scanSceneEvents`: scenes only,
+  sceneName/ruleIds filters, unknown values refused with the valid list,
+  read-only serialize-compare) + the orchestrator's
+  `Byok/ByokGuardrailTools.js` adapter (`modifiesProject: false`),
+  schema + names + task-catalog row, prompt bump.
+
+**Orchestrator registry work:** cap raise 71 → 75 (the `[P1719-cap]`
+on-file recommendation; the list is at 74, covering Phase 19's tool),
+prompt `byok-v13` → **byok-v14** (asset-tag + guardrail retrieval-map lines
+and task-catalog entries; the tools stay out of `BYOK_CORE_TOOL_NAMES`),
+spec updates (`ByokToolSchema.spec.js` cap, `ByokPrompts.spec.js` version
+pin, `ByokAssetTools.spec.js` +12 tests, new `ByokGuardrailTools.spec.js`).
+
+**Integration fixes by the orchestrator (the subagents could not run Flow by
+instruction):** 81 Flow errors fixed — the `kind`-hint REVERT (Bugs #1),
+jest.fn casts, `React.Node` annotations, a Text size literal, tree-type
+invariance (filter + view now typed over `ForkAssetTreeTagItem`), read-only
+variance in the tag store, undefined-coercions, `require`-based Node
+builtins in specs, narrowed rule-predicate options.
+
+**Gates:** `npm test -- --watchAll=false --maxWorkers=1` → **282 suites /
+3,242 passed + 1 pre-existing skip, 0 failures**; `npm run lint` 0/0;
+`npm run flow` **0 errors**; `npm run check-format` clean; electron-app
+prettier clean. Prompt budget re-measured by `ByokPromptBudget.spec.js`:
+**12,633 tokens worst-case (prompt 6,535 + tools 6,098, 28 advertised
+tools)** — under the 15k hard cap.
+
+### Bugs found
+
+1. **The subagent's watcher `kind` hint broke the shared storage-provider
+   interface (caught at integration, FIXED by reverting).**
+   `LocalFileResourcesWatcher.js` had been widened to a callback taking
+   `{identifier, kind?}`, but `ProjectsStorage/index.js:217` pins
+   `callback: ({| identifier: string |}) => void` on `StorageProvider`, and
+   Flow's invariance rejected BOTH the provider cast
+   (`LocalFileStorageProvider/index.js:56`) and the game-code caller
+   (`ByokGameCodeAutoReload.js:61`) — widening the shared interface instead
+   would have broken every other provider. Root cause: the hint was a
+   renderer-side approximation anyway (the Electron main does not forward
+   the chokidar event type). Fix: reverted both watcher files to HEAD and
+   moved the classification into `ForkAssetAutoRegister` (which already
+   stats every file — `kind` was never load-bearing). The honest fix
+   (forward the real event type from the Electron main) is
+   `outofscoped.md` `[P17-kind-hint]`.
+2. **My own adapter read camelCase args (caught by my own spec, FIXED).**
+   `ByokAssetTools.js`'s first draft read `args.assetNames`, but the tool
+   schema (and every model) sends snake_case `asset_names` — every
+   `set_asset_tags` call would have been refused with "No asset name was
+   provided". The spec asserting `success: true` went red; fixed to
+   `args.asset_names` and re-run green. (The exact class of bug the
+   non-vacuous-test discipline exists for.)
+3. **Pre-existing, logged not fixed (subagent A findings, triaged to
+   `outofscoped.md`):** the per-file watcher debouncers are memoized
+   forever (`[P17-B1-watcher-debounce-leak]`); "Scan in the project folder"
+   creates backslash resource names on Windows
+   (`[P17-B2-scan-backslash-names]`); `triggerOnResourceExternallyChanged`
+   consumers disagree about the identifier's meaning
+   (`[P17-B3-reload-identifier]`).
+4. **Pre-existing WebIDL trap (subagent B finding, documented in its specs):
+   `eventsList.insertEvent(new gd.ForEachEvent(), 0)` yields an event whose
+   `getType()` returns `''`** — the template is sliced through the BaseEvent
+   interface. The IDE's real pattern is `insertNewEvent(project, type,
+   index)` (used by all fixtures). Anything reading types off raw-inserted
+   templates silently sees empty strings.
+5. **Pre-existing: `gd.Instruction.setParameter` does not grow the parameter
+   list** — `setParametersCount` must be called first or values are silently
+   dropped (documented in `ForkGuardrailRules.spec.js`).
+
+### Issues found
+
+- **Launched-preview hot-reload limitation recorded with evidence
+  (`[A17-4]`'s allowed outcome):** `MainFrame/index.js:2283-2296` notifies
+  the in-game editor only; a separate preview window does not refresh a
+  changed binary asset without a restart → `deferred.md`
+  `[P17-preview-reload]`.
+- **The guardrail master switch is a one-way door once off** (it lives only
+  in the badge popover, and off = no badge) → `outofscoped.md`
+  `[P18-master-switch]` with the recommended Preferences-entry fix.
+- **Auto-register/auto-reload only run while the Resources editor is open**
+  (the lifecycles mount inside the view, keeping the upstream budget) →
+  `outofscoped.md` `[P17-auto-register-mount]`.
+- `ByokPromptBudget.spec.js` warns the budget is above the 8–10k aim
+  (12,633) — the accepted disposition of `deferred.md` (the owner's
+  2026-10-03 instruction), reported, not acted on.
+- Desktop-only ACs remain for the owner: `[P17-qa]`, `[P18-qa]` in
+  `usertasks.md` §6 (Monaco completions in-app, badge visuals, the
+  drop/tag/browse/reload end-to-end flow).
+
+### Files worked on
+
+Created — `newIDE/app/src/Fork/AssetPipeline/` (15 modules + 15 specs):
+ForkAssetTags.js(+spec), ForkAssetTree.js(+spec), ForkAssetTagStore.js(+spec),
+ForkAssetIndex.js(+spec), ForkAssetIndexCore.js(+spec),
+ForkAssetPipelineSettings.js(+spec), ForkAssetRegistration.js(+spec),
+ForkAssetAutoRegister.js(+spec), ForkAssetAutoReload.js(+spec),
+ForkAssetReload.js(+spec), ForkAssetsView.js(+spec),
+ForkAssetTagEditor.js(+spec), ForkAssetCatalog.js(+spec),
+ForkAssetAliasHelper.js(+spec), ForkAssetToolsHandlers.js(+spec).
+Created — `newIDE/app/src/Fork/Guardrails/`: ForkGuardrailRules.js(+spec),
+ForkGuardrailSettings.js(+spec), ForkGuardrailBadge.js(+spec),
+ForkGuardrailToolHandler.js(+spec), ForkGuardrailTreeWiring.spec.js.
+Created — BYOK: Byok/ByokGuardrailTools.js(+spec).
+Created — Electron: electron-app/app/ForkAssetIndex.js.
+Modified — upstream (Phase 17): MainFrame/ResourcesWatcher.js (fork
+file-event registry), ResourcesEditor/index.js ('assets-view' entry + tag
+editor section), ResourcesEditor/Toolbar.js (Assets toggle),
+ResourcesList/index.js ("Reload from disk" menu entry),
+CodeEditor/LocalCodeEditorAutocompletions.js (fork completions hook),
+electron-app/app/main.js (one IPC registration).
+Modified — upstream (Phase 18): EventsSheet/EventsTree/index.js,
+EventsTree/SortableEventsTree.js, EventsTree/Renderers/EventRenderer.js.
+Modified — BYOK registry: ByokAssetTools.js(+spec), ByokExtraTools.js,
+ByokToolSchema.js(+spec), ByokPrompts.js(+spec), ByokPromptBudget.spec.js
+(output noise only), Knowledge/ByokKnowledgeSections.js.
+Reverted to HEAD: ProjectsStorage/LocalFileStorageProvider/
+LocalFileResourcesWatcher.js and its spec (Bugs #1).
+Docs: AGENTS.md (§2 + footer), REVIEW/usertasks.md (§6), REVIEW/
+outofscoped.md, REVIEW/deferred.md, REVIEW/worklog.md (this entry).
+
+### Audit greps (pasted per the session instructions)
+
+```text
+[1] Core/GDJS/Extensions contamination (expect empty):
+  grep -rln "ForkAsset\|ForkGuardrail" Core GDJS Extensions GDevelop.js Binaries
+  → (no output)
+
+[2] New tools present in whitelist + schemas + BYOK-only, absent from the core set:
+  grep -n "'list_assets'\|'set_asset_tags'\|'scan_scene_events'" ByokToolSchema.js
+  → 247:'list_assets', 248:'set_asset_tags', 253:'scan_scene_events'      (BYOK_TOOL_NAMES)
+    2220: name 'list_assets', 2237: name 'set_asset_tags', 2262: name 'scan_scene_events'  (BYOK_TOOL_SCHEMAS)
+    2465:'list_assets', 2466:'set_asset_tags', 2469:'scan_scene_events'    (BYOK_ONLY_TOOL_NAMES)
+  sed -n '269,315p' ByokToolSchema.js | grep -c "list_assets\|set_asset_tags\|scan_scene_events"
+  → 0                                                                    (BYOK_CORE_TOOL_NAMES: absent)
+
+[3] CSS files touched (expect empty): git status --short -- "*.css"
+  → (no output)
+
+[4] locales touched (expect empty): git status --short -- newIDE/app/src/locales
+  → (no output)
+
+[5] prompt version: grep -n "byok-v14" ByokPrompts.js
+  → 24: (docblock changelog)  57: export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v14'
+
+[6] one-arg Serializer.toJSON trap in the new trees (expect only the safe form):
+  grep -rn "Serializer.toJSON(" newIDE/app/src/Fork/
+  → AssetBuild/ForkAssetToolsHandlers.spec.js:55 (docblock naming the trap), :61 (safe element form)
+    (nothing under AssetPipeline/ or Guardrails/ — the never-mutate specs use the
+     serializeToJSON/SerializerElement helpers)
+
+[7] @assets / ES import in generated content (expect only prohibition docs + module imports):
+  grep -rn "@assets\|import " ForkAssetCatalog.js ForkAssetAliasHelper.js
+  → ForkAssetCatalog.js:10 (the "explicitly out" docblock), :18 (its own ES module import)
+    ForkAssetAliasHelper.js:15 (a type import)
+
+[8] Lingui coverage in the new UI files (grep -c "Trans>\|t\`"):
+  → ForkAssetTagEditor.js: 8, ForkAssetsView.js: 7, ForkGuardrailBadge.js: 5,
+    ResourcesList/index.js: 6
+
+[9] upstream files touched (the phase budgets):
+  → Phase 17: CodeEditor/LocalCodeEditorAutocompletions.js, MainFrame/ResourcesWatcher.js,
+    ResourcesEditor/Toolbar.js, ResourcesEditor/index.js, ResourcesList/index.js,
+    electron-app/app/main.js   (LocalFileResourcesWatcher.js REVERTED — Bugs #1)
+  → Phase 18: EventsTree/index.js, EventsTree/SortableEventsTree.js,
+    EventsTree/Renderers/EventRenderer.js
+```
+
+### Triage
+
+- **`outofscoped.md`** — a NEW "Phases 17 + 18" section with 6 entries:
+  `[P17-kind-hint]` (forward the chokidar event type from the Electron
+  main), `[P17-auto-register-mount]` (a MainFrame-level lifecycle mount),
+  `[P18-master-switch]` (a Guardrails section in the fork Build tab),
+  `[P17-B1-watcher-debounce-leak]`, `[P17-B2-scan-backslash-names]`,
+  `[P17-B3-reload-identifier]` (the three pre-existing bugs, each with its
+  recommended fix). The Phase 16 section stands as it was.
+- **`deferred.md`** — a NEW 2026-10-08 section with the two recorded
+  limitations: `[P17-preview-reload]` (launched previews do not refresh
+  binary assets, with the `MainFrame/index.js:2283-2296` evidence) and
+  `[P18-while-conditions-unscanned]` (a While's own condition list is not
+  scanned in v1).
+- **`usertasks.md`** — §6 rewritten: `[P17-impl]` + `[P18-impl]` recorded,
+  `[P1719-cap]` marked TAKEN in-tree (71 → 75, with the rollback note), and
+  the new `[P17-qa]` / `[P18-qa]` desktop QA checklists added.
+
+
+## 2026-10-09 — [P17-preview-reload] + [P18-while-conditions] closed; Phase 19 implemented; outofscoped fixes verified
+
+Owner order (chat): implement the two recorded Phases 17/18 limitations as
+recommended (the preview reload via "the Phase 6 preview/debugger channel",
+the While-conditions guardrail follow-up), dispatch a subagent to verify the
+fixes outofscoped.md lists as completed, then dispatch implementation
+subagents (max 2 concurrent, big chunks each, progress notes so a dead run
+is resumable) for `Phase19.md`.
+
+### What was done
+
+1. **[P18-while-conditions-unscanned] closed** (`ForkGuardrailRules.js`):
+   `getEventInstructions` gained a `whileConditions` branch (real `gd` events
+   answer it through the generic `getInstructionList`; the spec's fakes answer
+   null unless the event is a While, like the binding's null pointer). The
+   three condition-reading rules now use it — `G18-once-in-loop` fires for a
+   Once in a While's OWN guard (the guard is re-checked every iteration, so
+   the While event itself is the loop; its BODY conditions stay exempt at
+   top level, spec-pinned), `G18-duplicate-once` scans the guard list as its
+   own list (one Once in the body + one in the guard is NOT a duplicate),
+   and the picking advisory counts guard conditions as picking. Real-gd spec
+   added (a genuine `gd.asWhileEvent` with a Once in `getWhileConditions()`).
+2. **[P17-preview-reload] closed** — the preview hop. Design decision (the
+   "Phase 6 channel" candidate was investigated and REJECTED for this
+   purpose): the debugger `hotReload` command cannot refresh a changed asset
+   in a launched preview — the runtime's resource caches are URL-keyed
+   (`pixi-image-manager._loadTexture` early-returns on a cache hit) and
+   cache-busting URLs are only added in the in-game edition
+   (`ResourceLoader.getFullUrl`), so an in-place refresh needs engine changes
+   this fork does not make. The implemented refresh is upstream's own
+   proven sequence: re-export + hard reload (the game restarts — the honest
+   cost, recorded in `deferred.md`). New seam
+   `Fork/AssetPipeline/ForkAssetPreviewReload.js` (a registry in the
+   ResourcesWatcher spirit, never throws); the auto-reload flush notifies it
+   ONCE per burst and only when >=1 identifier actually reloaded; the manual
+   "Reload from disk" notifies it after a successful reload; the MainFrame
+   registers the hop (`relaunchAndThenHardReloadAllPreviews`, gated on
+   `hasNonEditionPreviewsRunning`) beside the existing resource-externally-
+   changed registration.
+3. **outofscoped verification subagent (read-only)** re-verified every
+   "closed" fix in-tree: all VERIFIED (O3, O4's three layers, the two
+   preview nits, RAG-6..11 + CACHE-7/8, UI-6..10, UP-14/15/16, ELEC-21/22,
+   MCP-3/4/6/8/9 + the 10-02 parentheticals, PROMPT-3/4/5/7, SCRIPT-3/4/5,
+   the two Phase-16 dispositions). Two nits fixed from its report: a
+   leftover `console.log('DEBUG applied=')` in `ApplyEventsChanges.spec.js`
+   (replaced by a real `expect(result.applied).toBe(0)`, which the deleted
+   block had never asserted), and outofscoped.md's PROMPT-6 false-finding
+   pointer (it said "see deferred.md"; the record actually lives in the
+   2026-10-03 worklog "Issues found"). Its spec-gap caveats went to
+   outofscoped.md (see Triage).
+4. **Phase 19 implemented (steps 19.1–19.5)** by two implementation
+   subagents (the owner's max-2 rule) over orchestrator-written contract
+   skeletons, then integrated: subagent A built 19.1–19.3 (the pure plan
+   with exact-tiling rows-columns and margin-slack frame-size semantics; the
+   renderer port with injected IPC/image-size deps; the confined Electron
+   slicer `ForkSpriteSheet.js` reusing `sharp` + `ByokAtomicWriteCore`,
+   refusing any pre-existing target file; the validate-then-mutate assembly
+   over `importByokProjectResources` with rollback, mirroring the upstream
+   `AnimationList.js`/`SpritesList.js` wrapper-ownership sequence). Subagent
+   B built 19.4–19.5 (the import dialog with a live canvas slice preview
+   running the REAL planner; the "Import sprite sheet" button in
+   `SpriteEditor/index.js` — the one upstream editor touchpoint; the
+   `import_sprite_sheet` BYOK tool, approval-gated via `modifiesProject`,
+   reachable through `search_tools`, never in `BYOK_CORE_TOOL_NAMES`; the
+   task-catalog row; prompt bump **byok-v15**). `BYOK_TOOL_NAMES` now sits
+   AT the pre-approved 75 cap (`[P1719-cap]` marked FULL in usertasks §6).
+   Subagent deviations accepted and recorded in the progress files: the
+   assembly is async (`importByokProjectResources` is), and the tool handler
+   duplicates the object lookup pre-slice (the AC's "writes nothing on an
+   unknown-object refusal" is unmeetable if the check runs after slicing).
+
+### Bugs found
+
+- **Subagent A shipped an inverted `newNameGenerator` predicate**
+  (`candidate => !taken.has(...)` — "exists" must answer IS-TAKEN), which
+  made `makeForkSpriteSheetFrameNames` hang INFINITELY on any call: four
+  jest processes spun at 100% CPU (two of them the subagent's own, which is
+  why it died "waiting for a slow jest"), and my first two runs inherited
+  the illusion of a cold-cache hang. Root-caused by dumping the spinning
+  processes' command lines, bisecting with one-test specs, and reproducing
+  under plain node; fixed (`candidate => taken.has(...)`). LESSON (also in
+  the progress file): a jest run that produces zero output for minutes is
+  not slow — check for spinning `react-app-rewired` node processes first.
+- Subagent A's hostile-names spec pinned a sanitization that does not exist
+  (`sanitizeFilename` keeps spaces; only illegal chars are replaced) — the
+  expectation corrected to the app's real convention.
+- Two vacuous `expect(result.frames).toBeUndefined()` asserts (Flow caught
+  them: the error variant has no `frames` prop at all) — removed.
+- 13 Flow errors across the new files on integration (missing type
+  re-export in the port; `string | null` resource names pushed into
+  `Array<string>`; null-unsafe `.getDirection(0)` chains in the assemble
+  spec; `$Shape` deprecated -> `Partial`; a property null-guard that does
+  not carry across a function body -> local binding; a widened `mode:
+  string` literal in the tool-handler spec) — all fixed, Flow 0.
+- A leftover `console.log('DEBUG applied=')` in `ApplyEventsChanges.spec.js`
+  (from the 2026-10-03 session) — removed and replaced with the assertion it
+  should have been.
+
+### Issues found
+
+- The verification subagent's honest caveats, recorded as outofscoped
+  entries: the MCP queue's armed-at-START property has no spec that could
+  fail against a revert, and the `loadPersistedByokRagIndex` Qdrant branch
+  is verified by reading only (its primitives are spec'd). UI-9 (a
+  render-identity fix) and UP-14 (a WASM leak) similarly have no dedicated
+  specs — by-design passes, both hard to observe in Jest.
+- Background subagent dispatch is unavailable in this plan type — the two
+  Phase-19 subagents ran sequentially (still within the owner's max-2
+  rule), which removed cross-agent file races at no real cost.
+- The jest cache was cleared once during the hang investigation
+  (`npx jest --clearCache`) — harmless, noted for completeness.
+
+### Gates
+
+292 suites / 3,341 passed + 1 pre-existing skip; lint 0/0; Flow 0; prettier
+clean (app + electron-app).
+
+### Files worked on
+
+Orchestrator (fixes 1–3 + integration + docs):
+
+```
+newIDE/app/src/Fork/Guardrails/ForkGuardrailRules.js
+newIDE/app/src/Fork/Guardrails/ForkGuardrailRules.spec.js
+newIDE/app/src/Fork/AssetPipeline/ForkAssetPreviewReload.js        (new)
+newIDE/app/src/Fork/AssetPipeline/ForkAssetPreviewReload.spec.js   (new)
+newIDE/app/src/Fork/AssetPipeline/ForkAssetAutoReload.js
+newIDE/app/src/Fork/AssetPipeline/ForkAssetAutoReload.spec.js
+newIDE/app/src/Fork/AssetPipeline/ForkAssetReload.js
+newIDE/app/src/Fork/AssetPipeline/ForkAssetReload.spec.js
+newIDE/app/src/MainFrame/index.js                                  (the preview-hop registration + import)
+newIDE/app/src/EditorFunctions/ApplyEventsChanges.spec.js          (DEBUG log removed)
+REVIEW/outofscoped.md
+REVIEW/deferred.md
+REVIEW/usertasks.md
+REVIEW/Phase19SubagentAProgress.md                                 (subagent A's log + integration notes)
+REVIEW/Phase19SubagentBProgress.md                                 (subagent B's log)
+AGENTS.md
+REVIEW/worklog.md                                                  (this entry)
+```
+
+Subagent A (19.1–19.3), integration fixes by the orchestrator marked *:
+
+```
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetPlan.js              * (inverted predicate)
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetPlan.spec.js        * (2 vacuous asserts, sanitize pin)
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetPort.js             * (type re-export)
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetPort.spec.js        * ($Shape -> Partial)
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetAssemble.js         * (null-name guards)
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetAssemble.spec.js    * (getDirectionOfAnimation helper)
+newIDE/electron-app/app/ForkSpriteSheet.js                         (new)
+newIDE/electron-app/app/main.js                                    (one registration, beside the optimizer's)
+```
+
+Subagent B (19.4–19.5), integration fixes by the orchestrator marked *:
+
+```
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetToolHandler.js      * (portDeps local binding)
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetToolHandler.spec.js * (makeArgs return type)
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetDialog.js           (new)
+newIDE/app/src/Fork/SpriteSheet/ForkSpriteSheetDialog.spec.js      (new)
+newIDE/app/src/AiGeneration/Byok/ByokSpriteSheetTools.js           (new)
+newIDE/app/src/AiGeneration/Byok/ByokSpriteSheetTools.spec.js      (new)
+newIDE/app/src/AiGeneration/Byok/ByokExtraTools.js                 (the tool spread)
+newIDE/app/src/AiGeneration/Byok/ByokToolSchema.js                 (schema + names + cap note)
+newIDE/app/src/AiGeneration/Byok/Knowledge/ByokKnowledgeSections.js (one task row)
+newIDE/app/src/AiGeneration/Byok/ByokPrompts.js                    (byok-v15)
+newIDE/app/src/AiGeneration/Byok/ByokPrompts.spec.js               (version pin)
+newIDE/app/src/ObjectEditor/Editors/SpriteEditor/index.js          (the button + dialog mount)
+```
+
+### Triage
+
+- **`outofscoped.md`** — two NEW entries from the verification caveats:
+  `[O-MCP1-start-spec]` (a staggered-burst queue spec that can fail against
+  a revert) and `[O-RAG-restore-branch-spec]` (a direct spec for the
+  persisted-Qdrant-index loader branch). The PROMPT-6 pointer correction is
+  inline in the closed section.
+- **`deferred.md`** — nothing NEW deferred; the file's two 2026-10-08
+  limitation entries were rewritten as RESOLVED with their resolutions
+  (the preview hop's re-export+hard-reload rationale; the whileConditions
+  rule coverage). `no deferred` for new items.
+- **`usertasks.md`** — §6 updated: `[P19-impl]` recorded, `[P1719-cap]`
+  marked FULL (75/75, next tool needs a new raise), `[P17-qa]` bullet 3
+  rewritten for the now-working preview refresh, a While-guard bullet added
+  to `[P18-qa]`, and the new `[P19-qa]` desktop QA checklist added (it
+  depends on `[P16-abi]`, the Electron-ABI `sharp` rebuild).

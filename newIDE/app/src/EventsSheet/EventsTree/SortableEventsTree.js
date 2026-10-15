@@ -5,6 +5,7 @@ import { useIsDragging } from '../../UI/DragAndDrop/UseIsDragging';
 import classNames from 'classnames';
 import { AutoSizer } from 'react-virtualized';
 import type { ProjectScopedContainersAccessor } from '../../InstructionOrExpression/EventsScope';
+import type { ForkGuardrailEventDiagnostic } from '../../Fork/Guardrails/ForkGuardrailRules';
 
 const gd: libGDevelop = global.gd;
 
@@ -28,6 +29,7 @@ export type SortableTreeNode = {|
   projectScopedContainersAccessor: ProjectScopedContainersAccessor,
   key: number | string,
   isValidElseEvent: boolean,
+  guardrails: $ReadOnlyArray<ForkGuardrailEventDiagnostic>,
   isDisabledEvent: boolean,
   isNonExecutableEvent: boolean,
   fixedHeight?: ?number,

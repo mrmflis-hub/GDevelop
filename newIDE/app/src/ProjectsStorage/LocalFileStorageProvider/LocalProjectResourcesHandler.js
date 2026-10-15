@@ -105,7 +105,11 @@ export const scanForNewResources = async ({
     filesToCheck.delete();
 
     mapVector(filePathsNotInResources, (relativeFilePath: string) => {
-      const resourceName = newNameGenerator(relativeFilePath, name =>
+      // Fork (Phase 17 [P17-B2]): `path.relative` is OS-separated, so on
+      // Windows the raw output would register a resource NAME like
+      // "art\hero.png" while every other surface uses forward slashes.
+      const forwardSlashFilePath = relativeFilePath.replace(/\\/g, '/');
+      const resourceName = newNameGenerator(forwardSlashFilePath, name =>
         resourcesManager.hasResource(name)
       );
 

@@ -254,6 +254,16 @@ export const ByokMcpSettingsCard = ({
               }}
             />
           </LineStackLayout>
+          <Text size="body2" color="secondary">
+            <Trans>
+              Tip: to use tools from other MCP servers (for example a Spine
+              exporter) alongside GDevelop, add them to the same external AI
+              app. Claude Desktop, VS Code, ZCode and similar clients can talk
+              to GDevelop and to other MCP servers at the same time, so they act
+              as the bridge. GDevelop itself only exposes its own tools over
+              MCP; it does not connect out to other servers.
+            </Trans>
+          </Text>
           <Text size="block-title">
             <Trans>Recent external agent activity</Trans>
           </Text>

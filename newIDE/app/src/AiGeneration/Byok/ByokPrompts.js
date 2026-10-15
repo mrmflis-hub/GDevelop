@@ -21,7 +21,20 @@ import './Knowledge/ByokJsApiPack';
  * one. Quality here decides BYOK quality.
  *
  * Bump BYOK_AGENT_PROMPT_VERSION whenever a change alters the prompt's
- * behavior, and note it in the worklog. byok-v12 (Phase 15.3): the
+ * behavior, and note it in the worklog. byok-v15 (Phase 19.5): the
+ * task-catalog entry that lets `search_tools` surface `import_sprite_sheet`
+ * (D19-1 — dispatchable and discoverable, never advertised inline, so the
+ * token budget is untouched). byok-v14 (Phases 17.7 + 18.3): the
+ * asset-tag and guardrail lines in the retrieval map plus the two
+ * task-catalog entries that let `search_tools` surface `list_assets`,
+ * `set_asset_tags` and `scan_scene_events` (D17-10/D18-6 — dispatchable and
+ * discoverable, never advertised inline, so the token budget is untouched).
+ * byok-v13 (Phase 16.5): the build-size
+ * line in the retrieval map plus the task-catalog entry that let
+ * `search_tools` surface `report_asset_optimization` and
+ * `set_asset_optimization_settings` (D16-9 — the two tools are dispatchable
+ * and discoverable, but never advertised inline, so the token budget is
+ * untouched). byok-v12 (Phase 15.3): the
  * game-code section (the `<GameName>Code/` folder next to the project, its
  * D15-3a load order, the GameCode.* namespace and the classic-script rule)
  * joined the always-on prompt, with the five game-code tools. byok-v11
@@ -44,7 +57,7 @@ import './Knowledge/ByokJsApiPack';
  * completion rules, skill pointers). byok-v5 (Phase 7): section composer
  * with a token budget + the F2 progress discipline in the planning section.
  */
-export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v12';
+export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v15';
 
 /**
  * Build the system prompt of the BYOK agent loop. The signature keeps the

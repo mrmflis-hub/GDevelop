@@ -40,6 +40,9 @@ import { getByokCatalogTools } from './ByokCatalogTools';
 import { getByokSpriteTools } from './ByokSpriteTools';
 import { getByokResourceTools } from './ByokResourceTools';
 import { getByokGameCodeTools } from './GameCode/ByokGameCodeTools';
+import { getByokAssetTools } from './ByokAssetTools';
+import { getByokGuardrailTools } from './ByokGuardrailTools';
+import { getByokSpriteSheetTools } from './ByokSpriteSheetTools';
 import {
   getByokProjectSnapshot,
   listByokProjectSnapshots,
@@ -741,6 +744,23 @@ const BYOK_EXTRA_TOOLS: Array<ByokExtraTool> = [
   // folder (`<GameName>Code/`), plus the hot-reload router. Writes and
   // deletes re-sync the carrier extension themselves.
   ...getByokGameCodeTools(),
+  // Build-time asset optimization (Phase 16.5, D16-9) + tag-driven asset
+  // management (Phase 17.7, D17-10): the savings projection, the export
+  // settings, and the asset tag read/write surface. Thin adapters over
+  // Fork/AssetBuild and Fork/AssetPipeline — advertised only through
+  // search_tools, never in the core set.
+  ...getByokAssetTools(),
+  // Event-sheet guardrails (Phase 18.3, D18-6): the read-only trap report
+  // (Once-in-loop, Wait-in-loop, unpicked actions, duplicate Once) the
+  // events sheet also shows as inline badges. Thin adapter over
+  // Fork/Guardrails — advertised only through search_tools.
+  ...getByokGuardrailTools(),
+  // Sprite-sheet import (Phase 19.5, D19-1): slice one local image along an
+  // explicit grid into frame files + a new animation of a Sprite object.
+  // Thin adapter over Fork/SpriteSheet — desktop-guarded by the handler,
+  // approval-gated (it writes the project), advertised only through
+  // search_tools.
+  ...getByokSpriteSheetTools(),
 ];
 
 /** All the intercepted tools (a fresh read: the list may grow per phase). */

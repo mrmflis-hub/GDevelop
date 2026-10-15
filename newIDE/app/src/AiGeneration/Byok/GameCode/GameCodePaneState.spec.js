@@ -311,14 +311,17 @@ describe('useByokGameCodePaneState', () => {
 
   describe('auto-reload (D15-6)', () => {
     type WatcherCapture = {|
-      callback: (event: {| identifier: string |}) => void,
+      callback: (event: {|
+        fileIdentifier: string,
+        event: string,
+      |}) => void,
     |};
     const makeWatcher = (): {|
       setupWatcher: any,
       capture: WatcherCapture,
     |} => {
       const capture: WatcherCapture = {
-        callback: (event: {| identifier: string |}) => {},
+        callback: (event: {| fileIdentifier: string, event: string |}) => {},
       };
       const setupWatcher = jest.fn((options: any) => {
         capture.callback = options.callback;
@@ -345,7 +348,10 @@ describe('useByokGameCodePaneState', () => {
       await act(async () => {});
       contents.set('main.js', 'v2');
       await act(async () => {
-        capture.callback({ identifier: 'MyGameCode/main.js' });
+        capture.callback({
+          fileIdentifier: 'MyGameCode/main.js',
+          event: 'change',
+        });
       });
       await act(async () => {
         await new Promise(resolve => setTimeout(resolve, 10));
@@ -377,7 +383,10 @@ describe('useByokGameCodePaneState', () => {
         handle.getState().setIsAutoReloadEnabled(false);
       });
       await act(async () => {
-        capture.callback({ identifier: 'MyGameCode/main.js' });
+        capture.callback({
+          fileIdentifier: 'MyGameCode/main.js',
+          event: 'change',
+        });
       });
       await act(async () => {
         await new Promise(resolve => setTimeout(resolve, 10));

@@ -187,7 +187,7 @@ export class ExternalLayoutEditorContainer extends React.Component<
     });
   }
 
-  onResourceExternallyChanged(resourceInfo: {| identifier: string |}) {
+  onResourceExternallyChanged(resourceInfo: {| fileIdentifier: string |}) {
     const { editor } = this;
     if (editor) {
       editor.onResourceExternallyChanged(resourceInfo);

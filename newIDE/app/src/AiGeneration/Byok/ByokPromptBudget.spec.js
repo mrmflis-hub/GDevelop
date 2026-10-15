@@ -146,6 +146,17 @@ ${buildWorkflowSkill.body.slice(0, 6000)}`
     expect(measurement.systemPrompt).toContain('tags: ["map"]');
   });
 
+  it('carries the build-size line that teaches the asset tools (Phase 16.5)', async () => {
+    // The asset-optimization tools are dispatchable but NOT advertised
+    // inline (D16-9): the retrieval map's build-size line is what lets a
+    // model find them through search_tools, so it must survive the budget.
+    const measurement = await measureTurn(true);
+    expect(measurement.systemPrompt).toContain('report_asset_optimization');
+    expect(measurement.systemPrompt).toContain(
+      'set_asset_optimization_settings'
+    );
+  });
+
   it('advertises the core set, not the whole catalog', async () => {
     const measurement = await measureTurn(true);
     // The core list + search_tools: far below the full 63-tool catalog.

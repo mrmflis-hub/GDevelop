@@ -12,7 +12,11 @@
  * even arms.
  */
 
-import { setupResourcesWatcher } from '../../../ProjectsStorage/LocalFileStorageProvider/LocalFileResourcesWatcher';
+import {
+  setupResourcesWatcher,
+  type ResourcesWatcherCallbackPayload,
+  type SetupResourcesWatcher,
+} from '../../../ProjectsStorage/LocalFileStorageProvider/LocalFileResourcesWatcher';
 import {
   getByokGameCodeStore,
   getProjectGameCodeFolderName,
@@ -38,25 +42,18 @@ export type ByokGameCodeAutoReloadOptions = {|
   isEnabled: () => boolean,
   /**
    * The subscription seam; defaults to the project-folder resources
-   * watcher. The callback receives `{identifier}` — a project-relative
-   * path with forward slashes.
+   * watcher. The callback receives `{fileIdentifier, event}` — a
+   * project-relative path with forward slashes, and the watcher's event
+   * kind ('add' | 'change' | 'unlink').
    */
-  setupWatcher?: (watcherOptions: {|
-    callback: (event: {| identifier: string |}) => void,
-    fileIdentifier: string,
-    options?: { isProjectSplitInMultipleFiles: boolean },
-  |}) => () => void,
+  setupWatcher?: SetupResourcesWatcher,
   store?: ByokGameCodeStore,
   debounceDelayMs?: number,
 |};
 
 const DEFAULT_DEBOUNCE_DELAY_MS = 500;
 
-const defaultSetupWatcher = (watcherOptions: {|
-  callback: (event: {| identifier: string |}) => void,
-  fileIdentifier: string,
-  options?: { isProjectSplitInMultipleFiles: boolean },
-|}): (() => void) => {
+const defaultSetupWatcher: SetupResourcesWatcher = watcherOptions => {
   if (!setupResourcesWatcher) return () => {};
   return setupResourcesWatcher(watcherOptions);
 };
@@ -97,6 +94,8 @@ export const startByokGameCodeAutoReload = (
     options.debounceDelayMs === undefined
       ? DEFAULT_DEBOUNCE_DELAY_MS
       : options.debounceDelayMs;
+  /** The disk events of the CURRENT burst, latest per path. */
+  const burstEventKinds: Map<string, string> = new Map();
 
   let isDisposed = false;
   let debounceTimer: ?TimeoutID = null;
@@ -123,7 +122,8 @@ export const startByokGameCodeAutoReload = (
 
   const triggerReload = async (
     project: any,
-    changedRelativePath: string
+    changedRelativePath: string,
+    burstEventKind: ?string
   ): Promise<void> => {
     if (isReloadInFlight) {
       // Re-entry is refused — but ONE trailing trigger is remembered,
@@ -138,10 +138,12 @@ export const startByokGameCodeAutoReload = (
       // The D15-6 setting is honoured at CALL time: a burst armed before
       // the setting was turned off must not fire.
       if (options.isEnabled()) {
-        const wasDeleted = await detectDeletedFile(
-          project,
-          changedRelativePath
-        );
+        // The watcher's kind is authoritative for a deletion when it is
+        // known ([P17-kind-hint]); the store read stays the fallback (and
+        // also covers "unreadable", which no event kind expresses).
+        const wasDeleted =
+          burstEventKind === 'unlink' ||
+          (await detectDeletedFile(project, changedRelativePath));
         await options.onReload({ changedRelativePath, wasDeleted });
       }
     } catch (error) {
@@ -152,7 +154,13 @@ export const startByokGameCodeAutoReload = (
         const nextChangedPath = queuedChangedPath;
         isTriggerQueued = false;
         queuedChangedPath = null;
-        if (nextChangedPath) triggerReload(project, nextChangedPath);
+        if (nextChangedPath) {
+          triggerReload(
+            project,
+            nextChangedPath,
+            burstEventKinds.get(nextChangedPath) || null
+          );
+        }
       }
     }
   };
@@ -165,15 +173,20 @@ export const startByokGameCodeAutoReload = (
     if (!changedRelativePath) return;
     const project = options.getProject();
     if (!project) return;
-    triggerReload(project, changedRelativePath);
+    triggerReload(
+      project,
+      changedRelativePath,
+      burstEventKinds.get(changedRelativePath) || null
+    );
   };
 
-  const handleWatchedFile = (event: {| identifier: string |}) => {
+  const handleWatchedFile = (event: ResourcesWatcherCallbackPayload) => {
     if (isDisposed) return;
     // Re-read on every event: the setting can be flipped at any moment.
     if (!options.isEnabled()) return;
-    if (!isGameCodePath(options.getProject(), event.identifier)) return;
-    pendingChangedPath = event.identifier;
+    if (!isGameCodePath(options.getProject(), event.fileIdentifier)) return;
+    pendingChangedPath = event.fileIdentifier;
+    burstEventKinds.set(event.fileIdentifier, event.event);
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(flushPendingReload, debounceDelayMs);
   };
@@ -187,6 +200,7 @@ export const startByokGameCodeAutoReload = (
     isDisposed = true;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = null;
+    burstEventKinds.clear();
     unsubscribeWatcher();
   };
 };

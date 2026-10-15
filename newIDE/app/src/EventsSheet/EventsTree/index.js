@@ -58,6 +58,12 @@ import { useLongTouch } from '../../Utils/UseLongTouch';
 import { useDragDropManager } from 'react-dnd';
 import GDevelopThemeContext from '../../UI/Theme/GDevelopThemeContext';
 import { ProjectScopedContainersAccessor } from '../../InstructionOrExpression/EventsScope';
+import {
+  analyzeEventGuardrails,
+  type ForkGuardrailAncestor,
+  type ForkGuardrailEventDiagnostic,
+} from '../../Fork/Guardrails/ForkGuardrailRules';
+import ForkGuardrailBadge from '../../Fork/Guardrails/ForkGuardrailBadge';
 
 const gd: libGDevelop = global.gd;
 
@@ -154,6 +160,7 @@ type EventsContainerProps = {|
   idPrefix: string,
   highlightedAiGeneratedEventIds: Set<string>,
   isValidElseEvent: boolean,
+  guardrails: $ReadOnlyArray<ForkGuardrailEventDiagnostic>,
   highlightedSearchText: ?string,
   highlightedSearchMatchCase?: boolean,
 
@@ -304,6 +311,7 @@ const EventContainer = (props: EventsContainerProps) => {
                   />
                 )}
                 <div style={styles.container}>
+                  <ForkGuardrailBadge diagnostics={props.guardrails} />
                   <EventComponent
                     project={project}
                     scope={scope}
@@ -347,6 +355,7 @@ const EventContainer = (props: EventsContainerProps) => {
                     windowSize={props.windowSize}
                     idPrefix={props.idPrefix}
                     isValidElseEvent={props.isValidElseEvent}
+                    guardrails={props.guardrails}
                     highlightedSearchText={props.highlightedSearchText}
                     highlightedSearchMatchCase={
                       props.highlightedSearchMatchCase
@@ -838,7 +847,7 @@ const EventsTree: React.ComponentType<{
   );
 
   const _renderEvent = ({ node }: {| node: SortableTreeNode |}) => {
-    const { event, depth, disabled, isValidElseEvent } = node;
+    const { event, depth, disabled, isValidElseEvent, guardrails } = node;
     if (!event) return null;
 
     const isDragged =
@@ -948,6 +957,7 @@ const EventsTree: React.ComponentType<{
           windowSize={props.windowSize}
           idPrefix={`event-${node.relativeNodePath.join('-')}`}
           isValidElseEvent={isValidElseEvent}
+          guardrails={guardrails}
           highlightedSearchText={props.highlightedSearchText}
           highlightedSearchMatchCase={props.highlightedSearchMatchCase}
           highlightedAiGeneratedEventIds={props.highlightedAiGeneratedEventIds}
@@ -995,7 +1005,8 @@ const EventsTree: React.ComponentType<{
     depth: number = 0,
     parentDisabled: boolean = false,
     parentAbsolutePath: Array<number> = [],
-    parentRelativePath: ?Array<number> = null
+    parentRelativePath: ?Array<number> = null,
+    ancestors: Array<ForkGuardrailAncestor> = []
   ) => {
     treeData.length = 0;
     mapFor(0, eventsList.getEventsCount(), i => {
@@ -1021,6 +1032,16 @@ const EventsTree: React.ComponentType<{
           ? isElseEventValid(eventsList, i)
           : false;
 
+      // Guardrails are computed for EVERY rule unconditionally: the badge
+      // filters by the fork settings at render time, so toggling a rule (or
+      // the master switch) never needs a tree rebuild — and no settings
+      // listener lives inside the tree.
+      const guardrails = analyzeEventGuardrails({
+        event,
+        ancestors,
+        indexInList: i,
+      });
+
       const childrenTreeData: Array<SortableTreeNode> = [];
       buildEventsTreeData(
         childrenTreeData,
@@ -1032,7 +1053,8 @@ const EventsTree: React.ComponentType<{
         depth + 1,
         disabled,
         currentAbsolutePath,
-        currentRelativePath
+        currentRelativePath,
+        ancestors.concat({ event, indexInList: i })
       );
 
       treeData.push({
@@ -1046,6 +1068,7 @@ const EventsTree: React.ComponentType<{
         depth,
         key: event.ptr,
         isValidElseEvent,
+        guardrails,
         isDisabledEvent: event.isDisabled(),
         isNonExecutableEvent: !event.isExecutable(),
         children: childrenTreeData,
@@ -1081,6 +1104,7 @@ const EventsTree: React.ComponentType<{
             projectScopedContainersAccessor: parentProjectScopedContainersAccessor,
             key: 'bottom-buttons',
             isValidElseEvent: false,
+            guardrails: [],
             isDisabledEvent: false,
             isNonExecutableEvent: false,
             // Unused, but still provided to make typing happy:
@@ -1107,6 +1131,7 @@ const EventsTree: React.ComponentType<{
             projectScopedContainersAccessor: parentProjectScopedContainersAccessor,
             key: 'eventstree-tutorial-node',
             isValidElseEvent: false,
+            guardrails: [],
             isDisabledEvent: false,
             isNonExecutableEvent: false,
             // Unused, but still provided to make typing happy:
@@ -1144,6 +1169,7 @@ const EventsTree: React.ComponentType<{
             projectScopedContainersAccessor: parentProjectScopedContainersAccessor,
             key: 'empty-state',
             isValidElseEvent: false,
+            guardrails: [],
             isDisabledEvent: false,
             isNonExecutableEvent: false,
             // Unused, but still provided to make typing happy:

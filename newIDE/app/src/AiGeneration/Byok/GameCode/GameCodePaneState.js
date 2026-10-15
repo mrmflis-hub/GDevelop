@@ -7,6 +7,7 @@ import {
   type ByokGameCodeFileInfo,
   type ByokGameCodeStore,
 } from './ByokGameCodeStore';
+import { type SetupResourcesWatcher } from '../../../ProjectsStorage/LocalFileStorageProvider/LocalFileResourcesWatcher';
 import { ensureByokGameCodeCarrier } from './ByokGameCodeCarrier';
 import {
   getByokGameCodeNamespaceExpression,
@@ -99,11 +100,7 @@ type PaneStateDeps = {|
   ensureCarrier?: typeof ensureByokGameCodeCarrier,
   reloadGameCode?: ?ByokGameCodePaneReloadFunction,
   /** The watcher seam of startByokGameCodeAutoReload. */
-  setupWatcher?: (watcherOptions: {|
-    callback: (event: {| identifier: string |}) => void,
-    fileIdentifier: string,
-    options?: { isProjectSplitInMultipleFiles: boolean },
-  |}) => () => void,
+  setupWatcher?: SetupResourcesWatcher,
   /** The watcher debounce; the auto-reload default is 500 ms. */
   debounceDelayMs?: number,
 |};
