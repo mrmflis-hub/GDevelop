@@ -57,6 +57,8 @@ import { type InfoBarDetails } from '../Hints/ObjectsAdditionalWork';
 import { type HotReloadPreviewButtonProps } from '../HotReload/HotReloadPreviewButton';
 import EventsRootVariablesFinder from '../Utils/EventsRootVariablesFinder';
 import { MOVEMENT_BIG_DELTA } from '../UI/KeyboardShortcuts';
+import { shouldCloseOrCancel } from '../UI/KeyboardShortcuts/InteractionKeys';
+import isDialogOpen from '../UI/OpenedDialogChecker';
 import {
   getInstanceInLayoutWithPersistentUuid,
   getInstancesInLayoutForObject,
@@ -260,6 +262,7 @@ type Props = {|
     variant: gdEventsBasedObjectVariant
   ) => void,
   onEffectAdded: () => void,
+  onLayerRenamedOrRemoved: () => void,
   onObjectListsModified: ({ isNewObjectTypeUsed: boolean }) => void,
   triggerHotReloadInGameEditorIfNeeded: () => void,
 
@@ -313,6 +316,7 @@ type State = {|
 type CopyCutPasteOptions = {|
   useLastCursorPosition?: boolean,
   pasteInTheForeground?: boolean,
+  embeddedGameCursorScenePosition?: ?[number, number, number],
 |};
 
 const editSceneIconReactNode = <EditSceneIcon />;
@@ -325,6 +329,7 @@ export default class SceneEditor extends React.Component<Props, State> {
   unregisterDebuggerCallback: (() => void) | null = null;
   editorViewPosition2D: EditorViewPosition2D = { viewX: null, viewY: null };
   _reloadResourcesCounter: number = 0;
+  _lastEmbeddedGameContextMenuScenePosition: ?[number, number, number] = null;
 
   constructor(props: Props) {
     super(props);
@@ -429,9 +434,13 @@ export default class SceneEditor extends React.Component<Props, State> {
             }
             if (parsedMessage.command === 'updateInstances') {
               this.onReceiveInstanceChanges(parsedMessage.payload);
+            } else if (parsedMessage.command === 'updateObjectProperties') {
+              this.onReceiveObjectPropertiesChanges(parsedMessage.payload);
             } else if (parsedMessage.command === 'setCameraState') {
               setCameraState(parsedMessage.editorId, parsedMessage.payload);
             } else if (parsedMessage.command === 'openContextMenu') {
+              this._lastEmbeddedGameContextMenuScenePosition =
+                parsedMessage.payload.cursorScenePosition || null;
               this._onContextMenu(
                 parsedMessage.payload.cursorX,
                 parsedMessage.payload.cursorY
@@ -447,7 +456,10 @@ export default class SceneEditor extends React.Component<Props, State> {
             } else if (parsedMessage.command === 'copy') {
               this.copySelection();
             } else if (parsedMessage.command === 'paste') {
-              this.paste();
+              this.paste({
+                embeddedGameCursorScenePosition:
+                  parsedMessage.payload.cursorScenePosition || null,
+              });
             } else if (parsedMessage.command === 'cut') {
               this.cutSelection();
             }
@@ -1395,6 +1407,42 @@ export default class SceneEditor extends React.Component<Props, State> {
     this._selectObjectOfInstances(instances);
   };
 
+  /**
+   * Deselect everything (instances, objects, layers, object groups), so that
+   * the properties panel goes back to the scene properties.
+   */
+  deselectAll = () => {
+    this.instancesSelection.clearSelection();
+    this._onInstancesSelected([]);
+  };
+
+  _onKeyDown = (event: SyntheticKeyboardEvent<HTMLDivElement>) => {
+    if (!shouldCloseOrCancel(event)) return;
+
+    const { target } = event;
+    // $FlowFixMe[prop-missing] - target is an Element (possibly from a popped-out window).
+    if (target.closest('textarea, input, [contenteditable="true"]')) {
+      return; // Escape is handled by the field being edited.
+    }
+    // $FlowFixMe[prop-missing]
+    if (isDialogOpen(target.ownerDocument)) return;
+
+    // Escape first cancels what is in progress, then deselects everything.
+    const { editorDisplay } = this;
+    if (
+      editorDisplay &&
+      editorDisplay.instancesHandlers.cancelClickInterception()
+    ) {
+      return;
+    }
+    if (this.state.tileMapTileSelection) {
+      this.onSelectTileMapTile(null);
+      return;
+    }
+
+    this.deselectAll();
+  };
+
   _selectObjectOfInstances = (instances: Array<gdInitialInstance>) => {
     if (instances.length === 0) {
       this.setState(
@@ -1535,6 +1583,38 @@ export default class SceneEditor extends React.Component<Props, State> {
           },
         });
       });
+  };
+
+  onReceiveObjectPropertiesChanges = ({
+    objectName,
+    properties,
+  }: {|
+    objectName: string,
+    properties: { [propertyName: string]: string },
+  |}) => {
+    const { globalObjectsContainer, objectsContainer } = this.props;
+    const object = getObjectByName(
+      globalObjectsContainer,
+      objectsContainer,
+      objectName
+    );
+    if (!object) return;
+
+    const objectConfiguration = object.getConfiguration();
+    let hasChanged = false;
+    for (const propertyName in properties) {
+      hasChanged =
+        objectConfiguration.updateProperty(
+          propertyName,
+          properties[propertyName]
+        ) || hasChanged;
+    }
+    if (!hasChanged) return;
+
+    if (this.props.unsavedChanges)
+      this.props.unsavedChanges.triggerUnsavedChanges();
+    this.forceUpdatePropertiesEditor();
+    this._onObjectsModified([object]);
   };
 
   _onObjectsModified = (objects: Array<gdObject>) => {
@@ -1779,6 +1859,9 @@ export default class SceneEditor extends React.Component<Props, State> {
           }
 
           done(doRemove);
+          if (doRemove) {
+            this.props.onLayerRenamedOrRemoved();
+          }
           // /!\ Force the instances editor to destroy and mount again the
           // renderers to avoid keeping any references to existing instances
           if (this.editorDisplay)
@@ -1794,8 +1877,12 @@ export default class SceneEditor extends React.Component<Props, State> {
     });
   };
 
-  _onLayerRenamed = () => {
+  _onLayerRenamed = (oldName: string, newName: string) => {
     this.forceUpdatePropertiesEditor();
+    this.props.onLayerRenamedOrRemoved();
+    if (this.state.chosenLayer === oldName) {
+      this._onChooseLayer(newName);
+    }
   };
 
   _sendHotReloadLayers = () => {
@@ -1838,6 +1925,27 @@ export default class SceneEditor extends React.Component<Props, State> {
                 layout.getBackgroundColorGreen(),
                 layout.getBackgroundColorBlue(),
               ],
+            },
+          });
+        });
+    }
+  };
+
+  _sendSetRenderer3DWorldScale = () => {
+    this.forceUpdatePropertiesEditor();
+    this.forceUpdateLayersList();
+    const { previewDebuggerServer, layout } = this.props;
+    if (!layout) {
+      return;
+    }
+    if (previewDebuggerServer) {
+      previewDebuggerServer
+        .getExistingEmbeddedGameFrameDebuggerIds()
+        .forEach(debuggerId => {
+          previewDebuggerServer.sendMessage(debuggerId, {
+            command: 'setRenderer3DWorldScale',
+            payload: {
+              renderer3DWorldScale: [layout.getRenderer3DWorldScale()],
             },
           });
         });
@@ -2710,16 +2818,31 @@ export default class SceneEditor extends React.Component<Props, State> {
 
     let x = 0;
     let y = 0;
-    if (this.editorDisplay) {
+    let z = 0;
+    const selectedInstances = this.instancesSelection.getSelectedInstances();
+    if (this.props.gameEditorMode === 'embedded-game') {
+      // The 2D instances editor is not mounted: use the instance positions.
+      if (selectedInstances.length > 0) {
+        const xs = selectedInstances.map(instance => instance.getX());
+        const ys = selectedInstances.map(instance => instance.getY());
+        x = (Math.min(...xs) + Math.max(...xs)) / 2;
+        y = (Math.min(...ys) + Math.max(...ys)) / 2;
+        z = Math.min(...selectedInstances.map(instance => instance.getZ()));
+      }
+    } else if (this.editorDisplay) {
       const selectionAABB = this.editorDisplay.instancesHandlers.getSelectionAABB();
       x = selectionAABB.centerX();
       y = selectionAABB.centerY();
+      if (selectedInstances.length > 0) {
+        z = Math.min(...selectedInstances.map(instance => instance.getZ()));
+      }
     }
 
     if (this.editorDisplay) {
       Clipboard.set(INSTANCES_CLIPBOARD_KIND, {
         x,
         y,
+        z,
         pasteInTheForeground: !!pasteInTheForeground,
         instances: serializedSelection,
       });
@@ -2760,7 +2883,10 @@ export default class SceneEditor extends React.Component<Props, State> {
     this.forceUpdatePropertiesEditor();
   };
 
-  paste = ({ useLastCursorPosition }: CopyCutPasteOptions = {}) => {
+  paste = ({
+    useLastCursorPosition,
+    embeddedGameCursorScenePosition,
+  }: CopyCutPasteOptions = {}) => {
     const clipboardContent = Clipboard.get(INSTANCES_CLIPBOARD_KIND);
     const instancesContent = SafeExtractor.extractArrayProperty(
       clipboardContent,
@@ -2768,6 +2894,7 @@ export default class SceneEditor extends React.Component<Props, State> {
     );
     const x = SafeExtractor.extractNumberProperty(clipboardContent, 'x');
     const y = SafeExtractor.extractNumberProperty(clipboardContent, 'y');
+    const z = SafeExtractor.extractNumberProperty(clipboardContent, 'z');
     const pasteInTheForeground =
       SafeExtractor.extractBooleanProperty(
         clipboardContent,
@@ -2786,7 +2913,31 @@ export default class SceneEditor extends React.Component<Props, State> {
           .get()
           .getObjectsContainersList()
           .hasObjectNamed(objectName),
+      doesLayerExistInContext: layerName =>
+        this.props.layersContainer.hasLayerNamed(layerName),
     });
+
+    if (this.props.gameEditorMode === 'embedded-game') {
+      const cursorScenePosition =
+        embeddedGameCursorScenePosition !== undefined
+          ? embeddedGameCursorScenePosition
+          : this._lastEmbeddedGameContextMenuScenePosition;
+      const positionX = cursorScenePosition
+        ? Math.round(cursorScenePosition[0])
+        : x;
+      const positionY = cursorScenePosition
+        ? Math.round(cursorScenePosition[1])
+        : y;
+      for (const instance of newInstances) {
+        instance.setX(instance.getX() + positionX);
+        instance.setY(instance.getY() + positionY);
+        if (cursorScenePosition && z !== null) {
+          if (this.isInstanceOf3DObject(instance)) {
+            instance.setZ(instance.getZ() - z + cursorScenePosition[2]);
+          }
+        }
+      }
+    }
 
     this._onInstancesAddedAndSendToEditor3D(newInstances);
     this.instancesSelection.clearSelection();
@@ -2797,7 +2948,7 @@ export default class SceneEditor extends React.Component<Props, State> {
     });
 
     const { editorDisplay } = this;
-    if (editorDisplay) {
+    if (editorDisplay && this.props.gameEditorMode !== 'embedded-game') {
       const viewPosition = editorDisplay.viewControls.getViewPosition();
       if (viewPosition) {
         const lastPosition = useLastCursorPosition
@@ -3097,6 +3248,7 @@ export default class SceneEditor extends React.Component<Props, State> {
                   style={styles.container}
                   id="scene-editor"
                   data-active={isActive ? 'true' : undefined}
+                  onKeyDown={this._onKeyDown}
                 >
                   <UseSceneEditorCommands
                     project={project}
@@ -3116,6 +3268,9 @@ export default class SceneEditor extends React.Component<Props, State> {
                     ref={ref => (this.editorDisplay = ref)}
                     gameEditorMode={this.props.gameEditorMode}
                     onRestartInGameEditor={this.props.onRestartInGameEditor}
+                    onSwitchToInstancesEditor={() =>
+                      this.setGameEditorMode('instances-editor')
+                    }
                     showRestartInGameEditorAfterErrorButton={
                       this.props.showRestartInGameEditorAfterErrorButton
                     }
@@ -3154,6 +3309,9 @@ export default class SceneEditor extends React.Component<Props, State> {
                     onLayerRenamed={this._onLayerRenamed}
                     onLayersModified={() => this._onLayersModified(false)}
                     onBackgroundColorChanged={this._sendSetBackgroundColor}
+                    onRenderer3DWorldScaleFieldChanged={
+                      this._sendSetRenderer3DWorldScale
+                    }
                     onLayersVisibilityInEditorChanged={
                       this._onLayersVisibilityInEditorChanged
                     }
@@ -3529,11 +3687,15 @@ export default class SceneEditor extends React.Component<Props, State> {
                           editedLayer: null,
                         });
                       }}
-                      onCancel={() =>
+                      onCancel={() => {
+                        // The layer was restored to its state before the dialog
+                        // was opened: refresh the preview, and the properties
+                        // panel if the layer is selected in it.
+                        this._onLayersModified(false);
                         this.setState({
                           editedLayer: null,
-                        })
-                      }
+                        });
+                      }}
                       hotReloadPreviewButtonProps={
                         this.props.hotReloadPreviewButtonProps
                       }

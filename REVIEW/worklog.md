@@ -6536,3 +6536,160 @@ newIDE/app/src/ObjectEditor/Editors/SpriteEditor/index.js          (the button +
   rewritten for the now-working preview refresh, a While-guard bullet added
   to `[P18-qa]`, and the new `[P19-qa]` desktop QA checklist added (it
   depends on `[P16-abi]`, the Electron-ABI `sharp` rebuild).
+
+## 2026-10-19 — Upstream sync: `upstream/master` (987b9d3919, 140 commits) merged, 19 conflicts resolved, all gates green
+
+**Agent:** ZCode main orchestrator (no subagents — the whole session was
+conflict resolution + verification, which needs one consistent view of the
+tree).
+
+**Actions:**
+
+1. **Sync preparation** — fetched `upstream` (4ian/GDevelop), measured the
+   divergence (our 22 commits vs their 140, 47 overlapping files) and took a
+   safety branch + tag `backup/pre-upstream-sync-2026-10-19` (at our
+   `1230fc6e18`) before touching anything.
+2. **Merge** — `git merge upstream/master --no-commit --no-ff`: 19 files
+   conflicted (45 hunks). Every hunk was resolved by reading BOTH sides
+   (the upstream diff, our diff and the merge-base) rather than by picking a
+   side; the resolutions were applied with a scripted, byte-anchored
+   resolver (`.git/mergeblocks.js`, `.git/applyedits.js`) so every
+   replacement was checked to match exactly once.
+3. **Resolutions, by theme.**
+   - *Pure additions* → both sides kept: the `OPEN_ASK_AI` command
+     (CommandsList), the BYOK/RAG/Build tabs (PreferencesDialog),
+     the Assets view + tag editor (ResourcesEditor), the fork imports
+     (MainFrame), the external-events/layout fan-out types, the sprite-sheet
+     dialog import.
+   - *Upstream supersedes ours* → upstream kept: the extension-tools
+     registry entries, the `describe_instances`/`put_2d_instances`/
+     `put_3d_instances` bodies (upstream's surfaces/anchors/model-3D
+     support), the whole redesigned Preferences dialog (rebuilt from
+     upstream's file, our three tabs re-added on top of the new structure),
+     `LocalFileDownloader.js` (our confined download core already
+     implemented upstream's cookie fix, and strictly more: the cookie is
+     re-decided on every redirect hop — upstream's fix only covers the
+     first request).
+   - *Ours supersedes upstream* → ours kept: the `try/finally` +
+     `PreviewClosedTracker` preview launcher, the instance-id resolver in
+     the instance tools, the `fileIdentifier` payload name (our documented
+     `[P17-B3]` rename).
+   - *Adaptations* → `LocalCodeEditorAutocompletions.js` now returns
+     `Promise<void>` (upstream's `MonacoSetup.js` calls `.catch()` on the
+     result — our old signature would have thrown at runtime), the
+     `OPEN_ASK_AI` command moved from the removed `IDE` command area to
+     `GENERAL`, `LocalPreviewLauncher` adopted upstream's
+     `setPreviewContext('preview')` (upstream removed the `previewContext` /
+     `sourceGameId` props from `PreviewLauncher.flow.js`).
+4. **Post-merge repairs** (all with tests or gate evidence).
+   - `getLayerNameForMessage` was LOST by the merge (ours had moved it to
+     `InstanceTools.js`, upstream kept and moved it inside `index.js`) —
+     re-declared in `index.js`.
+   - Upstream shipped **JavaScript code events** (`js """…"""`), which the
+     BYOK EventScript parser could not parse — the parser now reads the
+     fence (header `js`/`js(<objects>)`, body until the closing `"""`), and
+     stores the code relative to the fence (the renderer re-indents it).
+     All seven new upstream conformance fixtures pass.
+   - Upstream shipped **its own extension-authoring tools** with the same
+     names as ours but a different argument shape (`changed_parameters` vs
+     our `parameters_to_add`, and no `event_script` at all) — our
+     interception keeps running for those eight tools
+     (`BYOK_EXTENSION_TOOLS_KEEPING_THEIR_INTERCEPTION`), because letting
+     upstream's win would make the schema promise arguments the
+     implementation ignores.
+   - Upstream's `put_2d_instances` uses a naive `uuid.startsWith(id)`
+     match — our ambiguity guard (an id matching several instances must
+     fail the call) was ported into it, like `put_3d_instances` already had.
+   - Upstream's `AiAttachmentDrafts.js` interpolates an imported constant
+     inside a `t` template: the Lingui macro rewrites it into a bare
+     identifier that the CommonJS transform of the tests cannot resolve
+     (the app is fine — its bundler keeps the imported binding). Fixed by
+     passing the count as a message value.
+   - The prebuilt `libGD` WASM was stale (upstream changed the Core C++
+     `ExpressionCompletionFinder`): re-imported from upstream's master
+     build (`node scripts/import-libGD.js` — note: it must be run FROM
+     `newIDE/app/scripts`, its paths are relative to that folder).
+   - Two upstream tests are POSIX-only (`path.resolve` adds a Windows drive
+     letter): made platform-aware.
+5. **Gates** — `npm test -- --watchAll=false --maxWorkers=1`: **332 suites,
+   4073 tests passed, 1 skipped, 114 snapshots** (two consecutive full runs
+   green). `npm run lint`: 0 errors / 0 warnings. `npm run flow`: **0
+   errors**. `npm run check-format`: clean (app + electron-app). All 25
+   Electron main files parse.
+
+**Bugs found:**
+
+- `[B-upstream-lingui-macro]` upstream's `AiAttachmentDrafts.js` crashes
+  under the CommonJS transform (bare `MAX_ATTACHMENTS_PER_MESSAGE`) —
+  fixed in-tree (see actions 4).
+- `[B-upstream-posix-only-tests]` `ResourceUtils.spec.js` and
+  `ResourcesLoader/index.spec.js` assert POSIX paths — fixed to accept the
+  Windows drive letter.
+- `[B-merge-lost-getLayerNameForMessage]` the merge silently dropped a
+  helper (ours moved it, upstream moved it) — restored.
+- `[B-merge-stale-libgd]` the prebuilt WASM no longer matched the merged
+  Core — re-imported.
+- `[B-our-parser-no-js-events]` the BYOK EventScript parser could not read
+  upstream's new JavaScript code events — implemented.
+
+**Issues found:**
+
+- `[I-fork-vs-upstream-extension-tools]` upstream's v18 extension tools and
+  ours are NOT the same API (different change-list shape, no
+  `event_script`). Ours keep running (see actions 4); the fork's
+  divergence from upstream's server-side tools is now a standing
+  maintenance item — recorded in `deferred.md`.
+- `[I-upstream-preferences-redesign]` upstream redesigned the Preferences
+  dialog (search + sections + scroll spy); our three tabs were re-added on
+  top of the new structure, but they are NOT searchable sections — a
+  follow-up could move them into the section list.
+- `[I-upstream-command-area]` upstream removed the `IDE` command area; our
+  `OPEN_ASK_AI` command moved to `GENERAL`.
+
+**Files worked on:**
+
+```
+newIDE/app/src/AiGeneration/AiRequestChat/index.js              * (both attachment systems)
+newIDE/app/src/AiGeneration/AiRequestChat/index.spec.js         * (attachmentIds added)
+newIDE/app/src/AiGeneration/AskAiEditorContainer.js              * (both attachment systems)
+newIDE/app/src/AiGeneration/AskAiStandAloneForm.js               * (both attachment systems)
+newIDE/app/src/AiGeneration/AiAttachments/AiAttachmentDrafts.js * (the Lingui macro bug)
+newIDE/app/src/AiGeneration/Byok/ByokEventScriptParser.js                     * (JavaScript code events)
+newIDE/app/src/AiGeneration/Byok/ByokExtensionTools.js                        * (the shadowing guard)
+newIDE/app/src/CodeEditor/LocalCodeEditorAutocompletions.js     * (Promise<void>)
+newIDE/app/src/CommandPalette/CommandsList.js                    * (the IDE area is gone)
+newIDE/app/src/EditorFunctions/AttachmentResources.js            * (fileIdentifier)
+newIDE/app/src/EditorFunctions/index.js                         * (9 blocks + the resolver port)
+newIDE/app/src/EditorFunctions/Put3dInstances.spec.js            * (upstream's 3 new suites)
+newIDE/app/src/ExportAndShare/LocalExporters/LocalPreviewLauncher/index.js  * (upstream's 2 lines)
+newIDE/app/src/ExportAndShare/LocalExporters/LocalPreviewLauncher/index.spec.js * (the removed props)
+newIDE/app/src/MainFrame/EditorContainers/ExternalEventsEditorContainer.js  * (both types)
+newIDE/app/src/MainFrame/EditorContainers/ExternalLayoutEditorContainer.js  * (both types)
+newIDE/app/src/MainFrame/MainFrameCommands.spec.js               * (the GENERAL area)
+newIDE/app/src/MainFrame/Preferences/PreferencesContext.js       * (isWebGL2Supported)
+newIDE/app/src/MainFrame/Preferences/PreferencesDialog.js        * (rebuilt from upstream + 3 tabs)
+newIDE/app/src/MainFrame/Preferences/PreferencesProvider.js      * (isWebGL2Supported)
+newIDE/app/src/MainFrame/index.js                               * (both hook sets)
+newIDE/app/src/ObjectEditor/Editors/SpriteEditor/index.js      * (both imports)
+newIDE/app/src/ResourcesEditor/ResourcePropertiesEditor/index.js * (isMultipleSelection + fileIdentifier)
+newIDE/app/src/ResourcesEditor/index.js                         * (rebuilt from upstream + the Assets view)
+newIDE/app/src/ResourcesList/ResourceUtils.spec.js              * (the POSIX-only assertion)
+newIDE/app/src/ResourcesLoader/index.spec.js                     * (the POSIX-only assertions)
+newIDE/electron-app/app/LocalFileDownloader.js                  (ours kept: the per-hop cookie)
+.gitignore                                                     * (both sides)
+REVIEW/worklog.md                                              (this entry)
+REVIEW/deferred.md                                             (one entry)
+REVIEW/usertasks.md                                            (the sync is recorded)
+```
+
+### Triage
+
+- **`outofscoped.md`** — no new entry: everything found during the sync was
+  fixed in the same session.
+- **`deferred.md`** — one NEW entry: `[I-fork-vs-upstream-extension-tools]`
+  (our extension-authoring tools deliberately diverge from upstream's v18
+  ones; the divergence is now permanent and must be re-checked at every
+  upstream merge).
+- **`usertasks.md`** — the upstream sync is recorded (branch, commit, the
+  resolutions that need the owner's eye: the extension-tools divergence and
+  the Preferences tabs), and the desktop QA lists are unchanged.

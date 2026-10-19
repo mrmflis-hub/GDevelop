@@ -71,12 +71,6 @@ export enum ResourcesContainer_SourceType {
   Properties = 3,
 }
 
-export enum QuickCustomization_Visibility {
-  Default = 0,
-  Visible = 1,
-  Hidden = 2,
-}
-
 export enum ProjectDiagnostic_ErrorType {
   UndeclaredVariable = 0,
   MissingBehavior = 1,
@@ -527,8 +521,6 @@ export class ObjectFolderOrObject extends EmscriptenObject {
   moveChild(oldIndex: number, newIndex: number): void;
   removeFolderChild(childToRemove: ObjectFolderOrObject): void;
   isADescendantOf(otherObjectFolderOrObject: ObjectFolderOrObject): boolean;
-  getQuickCustomizationVisibility(): QuickCustomization_Visibility;
-  setQuickCustomizationVisibility(visibility: QuickCustomization_Visibility): void;
 }
 
 export class ObjectsContainer extends EmscriptenObject {
@@ -645,6 +637,7 @@ export class Project extends EmscriptenObject {
   removeExternalEvents(name: string): void;
   getExternalEventsPosition(name: string): number;
   getTests(): TestsContainer;
+  getNamedEasings(): NamedEasingsContainer;
   hasExternalLayoutNamed(name: string): boolean;
   getExternalLayout(name: string): ExternalLayout;
   getExternalLayoutAt(index: number): ExternalLayout;
@@ -715,6 +708,7 @@ export class ProjectScopedContainers extends EmscriptenObject {
   getObjectsContainersList(): ObjectsContainersList;
   getVariablesContainersList(): VariablesContainersList;
   getResourcesContainersList(): ResourcesContainersList;
+  getNamedEasings(): NamedEasingsContainer;
   getScopeSceneName(): string;
   getScopeExternalEventsName(): string;
   getScopeExtensionName(): string;
@@ -751,7 +745,6 @@ export class Behavior extends EmscriptenObject {
   isFolded(): boolean;
   setFolded(folded: boolean): void;
   isDefaultBehavior(): boolean;
-  getPropertiesQuickCustomizationVisibilities(): QuickCustomizationVisibilitiesContainer;
 }
 
 export class BehaviorJsImplementation extends Behavior {
@@ -771,7 +764,6 @@ export class BehaviorsSharedData extends EmscriptenObject {
   initializeContent(): void;
   isFolded(): boolean;
   setFolded(folded: boolean): void;
-  getPropertiesQuickCustomizationVisibilities(): QuickCustomizationVisibilitiesContainer;
 }
 
 export class BehaviorSharedDataJsImplementation extends BehaviorsSharedData {
@@ -901,6 +893,8 @@ export class Layout extends EmscriptenObject {
   getResourcesPreloading(): string;
   setResourcesUnloading(resourcesUnloading: string): void;
   getResourcesUnloading(): string;
+  setRenderer3DWorldScale(value: number): void;
+  getRenderer3DWorldScale(): number;
 }
 
 export class ExternalEvents extends EmscriptenObject {
@@ -947,6 +941,35 @@ export class TestsContainer extends EmscriptenObject {
   moveTest(oldIndex: number, newIndex: number): void;
   getTestsCount(): number;
   getTestPosition(test: Test): number;
+}
+
+export class NamedEasing extends EmscriptenObject {
+  constructor();
+  setName(name: string): void;
+  getName(): string;
+  setX1(x1: number): void;
+  getX1(): number;
+  setY1(y1: number): void;
+  getY1(): number;
+  setX2(x2: number): void;
+  getX2(): number;
+  setY2(y2: number): void;
+  getY2(): number;
+  serializeTo(element: SerializerElement): void;
+  unserializeFrom(element: SerializerElement): void;
+}
+
+export class NamedEasingsContainer extends EmscriptenObject {
+  insertNewNamedEasing(name: string, pos: number): NamedEasing;
+  insertNamedEasing(easing: NamedEasing, pos: number): NamedEasing;
+  hasNamedEasingNamed(name: string): boolean;
+  getNamedEasing(name: string): NamedEasing;
+  getNamedEasingAt(pos: number): NamedEasing;
+  removeNamedEasing(name: string): void;
+  clearNamedEasings(): void;
+  moveNamedEasing(oldIndex: number, newIndex: number): void;
+  getNamedEasingsCount(): number;
+  getNamedEasingPosition(easing: NamedEasing): number;
 }
 
 export class ExternalLayout extends EmscriptenObject {
@@ -1096,8 +1119,6 @@ export class PropertyDescriptor extends EmscriptenObject {
   setMeasurementUnit(measurementUnit: MeasurementUnit): PropertyDescriptor;
   hasImpactOnOtherProperties(): boolean;
   setHasImpactOnOtherProperties(enable: boolean): PropertyDescriptor;
-  getQuickCustomizationVisibility(): QuickCustomization_Visibility;
-  setQuickCustomizationVisibility(visibility: QuickCustomization_Visibility): PropertyDescriptor;
   serializeTo(element: SerializerElement): void;
   unserializeFrom(element: SerializerElement): void;
   serializeValuesTo(element: SerializerElement): void;
@@ -1784,17 +1805,6 @@ export class InGameEditorResourceMetadata extends EmscriptenObject {
   setKind(kind: string): InGameEditorResourceMetadata;
 }
 
-export class QuickCustomization extends EmscriptenObject {
-  static Default = 0;
-  static Visible = 1;
-  static Hidden = 2;
-}
-
-export class QuickCustomizationVisibilitiesContainer extends EmscriptenObject {
-  set(name: string, visibility: QuickCustomization_Visibility): void;
-  get(name: string): QuickCustomization_Visibility;
-}
-
 export class Screenshot extends EmscriptenObject {
   getDelayTimeInSeconds(): number;
   setDelayTimeInSeconds(delayTimeInSeconds: number): void;
@@ -1849,8 +1859,6 @@ export class BehaviorMetadata extends EmscriptenObject {
   markAsIrrelevantForChildObjects(): BehaviorMetadata;
   isActivatedByDefaultInEditor(): boolean;
   markAsActivatedByDefaultInEditor(): BehaviorMetadata;
-  getQuickCustomizationVisibility(): QuickCustomization_Visibility;
-  setQuickCustomizationVisibility(visibility: QuickCustomization_Visibility): BehaviorMetadata;
   setOpenFullEditorLabel(label: string): BehaviorMetadata;
   getOpenFullEditorLabel(): string;
   get(): Behavior;
@@ -2199,6 +2207,8 @@ export class WholeProjectRefactorer extends EmscriptenObject {
   static moveEventsBasedObject(project: Project, eventsFunctionsExtension: EventsFunctionsExtension, oldExtensionName: string, newExtensionName: string, oldObjectName: string, newObjectName: string): void;
   static updateObjectNameInEventsBasedObject(project: Project, eventsFunctionsExtension: EventsFunctionsExtension, eventsBasedObject: EventsBasedObject, sourceObjectName: string): void;
   static renameLayout(project: Project, oldName: string, newName: string): void;
+  static renameNamedEasing(project: Project, oldName: string, newName: string): void;
+  static renameNamedEasingInEventsFunctionsExtension(project: Project, eventsFunctionsExtension: EventsFunctionsExtension, oldName: string, newName: string): void;
   static renameExternalLayout(project: Project, oldName: string, newName: string): void;
   static renameExternalEvents(project: Project, oldName: string, newName: string): void;
   static renameLayerInScene(project: Project, scene: Layout, oldName: string, newName: string): void;
@@ -2218,6 +2228,7 @@ export class WholeProjectRefactorer extends EmscriptenObject {
   static objectRemovedInEventsFunction(project: Project, eventsFunction: EventsFunction, objectName: string): void;
   static objectOrGroupRenamedInEventsBasedObject(project: Project, projectScopedContainers: ProjectScopedContainers, eventsBasedObject: EventsBasedObject, oldName: string, newName: string, isObjectGroup: boolean): void;
   static objectRemovedInEventsBasedObject(project: Project, eventsBasedObject: EventsBasedObject, objectName: string): void;
+  static removeEventsBasedObjectVariant(project: Project, eventsFunctionsExtension: EventsFunctionsExtension, eventsBasedObject: EventsBasedObject, variantName: string): void;
   static globalObjectOrGroupRenamed(project: Project, oldName: string, newName: string, isObjectGroup: boolean): void;
   static globalObjectRemoved(project: Project, objectName: string): void;
   static behaviorsAddedToGlobalObject(project: Project, objectName: string): void;
@@ -2422,7 +2433,7 @@ export class VectorExpressionCompletionDescription extends EmscriptenObject {
 }
 
 export class ExpressionCompletionFinder extends EmscriptenObject {
-  static getCompletionDescriptionsFor(platform: Platform, projectScopedContainers: ProjectScopedContainers, rootType: string, node: ExpressionNode, location: number): VectorExpressionCompletionDescription;
+  static getCompletionDescriptionsFor(platform: Platform, projectScopedContainers: ProjectScopedContainers, rootType: string, rootExtraInfo: string, rootObjectName: string, node: ExpressionNode, location: number): VectorExpressionCompletionDescription;
   getCompletionDescriptions(): VectorExpressionCompletionDescription;
 }
 
@@ -2566,8 +2577,6 @@ export class EventsBasedBehavior extends AbstractEventsBasedEntity {
   setHelpPath(helpPath: string): EventsBasedBehavior;
   setObjectType(fullName: string): EventsBasedBehavior;
   getObjectType(): string;
-  setQuickCustomizationVisibility(visibility: QuickCustomization_Visibility): EventsBasedBehavior;
-  getQuickCustomizationVisibility(): QuickCustomization_Visibility;
   getSharedPropertyDescriptors(): PropertiesContainer;
   static getPropertyActionName(propertyName: string): string;
   static getPropertyConditionName(propertyName: string): string;
@@ -2777,6 +2786,7 @@ export class EventsFunctionsExtension extends EmscriptenObject {
   getEventsBasedBehaviors(): EventsBasedBehaviorsList;
   getEventsBasedObjects(): EventsBasedObjectsList;
   getTests(): TestsContainer;
+  getNamedEasings(): NamedEasingsContainer;
   serializeTo(element: SerializerElement): void;
   serializeToExternal(element: SerializerElement): void;
   unserializeFrom(project: Project, element: SerializerElement): void;
@@ -3336,7 +3346,6 @@ export class PreviewExportOptions extends EmscriptenObject {
   setPreviewContext(previewContext: string): PreviewExportOptions;
   setGDevelopVersionWithHash(gdevelopVersionWithHash: string): PreviewExportOptions;
   setProjectTemplateSlug(projectTemplateSlug: string): PreviewExportOptions;
-  setSourceGameId(sourceGameId: string): PreviewExportOptions;
   addScreenshotCapture(delayTimeInSeconds: number, signedUrl: string, publicUrl: string): PreviewExportOptions;
 }
 

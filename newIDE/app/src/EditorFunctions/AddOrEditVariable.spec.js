@@ -107,6 +107,43 @@ describe('add_or_edit_variable', () => {
     expect(project.getVariables().has('items')).toBe(false);
   });
 
+  it('lists only the first changes and warnings of a large batch', async () => {
+    const result: EditorFunctionGenericOutput = await editorFunctions.add_or_edit_variable.launchFunction(
+      {
+        ...makeFakeLaunchFunctionOptionsWithProject(project),
+        args: {
+          variable_scope: 'global',
+          variables: [
+            ...Array.from({ length: 300 }, (_, index) => ({
+              variable_name_or_path: `schools[${index}].name`,
+              value: `School ${index}`,
+            })),
+            ...Array.from({ length: 30 }, () => ({
+              variable_name_or_path: 'items[x]',
+              value: '1',
+            })),
+          ],
+        },
+      }
+    );
+
+    expect(result.success).toBe(true);
+    const lines = (result.message || '').split('\n');
+    expect(lines).toHaveLength(42);
+    expect(lines[0]).toBe(
+      'Added global variable "schools[0].name" (String) = School 0'
+    );
+    expect(lines[20]).toBe('... and 280 more changes, not listed.');
+    expect(lines[21]).toContain('Could not change global variable "items[x]"');
+    expect(lines[41]).toBe('... and 10 more warnings, not listed.');
+    expect(
+      project
+        .getVariables()
+        .get('schools')
+        .getChildrenCount()
+    ).toBe(300);
+  });
+
   it('warns (and stores nothing) when a forced number has a non-numeric value', async () => {
     const result: EditorFunctionGenericOutput = await editorFunctions.add_or_edit_variable.launchFunction(
       {
@@ -676,5 +713,121 @@ describe('add_or_edit_variable (instance scope)', () => {
     expect(result.message).toContain('ambiguous');
     expect(result.message).toContain(FIRST_UUID);
     expect(result.message).toContain(SECOND_UUID);
+  });
+});
+
+describe('add_or_edit_variable (instance scope, in a variant of a custom object)', () => {
+  let project: gdProject;
+  let eventsBasedObject: gdEventsBasedObject;
+  let defaultBackInstance: gdInitialInstance;
+  let darkBackInstance: gdInitialInstance;
+
+  const getIdOf = (instance: gdInitialInstance): string =>
+    instance.getPersistentUuid().slice(0, 10);
+  const getBackVariables = (variantName: string): gdVariablesContainer =>
+    (variantName === ''
+      ? eventsBasedObject.getDefaultVariant()
+      : eventsBasedObject.getVariants().getVariant(variantName)
+    )
+      .getObjects()
+      .getObject('Back')
+      .getVariables();
+
+  beforeEach(() => {
+    // $FlowFixMe[invalid-constructor]
+    project = new gd.ProjectHelper.createNewGDJSProject();
+    const extension = project.insertNewEventsFunctionsExtension('UI', 0);
+    eventsBasedObject = extension
+      .getEventsBasedObjects()
+      .insertNew('Dialog', 0);
+    const defaultVariant = eventsBasedObject.getDefaultVariant();
+    defaultVariant.getObjects().insertNewObject(project, 'Sprite', 'Back', 0);
+    const darkVariant = eventsBasedObject
+      .getVariants()
+      .insertNewVariant('Dark', 0);
+    gd.EventsBasedObjectVariantHelper.complyVariantsToEventsBasedObject(
+      project,
+      eventsBasedObject
+    );
+    defaultBackInstance = defaultVariant
+      .getInitialInstances()
+      .insertNewInitialInstance();
+    defaultBackInstance.setObjectName('Back');
+    darkBackInstance = darkVariant
+      .getInitialInstances()
+      .insertNewInitialInstance();
+    darkBackInstance.setObjectName('Back');
+  });
+
+  afterEach(() => {
+    project.delete();
+  });
+
+  const addOrEditVariable = async (args: any) =>
+    editorFunctions.add_or_edit_variable.launchFunction({
+      ...makeFakeLaunchFunctionOptionsWithProject(project),
+      args,
+    });
+
+  it('declares the variable on the child object of the default variant, followed by the named variants', async () => {
+    const result = await addOrEditVariable({
+      scope: {
+        type: 'custom_object_variant',
+        extension_name: 'UI',
+        custom_object_name: 'Dialog',
+        variant_name: '',
+      },
+      variable_scope: 'instance',
+      instance_id: getIdOf(defaultBackInstance),
+      variable_name_or_path: 'Glow',
+      value: 'true',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain(
+      'Declared "Glow" (Boolean) on object "Back" too'
+    );
+    expect(
+      defaultBackInstance
+        .getVariables()
+        .get('Glow')
+        .getBool()
+    ).toBe(true);
+    expect(getBackVariables('').has('Glow')).toBe(true);
+    expect(
+      getBackVariables('')
+        .get('Glow')
+        .getBool()
+    ).toBe(false);
+    // The named variant complied with the new structure.
+    expect(getBackVariables('Dark').has('Glow')).toBe(true);
+  });
+
+  it('declares the variable on the default variant when the instance is in a named variant', async () => {
+    const result = await addOrEditVariable({
+      scope: {
+        type: 'custom_object_variant',
+        extension_name: 'UI',
+        custom_object_name: 'Dialog',
+        variant_name: 'Dark',
+      },
+      variable_scope: 'instance',
+      instance_id: getIdOf(darkBackInstance),
+      variable_name_or_path: 'Depth',
+      value: '2',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain(
+      'Declared "Depth" (Number) on object "Back" too'
+    );
+    expect(
+      darkBackInstance
+        .getVariables()
+        .get('Depth')
+        .getValue()
+    ).toBe(2);
+    expect(getBackVariables('').has('Depth')).toBe(true);
+    expect(getBackVariables('Dark').has('Depth')).toBe(true);
   });
 });

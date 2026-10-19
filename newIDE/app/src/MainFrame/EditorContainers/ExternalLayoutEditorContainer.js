@@ -20,6 +20,7 @@ import {
   type ObjectGroupsOutsideEditorChanges,
   type WillDeleteObjectChanges,
   type ExternalLayoutOutsideEditorChanges,
+  type ExtensionsOutsideEditorChanges,
 } from '../../EditorFunctions/OutsideEditorChanges';
 import ExternalPropertiesDialog, {
   type ExternalProperties,
@@ -275,7 +276,12 @@ export class ExternalLayoutEditorContainer extends React.Component<
   }
 
   onInstancesModifiedOutsideEditor(changes: InstancesOutsideEditorChanges) {
-    if (changes.scene !== this.getLayout()) {
+    // Instances of an external layout: only this one is concerned. Instances
+    // of a scene: every external layout of the scene refreshes (as before).
+    const isConcerned = changes.externalLayout
+      ? changes.externalLayout === this.getExternalLayout()
+      : changes.scene === this.getLayout();
+    if (!isConcerned) {
       return;
     }
 
@@ -313,6 +319,26 @@ export class ExternalLayoutEditorContainer extends React.Component<
 
     if (this.editor) {
       this.editor.onWillDeleteObject(changes);
+    }
+  }
+
+  onExtensionsModifiedOutsideEditor(changes: ExtensionsOutsideEditorChanges) {
+    const { project } = this.props;
+    const { editor } = this;
+    if (!project || !editor) return;
+
+    // The custom objects of the changed extensions may be rendered differently
+    // now (children, area or properties changed).
+    for (const extensionName of changes.extensionNames) {
+      if (!project.hasEventsFunctionsExtensionNamed(extensionName)) continue;
+      const eventsBasedObjects = project
+        .getEventsFunctionsExtension(extensionName)
+        .getEventsBasedObjects();
+      for (let index = 0; index < eventsBasedObjects.getCount(); index++) {
+        editor.forceUpdateCustomObjectRenderedInstances(
+          eventsBasedObjects.getAt(index)
+        );
+      }
     }
   }
 
@@ -481,6 +507,7 @@ export class ExternalLayoutEditorContainer extends React.Component<
               this.props.onDeleteEventsBasedObjectVariant
             }
             onEffectAdded={this.props.onEffectAdded}
+            onLayerRenamedOrRemoved={this.props.onLayerRenamedOrRemoved}
             onObjectListsModified={this.props.onObjectListsModified}
             triggerHotReloadInGameEditorIfNeeded={
               this.props.triggerHotReloadInGameEditorIfNeeded

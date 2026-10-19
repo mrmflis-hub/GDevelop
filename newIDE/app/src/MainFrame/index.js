@@ -24,6 +24,9 @@ import CloseConfirmDialog from '../UI/CloseConfirmDialog';
 import ProfileDialog from '../Profile/ProfileDialog';
 import PurchaseClaimDialog from '../Profile/PurchaseClaimDialog';
 import Window from '../Utils/Window';
+import { markLegacySkyboxes } from '../Utils/LegacySkyboxOrientation';
+import { isWebGL2Supported } from '../Utils/WebGL';
+import { setInGameEditorRendererCreationFailed } from '../EmbeddedGame/InGameEditorAvailability';
 import { showErrorBox } from '../UI/Messages/MessageBox';
 import EditorTabsPane, {
   type EditorTabsPaneCommonProps,
@@ -106,6 +109,11 @@ import { ByokMcpServerHost } from '../AiGeneration/Byok/Mcp/useByokMcpServer';
 import { ForkAssetReportDialogHost } from '../Fork/AssetBuild/ForkAssetReportDialog';
 import useForkAssetPipelineLifecycles from '../Fork/AssetPipeline/useForkAssetPipelineLifecycles';
 import { registerForkAssetPreviewReloader } from '../Fork/AssetPipeline/ForkAssetPreviewReload';
+import {
+  isInGameEditorExtensionErrorFromStore,
+  getAskAiToFixInGameEditorExtensionErrorsText,
+} from '../InGameEditorExtensionErrors';
+import InGameEditorExtensionErrorsIndicator from '../InGameEditorExtensionErrors/InGameEditorExtensionErrorsIndicator';
 import { renderResourcesEditorContainer } from './EditorContainers/ResourcesEditorContainer';
 import { renderGlobalEventsSearchEditorContainer } from './EditorContainers/GlobalEventsSearchEditorContainer';
 import { type RenderEditorContainerPropsWithRef } from './EditorContainers/BaseEditor';
@@ -120,8 +128,9 @@ import {
   type WillDeleteSceneChanges,
   type WillDeleteGameplayTestChanges,
   type WillDeleteObjectChanges,
+  type ExtensionsOutsideEditorChanges,
+  type WillDeleteExtensionItemChanges,
 } from '../EditorFunctions/OutsideEditorChanges';
-import { type Exporter } from '../ExportAndShare/ShareDialog';
 import ResourcesLoader from '../ResourcesLoader/index';
 import {
   type PreviewLauncherInterface,
@@ -221,6 +230,7 @@ import {
   sendEventsExtractedAsFunction,
   sendPreviewStarted,
   sendProjectOpened,
+  setCurrentProjectUuid,
 } from '../Utils/Analytics/EventSender';
 import { useLeaderboardReplacer } from '../Leaderboard/UseLeaderboardReplacer';
 import useAlertDialog from '../UI/Alert/useAlertDialog';
@@ -245,7 +255,6 @@ import { emptyStorageProvider } from '../ProjectsStorage/ProjectStorageProviders
 import CustomDragLayer from '../UI/DragAndDrop/CustomDragLayer';
 import CloudProjectRecoveryDialog from '../ProjectsStorage/CloudStorageProvider/CloudProjectRecoveryDialog';
 import CloudProjectSaveChoiceDialog from '../ProjectsStorage/CloudStorageProvider/CloudProjectSaveChoiceDialog';
-import CloudStorageProvider from '../ProjectsStorage/CloudStorageProvider';
 import useCreateProject, {
   type UseCreateProjectReturnType,
 } from '../Utils/UseCreateProject';
@@ -256,6 +265,7 @@ import { type NewProjectSetup } from '../ProjectCreation/NewProjectSetupDialog';
 import useEditorTabsStateSaving from './EditorTabs/UseEditorTabsStateSaving';
 import PixiResourcesLoader from '../ObjectsRendering/PixiResourcesLoader';
 import useResourcesWatcher from './ResourcesWatcher';
+import { useResourcesAccessRefresh } from './UseResourcesAccessRefresh';
 import { extractGDevelopApiErrorStatusAndCode } from '../Utils/GDevelopServices/Errors';
 import { type CourseChapter } from '../Utils/GDevelopServices/Asset';
 import useVersionHistory from '../VersionHistory/UseVersionHistory';
@@ -267,7 +277,6 @@ import useSaveReminder from './UseSaveReminder';
 import { useMultiplayerLobbyConfigurator } from './UseMultiplayerLobbyConfigurator';
 import { useAuthenticatedPlayer } from './UseAuthenticatedPlayer';
 import ListIcon from '../UI/ListIcon';
-import { QuickCustomizationDialog } from '../QuickCustomization/QuickCustomizationDialog';
 import { type ObjectWithContext } from '../ObjectsList/EnumerateObjects';
 import useGamesList from '../GameDashboard/UseGamesList';
 import useCapturesManager from './UseCapturesManager';
@@ -442,7 +451,6 @@ export type Props = {|
   extensionsLoader?: JsExtensionsLoader,
   initialFileMetadataToOpen: ?FileMetadata,
   initialExampleSlugToOpen: ?string,
-  quickPublishOnlineWebExporter: Exporter,
   i18n: I18n,
   useCliCommandRunner: ({|
     project: ?gdProject,
@@ -623,6 +631,8 @@ const MainFrame = (props: Props): React.MixedElement => {
     clearGameHotReloadLogs,
     clearEditorHotReloadLogs,
     clearEditorUncaughtError,
+    inGameEditorExtensionErrors,
+    clearInGameEditorExtensionErrors,
     hardReloadAllPreviews,
   } = usePreviewDebuggerServerWatcher(previewDebuggerServer);
   const {
@@ -706,14 +716,14 @@ const MainFrame = (props: Props): React.MixedElement => {
     fileMetadataOpeningMessage,
     setFileMetadataOpeningMessage,
   ] = React.useState<?MessageDescriptor>(null);
-  const [
-    quickCustomizationDialogOpenedFromGameId,
-    setQuickCustomizationDialogOpenedFromGameId,
-  ] = React.useState<?string>(null);
 
   const [gameEditorMode, setGameEditorMode] = React.useState<
     'embedded-game' | 'instances-editor'
   >('instances-editor');
+  const onEnableInGameEditor = React.useCallback(
+    () => setGameEditorMode('embedded-game'),
+    []
+  );
 
   // This is just for testing, to check if we're getting the right state
   // and gives us an idea about the number of re-renders.
@@ -724,6 +734,15 @@ const MainFrame = (props: Props): React.MixedElement => {
   const { currentFileMetadata, updateStatus } = state;
   const currentProject = exceptionallyGuardAgainstDeadObject(
     state.currentProject
+  );
+
+  React.useEffect(
+    () => {
+      setCurrentProjectUuid(
+        currentProject ? currentProject.getProjectUuid() : null
+      );
+    },
+    [currentProject]
   );
 
   const fileIdentifier = currentFileMetadata
@@ -755,7 +774,6 @@ const MainFrame = (props: Props): React.MixedElement => {
     i18n,
     renderGDJSDevelopmentWatcher,
     renderMainMenu,
-    quickPublishOnlineWebExporter,
     useCliCommandRunner,
     onExportHtml5External,
   } = props;
@@ -783,13 +801,17 @@ const MainFrame = (props: Props): React.MixedElement => {
     onProjectModified: triggerUnsavedChanges,
   });
 
+  const { ensureCanAccessResources } = useResourcesAccessRefresh({
+    project: currentProject,
+    fileMetadata: currentFileMetadata,
+    getStorageProviderOperations,
+  });
+
   const gamesList = useGamesList();
 
   const {
     createCaptureOptionsForPreview,
     onCaptureFinished,
-    onGameScreenshotsClaimed,
-    getGameUnverifiedScreenshotUrls,
     getHotReloadPreviewLaunchCaptureOptions,
   } = useCapturesManager({ project: currentProject, gamesList });
 
@@ -1130,6 +1152,7 @@ const MainFrame = (props: Props): React.MixedElement => {
         paneIdentifier,
         continueProcessingFunctionCallsOnMount,
         prefilledUserRequest,
+        prefillInCurrentChat,
       } = options || {};
       const newPaneIdentifier =
         paneIdentifier || (currentProject ? 'right' : 'center');
@@ -1137,7 +1160,10 @@ const MainFrame = (props: Props): React.MixedElement => {
       if (prefilledUserRequest) {
         // Delivered to the Ask AI editor as soon as it's mounted (or
         // immediately if it already is).
-        requestAskAiPrefill(prefilledUserRequest);
+        requestAskAiPrefill({
+          userRequestText: prefilledUserRequest,
+          inCurrentChat: !!prefillInCurrentChat,
+        });
       }
 
       setState(state => {
@@ -1497,6 +1523,7 @@ const MainFrame = (props: Props): React.MixedElement => {
       const startTime = Date.now();
       const newProject = gd.ProjectHelper.createNewGDJSProject();
       newProject.unserializeFrom(serializedProject);
+      markLegacySkyboxes(newProject);
       const duration = Date.now() - startTime;
       console.info(`Unserialization took ${duration.toFixed(2)} ms`);
 
@@ -1735,15 +1762,10 @@ const MainFrame = (props: Props): React.MixedElement => {
         }));
       }
       closeNewProjectDialog();
-      if (options.openQuickCustomizationDialog) {
-        setQuickCustomizationDialogOpenedFromGameId(oldProjectId);
-      } else {
-        // Replace leaderboards and configure multiplayer lobbies if needed.
-        // In the case of quick customization, this will be done later.
-        openLeaderboardReplacerDialogIfNeeded(project, oldProjectId);
-        configureMultiplayerLobbiesIfNeeded(project, oldProjectId);
-      }
-      options.openAllScenes || options.openQuickCustomizationDialog
+      // Replace leaderboards and configure multiplayer lobbies if needed.
+      openLeaderboardReplacerDialogIfNeeded(project, oldProjectId);
+      configureMultiplayerLobbiesIfNeeded(project, oldProjectId);
+      options.openAllScenes
         ? openAllScenes({
             currentProject: project,
             editorTabs,
@@ -2222,6 +2244,8 @@ const MainFrame = (props: Props): React.MixedElement => {
   const onRestartInGameEditor = React.useCallback(
     (reason: string) => {
       setShowRestartInGameEditorAfterErrorButton(false);
+      // Reported again by the in-game editor once restarted.
+      setInGameEditorRendererCreationFailed(false);
       notifyChangesToInGameEditor({
         shouldReloadProjectData: true,
         shouldReloadLibraries: true,
@@ -2368,6 +2392,20 @@ const MainFrame = (props: Props): React.MixedElement => {
         shouldReloadResources: false,
         shouldHardReload: false,
         reasons: ['effect-added'],
+      });
+    },
+    [notifyChangesToInGameEditor]
+  );
+
+  const onLayerRenamedOrRemoved = React.useCallback(
+    () => {
+      // Instances can have been moved to another layer or deleted.
+      notifyChangesToInGameEditor({
+        shouldReloadProjectData: true,
+        shouldReloadLibraries: false,
+        shouldReloadResources: false,
+        shouldHardReload: false,
+        reasons: ['layer-renamed-or-removed'],
       });
     },
     [notifyChangesToInGameEditor]
@@ -2963,7 +3001,12 @@ const MainFrame = (props: Props): React.MixedElement => {
       ]);
 
       try {
-        await eventsFunctionsExtensionsState.ensureLoadFinished();
+        await Promise.all([
+          eventsFunctionsExtensionsState.ensureLoadFinished(),
+          // The preview will load all the resources of the project: ensure
+          // the credentials to access them (if any) are still valid.
+          ensureCanAccessResources(),
+        ]);
 
         const startTime = Date.now();
         let inAppTutorialMessageInPreview = { message: '', position: '' };
@@ -3025,8 +3068,6 @@ const MainFrame = (props: Props): React.MixedElement => {
         if (!isForInGameEdition)
           sendPreviewStarted({
             projectUuid: currentProject.getProjectUuid(),
-            quickCustomizationGameId:
-              quickCustomizationDialogOpenedFromGameId || null,
             networkPreview: !!networkPreview,
             hotReload: !!hotReload,
             projectDataOnlyExport:
@@ -3072,12 +3113,12 @@ const MainFrame = (props: Props): React.MixedElement => {
       autosaveProjectIfNeeded,
       authenticatedUser.profile,
       eventsFunctionsExtensionsState,
+      ensureCanAccessResources,
       preferences.getIsMenuBarHiddenInPreview,
       preferences.getIsAlwaysOnTopInPreview,
       preferences.values.openDiagnosticReportAutomatically,
       currentlyRunningInAppTutorial,
       getAuthenticatedPlayerForPreview,
-      quickCustomizationDialogOpenedFromGameId,
       onCaptureFinished,
       createCaptureOptionsForPreview,
       inGameEditorSettings,
@@ -3199,22 +3240,6 @@ const MainFrame = (props: Props): React.MixedElement => {
       hardReloadAllPreviews();
     },
     [hardReloadAllPreviews, launchPreview]
-  );
-
-  const launchQuickCustomizationPreview = React.useCallback(
-    () =>
-      launchPreview({
-        networkPreview: false,
-        launchCaptureOptions: {
-          screenshots: [
-            { delayTimeInSeconds: 1000 }, // Take one quickly in case the user closes the preview too fast.
-            { delayTimeInSeconds: 5000 }, // Take another one after longer into the game.
-          ],
-        },
-        hotReload: true,
-        shouldGenerateScenesEventsCode: false,
-      }),
-    [launchPreview]
   );
 
   const hotReloadPreviewButtonProps: HotReloadPreviewButtonProps = React.useMemo(
@@ -3476,7 +3501,7 @@ const MainFrame = (props: Props): React.MixedElement => {
     [setStandaloneDialogOpen]
   );
 
-  const { navigateToRoute } = useHomePageSwitch({
+  useHomePageSwitch({
     openHomePage,
     closeDialogs: closeDialogsToOpenHomePage,
   });
@@ -4080,8 +4105,12 @@ const MainFrame = (props: Props): React.MixedElement => {
           editorRef.onInstancesModifiedOutsideEditor(changes);
         }
       }
+      // Children of a custom object moved: refresh its rendered instances.
+      if (changes.eventsBasedObject) {
+        onEventsBasedObjectChildrenEdited(changes.eventsBasedObject);
+      }
     },
-    [state.editorTabs]
+    [state.editorTabs, onEventsBasedObjectChildrenEdited]
   );
 
   // The external-item fan-outs are guarded calls: only the external layout
@@ -4113,6 +4142,11 @@ const MainFrame = (props: Props): React.MixedElement => {
 
   const onObjectsModifiedOutsideEditor = React.useCallback(
     (changes: ObjectsOutsideEditorChanges) => {
+      // Children of a custom object changed: the named variants follow the
+      // default one, and every rendered instance is refreshed.
+      if (changes.eventsBasedObject) {
+        onEventsBasedObjectChildrenEdited(changes.eventsBasedObject);
+      }
       for (const editor of getAllEditorTabs(state.editorTabs)) {
         const { editorRef } = editor;
         if (editorRef) {
@@ -4123,7 +4157,7 @@ const MainFrame = (props: Props): React.MixedElement => {
         isNewObjectTypeUsed: changes.isNewObjectTypeUsed,
       });
     },
-    [state.editorTabs, onObjectListsModified]
+    [state.editorTabs, onObjectListsModified, onEventsBasedObjectChildrenEdited]
   );
 
   const onObjectGroupsModifiedOutsideEditor = React.useCallback(
@@ -4138,15 +4172,86 @@ const MainFrame = (props: Props): React.MixedElement => {
     [state.editorTabs]
   );
 
+  // Re-select in the open extension tab an item that was renamed outside of the
+  // editor, so the user keeps working on what they were looking at.
+  const reselectRenamedExtensionItem = (
+    changes: ProjectItemRenamedOutsideEditorChanges
+  ) => {
+    const { currentProject } = state;
+    const { kind, newName, extensionName } = changes;
+    if (!currentProject || !extensionName) return;
+    if (!currentProject.hasEventsFunctionsExtensionNamed(extensionName)) return;
+
+    const foundTab = getEventsFunctionsExtensionEditor(
+      state.editorTabs,
+      currentProject.getEventsFunctionsExtension(extensionName)
+    );
+    if (!foundTab) return;
+
+    if (kind === 'custom-behavior') {
+      foundTab.editor.selectEventsBasedBehaviorByName(newName);
+    } else if (kind === 'function') {
+      foundTab.editor.selectEventsFunctionByName(
+        newName,
+        changes.behaviorName,
+        changes.objectName
+      );
+    }
+  };
+
   // The project model is already updated; just keep open tabs alive by renaming
   // their project item.
   const onProjectItemRenamedOutsideEditor = (
     changes: ProjectItemRenamedOutsideEditorChanges
   ) => {
     const { kind, oldName, newName } = changes;
+    if (kind === 'custom-behavior' || kind === 'function') {
+      // No tab is named after these: only the selection has to follow.
+      reselectRenamedExtensionItem(changes);
+      return;
+    }
+    if (kind === 'extension') {
+      const { currentProject } = state;
+      if (currentProject) {
+        // The generated extension is still registered under its old name.
+        eventsFunctionsExtensionsState.unloadProjectEventsFunctionsExtension(
+          currentProject,
+          oldName
+        );
+      }
+    }
     setState(state => {
       const { currentProject } = state;
       if (!currentProject) return state;
+      if (kind === 'extension') {
+        return {
+          ...state,
+          editorTabs: getEditorTabsWithRenamedProjectItem(
+            state.editorTabs,
+            currentProject,
+            editorTab =>
+              getRenamedExtensionTabProjectItemName(editorTab, oldName, newName)
+          ),
+        };
+      }
+      if (kind === 'custom-object') {
+        const { extensionName } = changes;
+        if (!extensionName) return state;
+        return {
+          ...state,
+          editorTabs: getEditorTabsWithRenamedProjectItem(
+            state.editorTabs,
+            currentProject,
+            editorTab =>
+              getRenamedEventsBasedObjectTabProjectItemName(
+                editorTab,
+                extensionName,
+                oldName,
+                newName
+              )
+          ),
+        };
+      }
       if (kind === 'scene') {
         return {
           ...state,
@@ -4155,6 +4260,21 @@ const MainFrame = (props: Props): React.MixedElement => {
             currentProject,
             editorTab =>
               getRenamedLayoutTabProjectItemName(editorTab, oldName, newName)
+          ),
+        };
+      }
+      if (kind === 'external-layout') {
+        return {
+          ...state,
+          editorTabs: getEditorTabsWithRenamedProjectItem(
+            state.editorTabs,
+            currentProject,
+            editorTab =>
+              getRenamedExternalLayoutTabProjectItemName(
+                editorTab,
+                oldName,
+                newName
+              )
           ),
         };
       }
@@ -4174,6 +4294,28 @@ const MainFrame = (props: Props): React.MixedElement => {
         };
       }
       return state;
+    }).then(() => {
+      if (kind === 'external-layout') {
+        // The events creating its objects now name it differently.
+        notifyChangesToInGameEditor({
+          shouldReloadProjectData: true,
+          shouldReloadLibraries: false,
+          shouldReloadResources: false,
+          shouldHardReload: false,
+          reasons: ['renamed-external-layout'],
+        });
+      }
+      if (kind === 'extension' || kind === 'custom-object') {
+        // The renamed extension (or custom object) is used by the game under
+        // its new name.
+        notifyChangesToInGameEditor({
+          shouldReloadProjectData: true,
+          shouldReloadLibraries: true,
+          shouldReloadResources: false,
+          shouldHardReload: false,
+          reasons: ['renamed-extension-item'],
+        });
+      }
     });
   };
 
@@ -4187,9 +4329,14 @@ const MainFrame = (props: Props): React.MixedElement => {
   const onWillDeleteScene = async (
     changes: WillDeleteSceneChanges
   ): Promise<void> => {
+    const { scene, externalLayout } = changes;
     await setState(state => ({
       ...state,
-      editorTabs: closeLayoutTabs(state.editorTabs, changes.scene),
+      editorTabs: externalLayout
+        ? closeExternalLayoutTabs(state.editorTabs, externalLayout)
+        : scene
+        ? closeLayoutTabs(state.editorTabs, scene)
+        : state.editorTabs,
     }));
   };
 
@@ -4204,6 +4351,85 @@ const MainFrame = (props: Props): React.MixedElement => {
         state.editorTabs,
         changes.gameplayTestProjectItemName
       ),
+    }));
+  };
+
+  // Called once the extensions changed outside of the editor were regenerated:
+  // refresh every editor showing them and reload the game.
+  const onExtensionsModifiedOutsideEditor = React.useCallback(
+    (changes: ExtensionsOutsideEditorChanges) => {
+      for (const editor of getAllEditorTabs(state.editorTabs)) {
+        const { editorRef } = editor;
+        if (editorRef) {
+          editorRef.onExtensionsModifiedOutsideEditor(changes);
+        }
+      }
+      notifyChangesToInGameEditor({
+        shouldReloadProjectData: true,
+        shouldReloadLibraries: true,
+        shouldReloadResources: false,
+        // The generated code changed: the running game must start over.
+        shouldHardReload: changes.needsCodeRegeneration,
+        reasons: ['ai-extension-change'],
+      });
+    },
+    [state.editorTabs, notifyChangesToInGameEditor]
+  );
+
+  // Called before an extension (or one of its items) is actually deleted from
+  // the project, so the tabs bound to it are closed and the selections holding
+  // it are released while it's still valid.
+  // The caller MUST await this: `setState` (`useStateWithCallback`) resolves
+  // once the tab-closing update is applied.
+  const onWillDeleteExtensionItem = async (
+    changes: WillDeleteExtensionItemChanges
+  ): Promise<void> => {
+    const { kind, extensionName, objectName, variantName } = changes;
+    const { currentProject } = state;
+
+    if (kind !== 'extension') {
+      // The extension editor keeps a pointer to the selected behavior, object
+      // or function: release it before it becomes dangling.
+      if (
+        currentProject &&
+        currentProject.hasEventsFunctionsExtensionNamed(extensionName)
+      ) {
+        const foundTab = getEventsFunctionsExtensionEditor(
+          state.editorTabs,
+          currentProject.getEventsFunctionsExtension(extensionName)
+        );
+        if (foundTab) foundTab.editor.onWillDeleteExtensionItem(changes);
+      }
+      if (kind === 'custom-behavior' || kind === 'function') {
+        // No tab is bound to these.
+        return;
+      }
+    } else if (currentProject) {
+      // Unload the Platform extension that was generated from it, as the
+      // reload only unloads the extensions still in the project.
+      eventsFunctionsExtensionsState.unloadProjectEventsFunctionsExtension(
+        currentProject,
+        extensionName
+      );
+    }
+
+    await setState(state => ({
+      ...state,
+      editorTabs:
+        kind === 'extension'
+          ? closeEventsFunctionsExtensionTabs(state.editorTabs, extensionName)
+          : kind === 'custom-object'
+          ? closeCustomObjectTab(
+              state.editorTabs,
+              extensionName,
+              objectName || ''
+            )
+          : closeEventsBasedObjectVariantTab(
+              state.editorTabs,
+              extensionName,
+              objectName || '',
+              variantName || ''
+            ),
     }));
   };
 
@@ -4751,7 +4977,7 @@ const MainFrame = (props: Props): React.MixedElement => {
             onStartSaving: () =>
               _replaceSnackMessage(i18n._(t`Saving...`), null),
             onMoveResources: async ({ newFileMetadata }) => {
-              if (currentFileMetadata)
+              if (currentFileMetadata) {
                 await ensureResourcesAreMoved({
                   project: upToDateProject,
                   newFileMetadata,
@@ -4762,6 +4988,16 @@ const MainFrame = (props: Props): React.MixedElement => {
                   oldStorageProviderOperations,
                   authenticatedUser,
                 });
+              }
+              // Resources can be only in memory (files added by the AI in a
+              // project not saved yet, or opened from a URL): store them.
+              await ensureResourcesAreFetched(() => ({
+                project: upToDateProject,
+                fileMetadata: newFileMetadata,
+                storageProvider: newStorageProvider,
+                storageProviderOperations: newStorageProviderOperations,
+                authenticatedUser,
+              }));
             },
           }
         );
@@ -4774,6 +5010,8 @@ const MainFrame = (props: Props): React.MixedElement => {
           return;
         }
 
+        if (originalProjectUuid)
+          setCurrentProjectUuid(upToDateProject.getProjectUuid());
         sealUnsavedChanges();
         _replaceSnackMessage(i18n._(t`Project properly saved`));
         setCloudProjectSaveChoiceOpen(false);
@@ -4858,6 +5096,7 @@ const MainFrame = (props: Props): React.MixedElement => {
       getStorageProvider,
       preferences,
       ensureResourcesAreMoved,
+      ensureResourcesAreFetched,
       authenticatedUser,
       currentlyRunningInAppTutorial,
       showAlert,
@@ -5093,7 +5332,6 @@ const MainFrame = (props: Props): React.MixedElement => {
   const renderSaveReminder = useSaveReminder({
     onSave: saveProject,
     project: currentProject,
-    isInQuickCustomization: !!quickCustomizationDialogOpenedFromGameId,
   });
 
   /**
@@ -5960,6 +6198,7 @@ const MainFrame = (props: Props): React.MixedElement => {
     setPreviewedLayout: setPreviewedLayout,
     openExternalEvents: openExternalEvents,
     openLayout: openLayout,
+    openExternalLayout: openExternalLayout,
     openTemplateFromTutorial: openTemplateFromTutorial,
     openTemplateFromCourseChapter: openTemplateFromCourseChapter,
     previewDebuggerServer: previewDebuggerServer,
@@ -6019,10 +6258,13 @@ const MainFrame = (props: Props): React.MixedElement => {
     onWillDeleteScene: onWillDeleteScene,
     onWillDeleteGameplayTest: onWillDeleteGameplayTest,
     onWillDeleteObject: onWillDeleteObject,
+    onExtensionsModifiedOutsideEditor: onExtensionsModifiedOutsideEditor,
+    onWillDeleteExtensionItem: onWillDeleteExtensionItem,
     onWillInstallExtension: onWillInstallExtension,
     onExtensionInstalled: onExtensionInstalled,
     onCreateNewExtensionWithBehavior: onCreateNewExtensionWithBehavior,
     onEffectAdded: onEffectAdded,
+    onLayerRenamedOrRemoved: onLayerRenamedOrRemoved,
     onObjectListsModified: onObjectListsModified,
     onExternalLayoutAssociationChanged,
     gamesList: gamesList,
@@ -6049,10 +6291,6 @@ const MainFrame = (props: Props): React.MixedElement => {
             crashReportUploadLevel:
               preferences.values.previewCrashReportUploadLevel ||
               'exclude-javascript-code-events',
-            previewContext: quickCustomizationDialogOpenedFromGameId
-              ? 'preview-quick-customization'
-              : 'preview',
-            sourceGameId: quickCustomizationDialogOpenedFromGameId || '',
             getIncludeFileHashs:
               eventsFunctionsExtensionsContext.getIncludeFileHashs,
             onExport: () => {
@@ -6066,10 +6304,28 @@ const MainFrame = (props: Props): React.MixedElement => {
         )}
       <EmbeddedGameFrame
         key={currentProject ? currentProject.ptr : 0}
-        enabled={gameEditorMode === 'embedded-game'}
+        // The in-game editor requires WebGL2 (a message is shown instead).
+        enabled={gameEditorMode === 'embedded-game' && isWebGL2Supported()}
+        onEnable={onEnableInGameEditor}
         previewDebuggerServer={previewDebuggerServer || null}
         onLaunchPreviewForInGameEdition={onLaunchPreviewForInGameEdition}
-      />
+      >
+        <InGameEditorExtensionErrorsIndicator
+          errors={inGameEditorExtensionErrors}
+          isFromStore={error =>
+            isInGameEditorExtensionErrorFromStore(currentProject, error)
+          }
+          onAskAiToFix={() =>
+            openAskAi({
+              prefilledUserRequest: getAskAiToFixInGameEditorExtensionErrorsText(
+                inGameEditorExtensionErrors
+              ),
+              prefillInCurrentChat: true,
+            })
+          }
+          onDismiss={clearInGameEditorExtensionErrors}
+        />
+      </EmbeddedGameFrame>
       <GameplayTestFrame
         previewDebuggerServer={previewDebuggerServer || null}
         onStopRequested={stopRunningProjectGameplayTest}
@@ -6283,11 +6539,6 @@ const MainFrame = (props: Props): React.MixedElement => {
             openPreferencesDialog(false);
             if (options.languageDidChange) _languageDidChange();
           }}
-          onOpenQuickCustomizationDialog={() =>
-            setQuickCustomizationDialogOpenedFromGameId(
-              'fake-source-game-id-for-testing'
-            )
-          }
         />
       )}
       {languageDialogOpen && (
@@ -6502,75 +6753,6 @@ const MainFrame = (props: Props): React.MixedElement => {
       )}
       {standaloneDialogOpen && (
         <StandaloneDialog onClose={() => setStandaloneDialogOpen(false)} />
-      )}
-      {quickCustomizationDialogOpenedFromGameId && currentProject && (
-        <QuickCustomizationDialog
-          project={currentProject}
-          resourceManagementProps={resourceManagementProps}
-          onLaunchPreview={launchQuickCustomizationPreview}
-          onClose={async options => {
-            if (hasUnsavedChanges) {
-              const response = await showConfirmation({
-                title: t`Leave the customization?`,
-                message: t`Do you want to quit the customization? All your changes will be lost.`,
-                confirmButtonLabel: t`Leave`,
-              });
-
-              if (!response) {
-                return;
-              }
-            }
-
-            setQuickCustomizationDialogOpenedFromGameId(null);
-            await closeProject();
-            openHomePage();
-            if (!hasUnsavedChanges) {
-              navigateToRoute('build');
-            }
-          }}
-          onlineWebExporter={quickPublishOnlineWebExporter}
-          isRequiredToSaveAsNewCloudProject={() => {
-            const storageProvider = getStorageProvider();
-            return storageProvider.internalName !== 'Cloud';
-          }}
-          onSaveProject={async () => {
-            // Automatically try to save project to the cloud.
-            const storageProvider = getStorageProvider();
-            if (storageProvider.internalName === 'Cloud') {
-              saveProject();
-              return;
-            }
-
-            if (
-              !['Empty', 'UrlStorageProvider'].includes(
-                storageProvider.internalName
-              )
-            ) {
-              console.error(
-                `Unexpected storage provider ${
-                  storageProvider.internalName
-                } when saving project from quick customization dialog. Saving anyway as a new cloud project.`
-              );
-            }
-
-            saveProjectAsWithStorageProvider({
-              requestedStorageProvider: CloudStorageProvider,
-              forcedSavedAsLocation: {
-                name: currentProject.getName(),
-              },
-            });
-            return;
-          }}
-          isSavingProject={isSavingProject}
-          canClose
-          sourceGameId={quickCustomizationDialogOpenedFromGameId}
-          gameScreenshotUrls={getGameUnverifiedScreenshotUrls(
-            currentProject.getProjectUuid()
-          )}
-          onScreenshotsClaimed={onGameScreenshotsClaimed}
-          onWillInstallExtension={onWillInstallExtension}
-          onExtensionInstalled={onExtensionInstalled}
-        />
       )}
       {memoryTrackerRegistryDialogOpen && (
         <MemoryTrackedRegistryDialog

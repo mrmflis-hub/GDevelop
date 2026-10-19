@@ -65,7 +65,7 @@ export class Toolbar extends PureComponent<Props, State> {
           color="default"
           onClick={this.props.onDeleteSelection}
           disabled={!canDelete}
-          tooltip={t`Delete the selected resource`}
+          tooltip={t`Delete the selected resources`}
         >
           <TrashIcon />
         </IconButton>

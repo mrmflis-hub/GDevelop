@@ -367,6 +367,9 @@ describe('AiRequestChat: the "+" attach button (Phase 13.3)', () => {
     expect(onSendUserMessage).toHaveBeenCalledWith({
       userMessage: 'Please review',
       byokImageIds: undefined,
+      // The hosted attachments are empty here (no file was attached): the
+      // chat always sends both, the BYOK image ids and the hosted ids.
+      attachmentIds: [],
     });
   });
 

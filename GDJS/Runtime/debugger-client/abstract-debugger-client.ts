@@ -14,6 +14,19 @@ namespace gdjs {
     'gameplayTest.stop',
   ]);
 
+  /**
+   * The identifier of the frame "load" the game is running in, as put in the URL by
+   * the editor. Sent along the status so that the editor can tell a status coming from
+   * the load it is waiting for from a leftover one sent by a previous load.
+   */
+  const getGameFrameLoadId = (): string | null => {
+    try {
+      return new URLSearchParams(window.location.search).get('gameFrameLoadId');
+    } catch (error) {
+      return null;
+    }
+  };
+
   const originalConsole = {
     log: console.log,
     info: console.info,
@@ -41,7 +54,10 @@ namespace gdjs {
     cycleReplacer?: DebuggerClientCycleReplacer,
     maxDepth?: number
   ): DebuggerClientCycleReplacer => {
-    const stack: Array<string> = [],
+    // The chain of objects currently being serialized, from the root
+    // to the object holding the current property, and the property keys
+    // used to reach each of them.
+    const stack: Array<any> = [],
       keys: Array<string> = [];
     if (cycleReplacer === undefined || cycleReplacer === null) {
       cycleReplacer = function (key, value) {
@@ -54,24 +70,38 @@ namespace gdjs {
       };
     }
 
+    // `this` is the object holding the property being serialized.
     return function (key: string, value: any): any {
-      if (stack.length > 0) {
-        const thisPos = stack.indexOf(this);
-        ~thisPos ? stack.splice(thisPos + 1) : stack.push(this);
-        ~thisPos ? keys.splice(thisPos, Infinity, key) : keys.push(key);
-        if (maxDepth != null && thisPos > maxDepth) {
-          return '[Max depth reached]';
-        } else {
-          if (~stack.indexOf(value)) {
-            value = (cycleReplacer as DebuggerClientCycleReplacer).call(
-              this,
-              key,
-              value
-            );
-          }
-        }
-      } else {
+      if (stack.length === 0) {
+        // First call: the root object itself.
         stack.push(value);
+        return replacer == null ? value : replacer.call(this, key, value);
+      }
+
+      const holderPosition = stack.indexOf(this);
+      const isHolderAlreadyInStack = holderPosition !== -1;
+      if (isHolderAlreadyInStack) {
+        // Back to an object already seen: drop everything deeper than it.
+        stack.splice(holderPosition + 1);
+        keys.splice(holderPosition, Infinity, key);
+      } else {
+        // Entered a new nested object.
+        stack.push(this);
+        keys.push(key);
+      }
+
+      const depth = isHolderAlreadyInStack ? holderPosition : stack.length - 1;
+      if (maxDepth != null && depth > maxDepth) {
+        return '[Max depth reached]';
+      }
+
+      const isCircularReference = stack.indexOf(value) !== -1;
+      if (isCircularReference) {
+        value = (cycleReplacer as DebuggerClientCycleReplacer).call(
+          this,
+          key,
+          value
+        );
       }
       return replacer == null ? value : replacer.call(this, key, value);
     };
@@ -87,7 +117,7 @@ namespace gdjs {
    * @param [spaces] - The number of spaces for indentation.
    * @param [cycleReplacer] - Function used to replace circular references with a new value.
    */
-  const circularSafeStringify = (
+  export const circularSafeStringify = (
     obj: any,
     replacer?: DebuggerClientCycleReplacer,
     maxDepth?: number,
@@ -149,7 +179,6 @@ namespace gdjs {
         location: window.location.href,
         projectTemplateSlug:
           runtimeGame.getAdditionalOptions().projectTemplateSlug,
-        sourceGameId: runtimeGame.getAdditionalOptions().sourceGameId,
       },
       gameState: {
         sceneNames,
@@ -182,6 +211,11 @@ namespace gdjs {
     _inGameDebugger: gdjs.InGameDebugger;
 
     _hasLoggedUncaughtException = false;
+    /** The errors of the code of extensions in the in-game editor, by key. */
+    _inGameEditorExtensionErrors = new Map<
+      string,
+      { count: integer; lastSentTime: number }
+    >();
 
     constructor(runtimeGame: RuntimeGame) {
       this._runtimegame = runtimeGame;
@@ -316,6 +350,7 @@ namespace gdjs {
               false) === runtimeGame.isInGameEdition()
           ) {
             this._hasLoggedUncaughtException = false;
+            this._inGameEditorExtensionErrors.clear();
             that._hotReloader
               .hotReload({
                 projectData: data.payload.projectData,
@@ -385,6 +420,27 @@ namespace gdjs {
                   sceneData.r = backgroundColor[0];
                   sceneData.v = backgroundColor[1];
                   sceneData.b = backgroundColor[2];
+                }
+              }
+            }
+          }
+        } else if (data.command === 'setRenderer3DWorldScale') {
+          if (inGameEditor) {
+            const editedInstanceContainer =
+              inGameEditor.getEditedInstanceContainer();
+            if (editedInstanceContainer) {
+              const renderer3DWorldScale = data.payload.renderer3DWorldScale;
+              if (
+                renderer3DWorldScale &&
+                editedInstanceContainer instanceof gdjs.RuntimeScene
+              ) {
+                const sceneData = runtimeGame.getSceneData(
+                  editedInstanceContainer.getScene().getName()
+                );
+                if (sceneData) {
+                  editedInstanceContainer.setRenderer3DWorldScale(
+                    renderer3DWorldScale
+                  );
                 }
               }
             }
@@ -482,6 +538,10 @@ namespace gdjs {
           if (inGameEditor) {
             inGameEditor.zoomToFitContent(data.payload.visibleScreenArea);
           }
+        } else if (data.command === 'setVisibleScreenArea') {
+          if (inGameEditor) {
+            inGameEditor.setVisibleScreenArea(data.payload.visibleScreenArea);
+          }
         } else if (data.command === 'setSelectedLayer') {
           if (inGameEditor) {
             inGameEditor.setSelectedLayerName(data.payload.layerName);
@@ -521,6 +581,13 @@ namespace gdjs {
         } else if (data.command === 'getSelectionAABB') {
           if (inGameEditor) {
             this.sendSelectionAABB(data.messageId);
+          }
+        } else if (data.command === 'raycast') {
+          if (inGameEditor) {
+            // Rays must hit the instances as the editor last sent them.
+            this._hotReloader.onceIdle(() =>
+              this.sendRaycastResult(data.messageId, data.payload)
+            );
           }
         } else if (data.command === 'gameplayTest.run') {
           if (gdjs.gameplayTests) {
@@ -642,6 +709,81 @@ namespace gdjs {
     }
 
     /**
+     * The extension whose generated code is in a stack: the files and the
+     * functions of the code of an extension are named after it
+     * (`gdjs.evtsExt__Extension__Function`, lowercased in file names). The
+     * longest name wins ("Terrain3DFork" over "Terrain3D").
+     */
+    private _findExtensionNameInStack(stack: string): string | null {
+      const normalize = (text: string) =>
+        text.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const normalizedStack = normalize(stack);
+      let extensionName: string | null = null;
+      for (const extensionData of this._runtimegame.getGameData()
+        .eventsFunctionsExtensions) {
+        if (
+          normalizedStack.includes('evtsext' + normalize(extensionData.name)) &&
+          (!extensionName || extensionData.name.length > extensionName.length)
+        ) {
+          extensionName = extensionData.name;
+        }
+      }
+      return extensionName;
+    }
+
+    /**
+     * Send an error thrown by the code of an extension in the in-game editor,
+     * which went on working. An error thrown at every frame is sent at most
+     * once per second, with the number of times it was thrown.
+     * @param error What was thrown.
+     * @param origin Where: the phase (`onCreated`, `doStepPostEvents`...), and
+     * the type of the object or behavior running it, if any.
+     */
+    reportInGameEditorExtensionError(
+      error: unknown,
+      origin: { phase: string; type?: string }
+    ): void {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error && error.stack ? error.stack : '';
+      const extensionName =
+        origin.type && origin.type.includes('::')
+          ? origin.type.split('::')[0]
+          : this._findExtensionNameInStack(stack);
+      const key = [origin.phase, origin.type, extensionName, message].join('|');
+      let reportedError = this._inGameEditorExtensionErrors.get(key);
+      if (!reportedError) {
+        reportedError = { count: 0, lastSentTime: 0 };
+        this._inGameEditorExtensionErrors.set(key, reportedError);
+        logger.error(
+          `Error in the code of an extension (${extensionName || 'unknown'}, ${
+            origin.phase
+          }):`,
+          error
+        );
+      }
+      reportedError.count++;
+      const now = Date.now();
+      if (reportedError.count > 1 && now - reportedError.lastSentTime < 1000) {
+        return;
+      }
+      reportedError.lastSentTime = now;
+      this._sendMessage(
+        JSON.stringify({
+          command: 'inGameEditor.extensionError',
+          payload: {
+            key,
+            extensionName,
+            phase: origin.phase,
+            type: origin.type || null,
+            message,
+            stack: stack.split('\n').slice(0, 20).join('\n'),
+            count: reportedError.count,
+          },
+        })
+      );
+    }
+
+    /**
      * Send a message (a log) to debugger server.
      */
     log(
@@ -734,7 +876,11 @@ namespace gdjs {
     }
 
     sendRuntimeGameStatus(): void {
-      const currentScene = this._runtimegame.getSceneStack().getCurrentScene();
+      // The status is also sent as soon as the debugger client is connected, at which
+      // point the game is still being constructed and has no scene stack yet.
+      const sceneStack = this._runtimegame.getSceneStack();
+      const currentScene = sceneStack ? sceneStack.getCurrentScene() : null;
+      const gameRenderer = this._runtimegame.getRenderer();
       this._sendMessage(
         circularSafeStringify({
           command: 'status',
@@ -742,6 +888,11 @@ namespace gdjs {
             isPaused: this._runtimegame.isPaused(),
             isInGameEdition: this._runtimegame.isInGameEdition(),
             sceneName: currentScene ? currentScene.getName() : null,
+            gameFrameLoadId: getGameFrameLoadId(),
+            // Unknown (null) until the renderers are initialized.
+            is3DRenderingAvailable: gameRenderer.getPIXIRenderer()
+              ? !!gameRenderer.getThreeRenderer()
+              : null,
           },
         })
       );
@@ -805,7 +956,7 @@ namespace gdjs {
           return value;
         },
         /* Limit maximum depth to prevent any crashes */
-        18
+        22
       );
       const serializationDuration = Date.now() - serializationStartTime;
       logger.log(
@@ -880,7 +1031,28 @@ namespace gdjs {
       );
     }
 
-    sendOpenContextMenu(cursorX: float, cursorY: float): void {
+    sendObjectPropertiesChanges(
+      objectName: string,
+      properties: { [propertyName: string]: string }
+    ): void {
+      const inGameEditor = this._runtimegame.getInGameEditor();
+      if (!inGameEditor) {
+        return;
+      }
+      this._sendMessage(
+        circularSafeStringify({
+          command: 'updateObjectProperties',
+          editorId: inGameEditor.getEditorId(),
+          payload: { objectName, properties },
+        })
+      );
+    }
+
+    sendOpenContextMenu(
+      cursorX: float,
+      cursorY: float,
+      cursorScenePosition: [float, float, float] | null
+    ): void {
       const inGameEditor = this._runtimegame.getInGameEditor();
       if (!inGameEditor) {
         return;
@@ -889,7 +1061,7 @@ namespace gdjs {
         circularSafeStringify({
           command: 'openContextMenu',
           editorId: inGameEditor.getEditorId(),
-          payload: { cursorX, cursorY },
+          payload: { cursorX, cursorY, cursorScenePosition },
         })
       );
     }
@@ -950,7 +1122,7 @@ namespace gdjs {
       );
     }
 
-    sendPaste(): void {
+    sendPaste(cursorScenePosition: [float, float, float] | null): void {
       const inGameEditor = this._runtimegame.getInGameEditor();
       if (!inGameEditor) {
         return;
@@ -959,7 +1131,7 @@ namespace gdjs {
         circularSafeStringify({
           command: 'paste',
           editorId: inGameEditor.getEditorId(),
-          payload: {},
+          payload: { cursorScenePosition },
         })
       );
     }
@@ -1020,6 +1192,27 @@ namespace gdjs {
           command: 'gameplayTest.result',
           messageId,
           payload: result,
+        })
+      );
+    }
+
+    /**
+     * Send the instances hit by rays in the scene shown by the in-game editor.
+     */
+    sendRaycastResult(
+      messageId: number,
+      request: gdjs.InGameEditorRaycastRequest
+    ): void {
+      const inGameEditor = this._runtimegame.getInGameEditor();
+      if (!inGameEditor) {
+        return;
+      }
+      this._sendMessage(
+        circularSafeStringify({
+          command: 'raycastResult',
+          editorId: inGameEditor.getEditorId(),
+          messageId,
+          payload: inGameEditor.raycast(request),
         })
       );
     }

@@ -59,9 +59,11 @@ const makeHandlers = (overrides: Object = {}) => ({
 });
 
 describe('the OPEN_ASK_AI command (Phase 12)', () => {
-  it('is declared as a visible IDE command', () => {
+  it('is declared as a visible command', () => {
     expect(commandsList.OPEN_ASK_AI).toBeTruthy();
-    expect(commandsList.OPEN_ASK_AI.area).toBe('IDE');
+    // The "IDE" command area was removed upstream (the IDE-wide commands
+    // moved to "General"), so the command follows it there.
+    expect(commandsList.OPEN_ASK_AI.area).toBe('GENERAL');
     // Visible in the palette (not ghost) and reassignable (not noShortcut).
     expect(commandsList.OPEN_ASK_AI.ghost).toBeFalsy();
     expect(commandsList.OPEN_ASK_AI.noShortcut).toBeFalsy();

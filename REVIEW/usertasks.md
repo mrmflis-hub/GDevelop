@@ -356,6 +356,39 @@ and external tools" note. No further action.
 
 ---
 
+
+## 7. Upstream sync — 2026-10-19 `[needs your eye on two resolutions]`
+
+`upstream/master` (140 commits, up to `987b9d3919`) is merged into `master`.
+19 files conflicted; all 45 hunks are resolved and every gate is green (332
+suites / 4073 tests, lint 0, Flow 0, prettier clean). The merge commit is on
+`master`; `backup/pre-upstream-sync-2026-10-19` keeps our previous head
+(`1230fc6e18`) if you want to compare.
+
+Two resolutions deserve a look, because they are the fork choosing to diverge
+from upstream rather than follow it:
+
+1. **The extension-authoring tools.** Upstream shipped its own
+   `create_extension` / `create_custom_*` / `change_custom_*` with a
+   different argument shape and no `event_script` support. Ours keep running
+   (the BYOK schema teaches our shape — letting upstream's win would make the
+   model send arguments that are ignored). Consequence: the BYOK agent and
+   the hosted agent answer the same tool names with different arguments.
+   Details: `deferred.md` → `[I-fork-vs-upstream-extension-tools]`.
+   → decide: keep the fork's shape, or re-shape the BYOK schema onto
+   upstream's (a schema + prompt rewrite).
+2. **The Preferences dialog.** Upstream redesigned it (search bar, section
+   list, scroll spy). Our BYOK / RAG / Build tabs were re-added on top of the
+   new structure, but they are plain tabs — they are NOT searchable sections
+   and they do not appear in the section list.
+   → decide: leave them as tabs, or fold them into the new section list.
+
+Desktop QA: the merge changed the chat surface (the hosted file attachments
+and the BYOK "+" attach button now coexist), the extension tools and the
+Preferences tabs — a pass over the chat (attach a file, send a message) and
+over the Preferences tabs is worth a run. The BYOK RAG bundle (Task 2) still
+needs its v3 rebuild + upload: the corpus hash changed with this merge.
+
 ## Reference (no action)
 
 - `REVIEW/audit011026.md`, `audit100226.md` — the two full audits, every

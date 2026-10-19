@@ -71,7 +71,9 @@ namespace gdjs {
        * as possible.
        */
       speedFactor?: number;
-      /** Maximum number of screenshots kept. Default: 5. */
+      /** Maximum number of screenshots kept: the first one and the last
+       * ones. When the script takes none, one is taken when it ends.
+       * 0 disables screenshots. Default: 4. */
       maxScreenshots?: number;
       /**
        * When true, the game is left paused and muted when the test finishes,
@@ -122,11 +124,49 @@ namespace gdjs {
       causeDetail?: string;
     };
 
+    /** A variable without its content: the value of a number, a boolean or
+     * a (cut) text, the size of a structure or an array. */
+    export type GameplayTestVariableSummary = {
+      name: string;
+      type: VariableType;
+      value?: string | float | boolean;
+      childrenCount?: integer;
+    };
+
     export type GameplayTestScreenshot = {
       label: string;
       frame: integer;
       jpegBase64: string;
     };
+
+    /**
+     * The axis-aligned box, in SCENE coordinates, of a child of a custom
+     * object: the box of the child in the local space of its parent - its
+     * OWN complete transformation included (rotations around X, Y and Z,
+     * flips: a 3D child rotated around X is oriented in it) - with its
+     * corners moved through the COMPLETE transformation (pivots, rotations
+     * around X/Y/Z, scales, flips) of every custom object above it.
+     *
+     * This is the only size information of a child that accounts for its
+     * parents: `width`/`height`/`depth` stay the child's own local values
+     * (see `isLocalGeometry`).
+     *
+     * `minZ` and `maxZ` are 0 for a child without a Z in a 2D game.
+     */
+    export type GameplayTestWorldBounds = {
+      minX: float;
+      minY: float;
+      minZ: float;
+      maxX: float;
+      maxY: float;
+      maxZ: float;
+    };
+
+    /** An axis-aligned box in a LOCAL space (the space of the parent of an
+     * object, or the one of the children of a custom object): the same shape
+     * as `GameplayTestWorldBounds`, before the transformations of the
+     * parents are applied. */
+    type GameplayTestLocalBox = GameplayTestWorldBounds;
 
     export type GameplayTestObjectSnapshot = {
       id: integer;
@@ -148,7 +188,8 @@ namespace gdjs {
       animation?: string;
       text?: string;
       opacity?: float;
-      variables: Array<Object>;
+      /** In full, except in the final state of a result (summarized). */
+      variables: Array<VariableNetworkSyncData | GameplayTestVariableSummary>;
       /** The object's own conditions/expressions, evaluated (see
        * `GameplayTestEvaluatedState`). */
       state: GameplayTestEvaluatedState;
@@ -164,7 +205,57 @@ namespace gdjs {
       };
       flippedX?: boolean;
       flippedY?: boolean;
+      /** Only on the snapshot of a CHILD of a custom object: a reminder that
+       * `width`, `height`, `depth`, `angle`, `rotationX` and `rotationY` are
+       * the child's OWN values, in the local space of its parent (they are
+       * neither scaled nor rotated by it), while the positions (`x`, `y`,
+       * `z`, `centerX`, `centerY`, `centerZ`) and `worldBounds` are in scene
+       * coordinates. */
+      isLocalGeometry?: boolean;
+      /** Only on the snapshot of a CHILD of a custom object: its box in
+       * SCENE coordinates (see `GameplayTestWorldBounds`) - the only size
+       * information of a child that accounts for its own complete
+       * transformation (rotations around X, Y and Z, flips) and for the
+       * transformations of its parents. */
+      worldBounds?: GameplayTestWorldBounds;
+      /** For a custom object, the snapshots of its children - children of
+       * the default depth 1; pass `childrenDepth` to go deeper (max 8) and
+       * reach the children of nested custom objects.
+       *
+       * The positions (x, y, z, centerX, centerY, centerZ) of a descendant
+       * are in scene coordinates: they are computed with the COMPLETE
+       * transformation (pivots, rotations around X/Y/Z, scales, flips) of
+       * every custom object above it. Its `worldBounds` is its box in scene
+       * coordinates. The sizes and angles (width, height, depth, angle,
+       * rotationX, rotationY) stay as the child reports them in the local
+       * space of its parent (`isLocalGeometry`), and the layer is the one of
+       * the top custom object. */
       children?: { [objectName: string]: Array<GameplayTestObjectSnapshot> };
+    };
+
+    /** A point moved from the local space of the children of a custom object
+     * to the scene space (see `GameplayTestChildrenSpace`). */
+    export type GameplayTestPoint3D = {
+      x: float;
+      y: float;
+      z: float;
+    };
+
+    /**
+     * How the children of a custom object are placed in the scene: the
+     * COMPLETE transformation of every custom object above them - the parent
+     * first, then each of its own parents - and the layer they all report.
+     *
+     * Applying `transformations` in order moves a point from the local space
+     * of these children to the scene space.
+     */
+    export type GameplayTestChildrenSpace = {
+      /** The transformation of each custom object above the children,
+       * innermost (their own parent) first. */
+      transformations: Array<(point: GameplayTestPoint3D) => void>;
+      /** The layer of the TOP custom object: the internal layers of a custom
+       * object mean nothing outside of it. */
+      layer: string;
     };
 
     export type GameplayTestNearbyObjectSnapshot =
@@ -179,6 +270,14 @@ namespace gdjs {
         right: boolean;
         bearingFromReference: float;
       };
+
+    /** Options of the methods returning object snapshots. */
+    export type GameplayTestSnapshotOptions = {
+      /** How deep the `children` of custom objects are snapshotted: 1 (the
+       * default) for the direct children, more (up to 8) to reach the
+       * children of nested custom objects, 0 for no `children` at all. */
+      childrenDepth?: integer;
+    };
 
     /**
      * The position of a target relative to a reference object (2D and 3D).
@@ -263,6 +362,29 @@ namespace gdjs {
     };
 
     /**
+     * The measures of `harness.benchmark`: the time of each measured frame
+     * (game logic and rendering), and counters that don't depend on the
+     * machine, to compare two versions of the engine running the same
+     * scenario.
+     */
+    export type GameplayTestBenchmarkResult = {
+      name: string;
+      /** The time of each measured frame, in order. */
+      frameTimesMs: Array<number>;
+      medianFrameTimeMs: number;
+      /** The profiled sections (see `GameplayTestProfilingResult`), for
+       * the last 600 measured frames at most. */
+      sections: Array<{ name: string; avgTimeMs: number; maxTimeMs: number }>;
+      /** WebGL draw calls (2D and 3D) per frame, or null without renderer. */
+      drawCallsPerFrame: number | null;
+      objectsCount: integer;
+      /** A hash of the position and angle of every object at the end: two
+       * versions of the engine running the same scenario must end on the
+       * same state. */
+      stateChecksum: string;
+    };
+
+    /**
      * The outcome of `lookTowardWithMouseDelta`: whether the aim succeeded,
      * the remaining aim error, and whether the game responded to the mouse
      * at all. `sawYawResponse: false` usually means the game ignores mouse
@@ -321,6 +443,10 @@ namespace gdjs {
       gameTimeMs: number;
       assertions: Array<GameplayTestAssertion>;
       errors: Array<string>;
+      /** Problems the harness itself noticed in the game, whatever the
+       * assertions of the test did or did not check (a custom object
+       * rendering nothing, for instance). Never a failure by itself. */
+      warnings: Array<string>;
       consoleLogs: Array<GameplayTestLog>;
       eventLog: Array<GameplayTestEvent>;
       finalState: {
@@ -329,11 +455,18 @@ namespace gdjs {
         watchedObjects: {
           [objectName: string]: Array<GameplayTestObjectSnapshot>;
         };
-        sceneVariables: Array<Object>;
+        sceneVariables: Array<GameplayTestVariableSummary>;
+        /** Says how to read what the summaries leave out. */
+        sceneVariablesNote?: string;
+        watchedObjectsNote?: string;
       };
       screenshots: Array<GameplayTestScreenshot>;
+      /** Screenshots taken, including the ones not kept in `screenshots`. */
+      screenshotsTakenCount: integer;
       /** The `stopProfiling()` summaries captured during the run. */
       profiles: Array<GameplayTestProfilingResult>;
+      /** The `benchmark()` measures captured during the run. */
+      benchmarks: Array<GameplayTestBenchmarkResult>;
       performance: {
         avgStepMs: number;
         worstStepMs: number;
@@ -341,6 +474,8 @@ namespace gdjs {
     };
 
     const DEFAULT_TIMEOUT_MS = 30000;
+    /** The longest budget a test can ask for (see `setTimeoutMs`). */
+    const MAX_TIMEOUT_MS = 10 * 60 * 1000;
     /** Loading (game boot, scene assets) is excluded from `timeoutMs` -
      * on the web, a first preview can download assets for minutes - but
      * still bounded, so a dead network cannot hang a run forever. */
@@ -359,12 +494,15 @@ namespace gdjs {
     // cost before the next one.
     const FAST_RUN_RENDER_DUTY_MULTIPLIER = 4;
     const MAX_PLAYED_SOUNDS = 500;
-    const DEFAULT_MAX_SCREENSHOTS = 5;
+    const DEFAULT_MAX_SCREENSHOTS = 4;
     const DEFAULT_PROBE_FRAMES = 30;
     const MAX_PROFILING_SECTIONS = 50;
     const MAX_PROFILING_TIMELINE_ENTRIES = 120;
     const MAX_PROFILING_WORST_FRAMES = 5;
     const MAX_PROFILES_PER_RESULT = 5;
+    const MAX_BENCHMARKS_PER_RESULT = 20;
+    const DEFAULT_BENCHMARK_WARMUP_FRAMES = 60;
+    const DEFAULT_BENCHMARK_FRAMES = 300;
     /** The scene change cause declared by the harness (see
      * `SceneStack.runWithSceneChangeCause`). */
     const GAMEPLAY_TEST_SCENE_CHANGE_CAUSE = 'gameplayTest';
@@ -376,8 +514,61 @@ namespace gdjs {
     const MAX_ASSERTIONS = 200;
     const MAX_EVENT_LOG_ENTRIES = 500;
     const MAX_ERRORS = 20;
-    const SCREENSHOT_MAX_SIZE = 512;
+    const MAX_WARNINGS = 20;
+    const SCREENSHOT_MAX_SIZE = 768;
     const DEFAULT_FRAME_DT_MS = 1000 / 60;
+    /** Deepest `children` nesting a snapshot can expose (nested custom
+     * objects), to keep snapshots bounded. */
+    const MAX_CHILDREN_DEPTH = 8;
+    /** The scene variables of the final state are summarized: some games
+     * store large data in them (a map, a save...). */
+    const MAX_SUMMARIZED_VARIABLES = 50;
+    const MAX_SUMMARIZED_TEXT_LENGTH = 100;
+    /** Watched objects are summarized too: instances of a watched object can
+     * be many (bullets...), each with its variables. */
+    const MAX_WATCHED_INSTANCES = 20;
+
+    /**
+     * Describe a value that should have been a string, for an error message:
+     * an object is shown (shortened) so the misplaced argument is
+     * recognizable, anything else by its type.
+     */
+    const describeNonStringValue = (value: unknown): string => {
+      if (value === null) return 'null';
+      if (typeof value !== 'object') return `a ${typeof value}`;
+      try {
+        return `an object (${JSON.stringify(value).slice(0, 80)})`;
+      } catch (error) {
+        return 'an object';
+      }
+    };
+
+    /**
+     * Whether a Three.js or PixiJS node, or one of its descendants, draws
+     * something by itself: a Three.js mesh, sprite, points, line or light,
+     * a PixiJS sprite, text, mesh or graphics (they carry a texture or a
+     * geometry). A plain group or container does not.
+     */
+    const hasRenderableDescendant = (node: any, depth: integer): boolean => {
+      if (!node || depth > MAX_CHILDREN_DEPTH) return false;
+      if (
+        node.isMesh ||
+        node.isSprite ||
+        node.isPoints ||
+        node.isLine ||
+        node.isLight ||
+        !!node.texture ||
+        !!node.geometry
+      ) {
+        return true;
+      }
+      const children: Array<unknown> = Array.isArray(node.children)
+        ? node.children
+        : [];
+      return children.some((child) =>
+        hasRenderableDescendant(child, depth + 1)
+      );
+    };
 
     // Keys that must never throw on the self-describing state, so language
     // internals (JSON.stringify, await inspection, string coercion...) keep
@@ -455,6 +646,54 @@ namespace gdjs {
       return makeSelfDescribingState(state, ownerDescription);
     };
 
+    /** The 8 corners of an axis-aligned box. */
+    const makeBoxCorners = (
+      box: GameplayTestLocalBox
+    ): Array<GameplayTestPoint3D> => {
+      const corners: Array<GameplayTestPoint3D> = [];
+      for (const x of [box.minX, box.maxX]) {
+        for (const y of [box.minY, box.maxY]) {
+          for (const z of [box.minZ, box.maxZ]) {
+            corners.push({ x, y, z });
+          }
+        }
+      }
+      return corners;
+    };
+
+    /**
+     * A box moved to be relative to the point its object is rotated around,
+     * with the axes the object is flipped on mirrored: a flip is a negative
+     * scale around this very point in the renderers (see
+     * `RuntimeObject3DRenderer.updateSize`), which mirrors the box - and
+     * leaves a box centered on it, the usual case, unchanged.
+     */
+    const makeRelativeBox = (
+      box: GameplayTestLocalBox,
+      center: GameplayTestPoint3D,
+      flips: { x: boolean; y: boolean; z: boolean }
+    ): GameplayTestLocalBox => {
+      const minX = box.minX - center.x;
+      const minY = box.minY - center.y;
+      const minZ = box.minZ - center.z;
+      const maxX = box.maxX - center.x;
+      const maxY = box.maxY - center.y;
+      const maxZ = box.maxZ - center.z;
+      return {
+        minX: flips.x ? -maxX : minX,
+        minY: flips.y ? -maxY : minY,
+        minZ: flips.z ? -maxZ : minZ,
+        maxX: flips.x ? -minX : maxX,
+        maxY: flips.y ? -minY : maxY,
+        maxZ: flips.z ? -minZ : maxZ,
+      };
+    };
+
+    /** Whether an object is flipped on an axis (`isFlippedX`, `isFlippedY`
+     * or `isFlippedZ`) - false for an object that can't be flipped. */
+    const isFlippedOnAxis = (object: any, methodName: string): boolean =>
+      typeof object[methodName] === 'function' && !!object[methodName]();
+
     class GameplayTestAssertionError extends Error {
       isGameplayTestAssertionError = true;
     }
@@ -531,6 +770,9 @@ namespace gdjs {
       _startTimeMs: number = 0;
       _stopped: boolean = false;
       _assertions: Array<GameplayTestAssertion> = [];
+      /** What the harness noticed about the test itself while it ran (see
+       * `_addRunWarning`), reported with the warnings about the game. */
+      _runWarnings: Array<string> = [];
       _consoleLogs: Array<GameplayTestLog> = [];
       _consoleLogsTotalChars: number = 0;
       _eventLog: Array<GameplayTestEvent> = [];
@@ -542,11 +784,17 @@ namespace gdjs {
       /** The profiling summaries captured during the run (attached to the
        * result as `profiles`). */
       _profiles: Array<GameplayTestProfilingResult> = [];
+      _benchmarks: Array<GameplayTestBenchmarkResult> = [];
+      /** The `Math.random` replaced by `setRandomSeed`, restored at the end
+       * of the run. */
+      _originalMathRandom: (() => number) | null = null;
       _timeoutMs: number;
       _loadingTimeoutMs: number;
       /** Time spent waiting for loading (game boot, scene assets) so far:
        * excluded from the `_timeoutMs` budget, reported as `loadingMs`. */
       _loadingTimeMs: number = 0;
+      /** When the ongoing loading started (see `_countAsLoading`), or null. */
+      _loadingSinceMs: number | null = null;
       /** Time already spent frozen by the browser because the page was
        * hidden, excluded from the `_timeoutMs` budget (see
        * `_installPageVisibilityTracking`). */
@@ -578,6 +826,7 @@ namespace gdjs {
       _paceReferenceWallTimeMs: number = 0;
       _paceReferenceGameTimeMs: number = 0;
       _maxScreenshots: integer;
+      _screenshotsTakenCount: integer = 0;
       _totalStepTimeMs: number = 0;
       _worstStepTimeMs: number = 0;
       _lastTrackedSceneName: string | null = null;
@@ -733,15 +982,32 @@ namespace gdjs {
         if (
           Date.now() -
             this._startTimeMs -
-            this._loadingTimeMs -
+            this._getLoadingTimeMs() -
             this._getHiddenStallTimeMs() >
           this._timeoutMs
         ) {
-          throw new GameplayTestTimeoutError(
-            `The test timed out after ${this._timeoutMs}ms ` +
-              '(wall-clock, loading and time spent hidden excluded).'
-          );
+          throw new GameplayTestTimeoutError(this._getTimeoutMessage());
         }
+      }
+
+      /**
+       * The message of a timeout. It tells about the time the page spent
+       * hidden, when there was some: a game frozen by the browser (a
+       * background tab, a covered window) is not a game that is slow or a
+       * test that waits for something impossible, and what to change is
+       * then the visibility of the preview, not the test nor the game.
+       */
+      _getTimeoutMessage(): string {
+        const hiddenStallMs = Math.round(this._getHiddenStallTimeMs());
+        const hiddenNote =
+          hiddenStallMs > 0
+            ? ` The game was also frozen for ${hiddenStallMs}ms because the preview page was hidden (a background tab or a covered window): that time was not counted, and says nothing about the game. Keep the preview visible while a test runs.`
+            : '';
+        return (
+          `The test timed out after ${this._timeoutMs}ms ` +
+          '(wall-clock, loading and time spent hidden excluded).' +
+          hiddenNote
+        );
       }
 
       /**
@@ -757,32 +1023,59 @@ namespace gdjs {
         loadingPromise: Promise<unknown>,
         description: string
       ): Promise<void> {
-        const loadingStartTimeMs = Date.now();
         const heartbeatIntervalId = setInterval(() => {
           if (this._onProgress) this._onProgress(this._framesExecuted);
         }, 1000);
         let loadingTimeoutId: any = null;
         try {
-          await Promise.race([
-            loadingPromise,
-            new Promise<never>((_, reject) => {
-              loadingTimeoutId = setTimeout(
-                () =>
-                  reject(
-                    new Error(
-                      `${description} did not finish loading within ` +
-                        `${this._loadingTimeoutMs}ms.`
-                    )
-                  ),
-                this._loadingTimeoutMs
-              );
-            }),
-          ]);
+          await this._countAsLoading(() =>
+            Promise.race([
+              loadingPromise,
+              new Promise<never>((_, reject) => {
+                loadingTimeoutId = setTimeout(
+                  () =>
+                    reject(
+                      new Error(
+                        `${description} did not finish loading within ` +
+                          `${this._loadingTimeoutMs}ms.`
+                      )
+                    ),
+                  this._loadingTimeoutMs
+                );
+              }),
+            ])
+          );
         } finally {
           clearInterval(heartbeatIntervalId);
           if (loadingTimeoutId) clearTimeout(loadingTimeoutId);
-          this._loadingTimeMs += Date.now() - loadingStartTimeMs;
         }
+      }
+
+      /**
+       * Run something counted as loading: excluded from the `timeoutMs`
+       * budget, while it runs (for the watchdog) and after (in `loadingMs`).
+       */
+      async _countAsLoading<T>(load: () => Promise<T>): Promise<T> {
+        // Already counted by an enclosing loading.
+        if (this._loadingSinceMs !== null) return load();
+        const loadingStartTimeMs = Date.now();
+        this._loadingSinceMs = loadingStartTimeMs;
+        try {
+          return await load();
+        } finally {
+          this._loadingTimeMs += Date.now() - loadingStartTimeMs;
+          this._loadingSinceMs = null;
+        }
+      }
+
+      /** The time spent loading so far, including an ongoing loading. */
+      _getLoadingTimeMs(): number {
+        return (
+          this._loadingTimeMs +
+          (this._loadingSinceMs !== null
+            ? Date.now() - this._loadingSinceMs
+            : 0)
+        );
       }
 
       /**
@@ -841,6 +1134,143 @@ namespace gdjs {
           }
         }
         return objectCounts;
+      }
+
+      /**
+       * Something noticed while the test ran, reported once whatever the
+       * assertions said.
+       */
+      private _addRunWarning(message: string): void {
+        if (this._runWarnings.length >= MAX_WARNINGS) return;
+        if (this._runWarnings.indexOf(message) !== -1) return;
+        this._runWarnings.push(message);
+      }
+
+      /**
+       * A `getNearby` radius that cannot tell anything apart: it reaches
+       * further than the whole screen AND let every instance through, so a
+       * check on what it returns passes wherever the game put them.
+       */
+      private _warnOnUnselectiveRadius(
+        objectName: string,
+        referenceObjectName: string,
+        radius: float,
+        keptCount: integer,
+        instancesCount: integer
+      ): void {
+        if (keptCount < instancesCount) return;
+        const screenDiagonal = Math.hypot(
+          this._runtimeGame.getGameResolutionWidth(),
+          this._runtimeGame.getGameResolutionHeight()
+        );
+        if (!(radius > screenDiagonal)) return;
+        this._addRunWarning(
+          `getNearby("${objectName}", "${referenceObjectName}", ${radius}) kept every instance of "${objectName}": that radius is larger than the whole screen (${Math.round(
+            screenDiagonal
+          )}px diagonal), so it says nothing about where they are. Use a radius of the size of what is being checked.`
+        );
+      }
+
+      /**
+       * What the harness noticed about the game by itself, whatever the test
+       * asserted: a test can pass on the values it checks while the game is
+       * in a state nobody would call working.
+       */
+      private _getWarnings(): Array<string> {
+        const currentScene = this._runtimeGame
+          .getSceneStack()
+          .getCurrentScene();
+        if (!currentScene) return [];
+        const warnings: Array<string> = [];
+        const reportedObjectNames = new Set<string>();
+
+        /**
+         * Report custom objects with no child instances at the end of the
+         * test, `object` included. Skip known custom rendering, and describe
+         * the observed state without assuming that it is a rendering bug:
+         * extension code can draw elsewhere or create children dynamically.
+         */
+        const checkObject = (
+          object: gdjs.RuntimeObject,
+          path: string,
+          depth: integer
+        ): void => {
+          if (warnings.length >= MAX_WARNINGS) return;
+          const anyObject = object as any;
+          if (typeof anyObject.getChildrenContainer !== 'function') return;
+          const children: Array<gdjs.RuntimeObject> = anyObject
+            .getChildrenContainer()
+            .getAdhocListOfAllInstances();
+          if (children.length === 0) {
+            if (this._hasCustomRendering(object)) return;
+            if (reportedObjectNames.has(path)) return;
+            reportedObjectNames.add(path);
+            warnings.push(
+              `"${path}" has no child instances at the end of the test. Check whether its variant is missing initial instances or its children were destroyed. This can be intentional for objects rendered by extension code or creating children dynamically; it does not prove a rendering failure.`
+            );
+            return;
+          }
+          if (depth >= MAX_CHILDREN_DEPTH) return;
+          for (const child of children) {
+            checkObject(child, `${path}.${child.getName()}`, depth + 1);
+          }
+        };
+
+        const objectNames: Array<string> = [];
+        const instances = (currentScene as any)._instances as Hashtable<
+          Array<gdjs.RuntimeObject>
+        >;
+        instances.keys(objectNames);
+        for (const objectName of objectNames) {
+          // Every instance: two instances of the same object can hold
+          // different children by the time the test ends.
+          for (const object of instances.get(objectName)) {
+            checkObject(object, objectName, 0);
+            if (warnings.length >= MAX_WARNINGS) break;
+          }
+          if (warnings.length >= MAX_WARNINGS) break;
+        }
+        return warnings;
+      }
+
+      /**
+       * Whether a custom object may render independently of its child
+       * instances: either extension code replaced or subclassed its renderer
+       * (3D particle emitters draw through a shared layer renderer), or added
+       * something to draw (a mesh, a sprite, a graphics...) in the container
+       * the stock renderer holds for the children.
+       */
+      private _hasCustomRendering(object: gdjs.RuntimeObject): boolean {
+        const renderer = (object as any)._renderer;
+        if (!renderer) return false;
+        const anyGdjs = gdjs as any;
+        // `instanceof` also accepts extension subclasses, such as
+        // ParticleEmitter3DRenderer. Their meshes can live outside the
+        // object's renderer tree, so only inspect the exact stock classes.
+        const rendererPrototype = Object.getPrototypeOf(renderer);
+        const isStockRenderer =
+          (typeof anyGdjs.CustomRuntimeObject2DRenderer !== 'undefined' &&
+            rendererPrototype ===
+              anyGdjs.CustomRuntimeObject2DRenderer.prototype) ||
+          (typeof anyGdjs.CustomRuntimeObject3DRenderer !== 'undefined' &&
+            rendererPrototype ===
+              anyGdjs.CustomRuntimeObject3DRenderer.prototype);
+        if (!isStockRenderer) return true;
+
+        // The containers hold the (empty) layers of the custom object, which
+        // are plain groups: only something that draws by itself counts.
+        const threeContainer =
+          typeof renderer.get3DRendererObject === 'function'
+            ? renderer.get3DRendererObject()
+            : null;
+        const pixiContainer =
+          typeof renderer.getRendererObject === 'function'
+            ? renderer.getRendererObject()
+            : null;
+        return (
+          hasRenderableDescendant(threeContainer, 0) ||
+          hasRenderableDescendant(pixiContainer, 0)
+        );
       }
 
       private _trackChangesAfterStep(): void {
@@ -920,17 +1350,17 @@ namespace gdjs {
 
       /**
        * Step a single game frame (game logic + rendering) with a fixed
-       * time delta.
+       * time delta, and return the time it took.
        */
-      _stepSingleFrame(dtMs: float): void {
+      _stepSingleFrame(dtMs: float): float {
         this._checkGuards();
-        const stepStartTimeMs = Date.now();
+        const stepStartTimeMs = performance.now();
         this._runtimeGame.getSceneStack().step(dtMs);
+        const stepTimeMs = performance.now() - stepStartTimeMs;
         this._callOnFrameEnded();
         this._framesExecuted++;
         this._gameTimeMs += dtMs;
-        const stepTimeMs = Date.now() - stepStartTimeMs;
-        this._lastFrameStepTimeMs = stepStartTimeMs + stepTimeMs;
+        this._lastFrameStepTimeMs = Date.now();
         this._totalStepTimeMs += stepTimeMs;
         if (stepTimeMs > this._worstStepTimeMs) {
           this._worstStepTimeMs = stepTimeMs;
@@ -941,6 +1371,7 @@ namespace gdjs {
           this._lastProgressTimeMs = Date.now();
           this._onProgress(this._framesExecuted);
         }
+        return stepTimeMs;
       }
 
       /**
@@ -1042,20 +1473,39 @@ namespace gdjs {
           );
         }
         this._checkGuards();
-        this._runtimeGame
-          .getSceneStack()
-          .runWithSceneChangeCause(GAMEPLAY_TEST_SCENE_CHANGE_CAUSE, () =>
-            this._runtimeGame.getSceneStack().replace({
-              sceneName,
-              clear: true,
-              skipCreatingInstances: options
-                ? options.skipCreatingInstances
-                : undefined,
-            })
+        // Creating the scene and its first frame are counted as loading:
+        // they can take seconds in a big 3D scene (objects, physics bodies,
+        // shaders to compile, notably with a software renderer on CI).
+        await this._countAsLoading(async () => {
+          this._runtimeGame
+            .getSceneStack()
+            .runWithSceneChangeCause(GAMEPLAY_TEST_SCENE_CHANGE_CAUSE, () =>
+              this._runtimeGame.getSceneStack().replace({
+                sceneName,
+                clear: true,
+                skipCreatingInstances: options
+                  ? options.skipCreatingInstances
+                  : undefined,
+              })
+            );
+          // Step one frame so the scene is fully initialized ("beginning of
+          // scene" events have run) before the test continues.
+          await this.stepFrames(1);
+        });
+      }
+
+      /**
+       * Change the wall-clock budget of the test (30s by default, loading
+       * excluded), for a heavy game or a slow machine (like a 3D game
+       * rendered in software on a CI server). At most 10 minutes.
+       */
+      setTimeoutMs(timeoutMs: float): void {
+        if (!(timeoutMs > 0)) {
+          throw new Error(
+            'setTimeoutMs expects a positive number of milliseconds.'
           );
-        // Step one frame so the scene is fully initialized ("beginning of
-        // scene" events have run) before the test continues.
-        await this.stepFrames(1);
+        }
+        this._timeoutMs = Math.min(timeoutMs, MAX_TIMEOUT_MS);
       }
 
       /**
@@ -1180,6 +1630,12 @@ namespace gdjs {
         const tolerance = (options && options.tolerance) || 0.5;
         const stableFrames = (options && options.stableFrames) || 20;
         const maxFrames = (options && options.maxFrames) || 300;
+        const instancesCount = this._getInstances(objectName).length;
+        if (instancesCount > 1) {
+          this._addRunWarning(
+            `stepUntilObjectIsStable("${objectName}") only waits for the first of the ${instancesCount} instances of "${objectName}": the others can still be moving. Use \`stepUntil\` with a condition on the instance read.`
+          );
+        }
         let previous: [float, float, float] | null = null;
         let stillFrames = 0;
         return await this.stepUntil(() => stillFrames >= stableFrames, {
@@ -1294,8 +1750,16 @@ namespace gdjs {
           if (threeCamera && typeof THREE !== 'undefined') {
             threeCamera.updateMatrixWorld();
             // The three.js world Y axis is the opposite of the scene one
+            // and the three.js world is scaled by the inverse world scale
             // (see `transformTo3DWorld`, the inverse of this projection).
-            const vector = new THREE.Vector3(x, -y, 0);
+            const inverseWorldScale = layer
+              .getRuntimeScene()
+              .getRenderer3DInverseWorldScale();
+            const vector = new THREE.Vector3(
+              x * inverseWorldScale,
+              -y * inverseWorldScale,
+              0
+            );
             vector.project(threeCamera);
             if (Number.isFinite(vector.x) && Number.isFinite(vector.y)) {
               return [
@@ -1486,9 +1950,20 @@ namespace gdjs {
 
       // INSPECTION:
 
+      /**
+       * @param childrenDepth How deep the `children` of custom objects are
+       * snapshotted: 0 for none, N for children snapshotted with N-1 (so
+       * nested custom objects are reachable). Assumed already clamped to
+       * `MAX_CHILDREN_DEPTH` by the public methods.
+       * @param parentSpace How the object is placed in the scene, when it is
+       * a child of a custom object: its positions and world bounds are moved
+       * to scene coordinates with it (null for an object of the scene, whose
+       * positions already are in scene coordinates).
+       */
       private _makeObjectSnapshot(
         object: gdjs.RuntimeObject,
-        includeChildren: boolean
+        childrenDepth: number,
+        parentSpace: GameplayTestChildrenSpace | null = null
       ): GameplayTestObjectSnapshot {
         const anyObject = object as any;
         const stateInspectors = this._payload.stateInspectors || null;
@@ -1567,91 +2042,478 @@ namespace gdjs {
         if (typeof anyObject.isFlippedY === 'function') {
           snapshot.flippedY = anyObject.isFlippedY();
         }
+        if (parentSpace) {
+          this._moveSnapshotToSceneSpace(snapshot, object, parentSpace);
+        }
         if (
-          includeChildren &&
+          childrenDepth > 0 &&
           typeof anyObject.getChildrenContainer === 'function'
         ) {
           const childrenContainer: gdjs.RuntimeInstanceContainer =
             anyObject.getChildrenContainer();
+          const childrenSpace = this._makeChildrenSpace(object, parentSpace);
           const children: {
             [objectName: string]: Array<GameplayTestObjectSnapshot>;
           } = {};
-          const canTransformToScene =
-            typeof anyObject.applyObjectTransformation === 'function';
           for (const child of childrenContainer.getAdhocListOfAllInstances()) {
             const childName = child.getName();
             if (!children[childName]) children[childName] = [];
-            const childSnapshot = this._makeObjectSnapshot(child, false);
-            // The children live in the coordinates space of the custom
-            // object: convert to scene coordinates, like every other
-            // snapshot (so clicking a child at its centerX/centerY works).
-            if (canTransformToScene) {
-              const point: FloatPoint = [0, 0];
-              anyObject.applyObjectTransformation(
-                childSnapshot.x,
-                childSnapshot.y,
-                point
-              );
-              childSnapshot.x = point[0];
-              childSnapshot.y = point[1];
-              anyObject.applyObjectTransformation(
-                childSnapshot.centerX,
-                childSnapshot.centerY,
-                point
-              );
-              childSnapshot.centerX = point[0];
-              childSnapshot.centerY = point[1];
-              if (typeof anyObject.getZ === 'function') {
-                if (childSnapshot.z !== undefined)
-                  childSnapshot.z += anyObject.getZ();
-                if (childSnapshot.centerZ !== undefined)
-                  childSnapshot.centerZ += anyObject.getZ();
-              }
-            }
-            // The internal layer name of the parent means nothing outside
-            // of it: report the layer of the custom object itself.
-            childSnapshot.layer = object.getLayer();
-            children[childName].push(childSnapshot);
+            children[childName].push(
+              this._makeObjectSnapshot(child, childrenDepth - 1, childrenSpace)
+            );
           }
           snapshot.children = children;
         }
         return snapshot;
       }
 
+      /**
+       * Move the positions of the snapshot of a CHILD of a custom object to
+       * scene coordinates (so clicking it at its centerX/centerY works), and
+       * describe its geometry there.
+       *
+       * Only the positions can be moved: under the rotations of the parents,
+       * no width/height/depth could describe the child (a rotated box has no
+       * width along the scene axes), so the sizes and angles stay the
+       * child's own local values - flagged with `isLocalGeometry` - and the
+       * world geometry is given as the axis-aligned `worldBounds`.
+       */
+      private _moveSnapshotToSceneSpace(
+        snapshot: GameplayTestObjectSnapshot,
+        object: gdjs.RuntimeObject,
+        space: GameplayTestChildrenSpace
+      ): void {
+        const point: GameplayTestPoint3D = {
+          x: snapshot.x,
+          y: snapshot.y,
+          z: snapshot.z === undefined ? 0 : snapshot.z,
+        };
+        this._transformPointToScene(space, point);
+        snapshot.x = point.x;
+        snapshot.y = point.y;
+        // A child without a Z (a 2D object) keeps none: only `worldBounds`
+        // tells where it is on the Z axis of its 3D parents.
+        if (snapshot.z !== undefined) snapshot.z = point.z;
+
+        point.x = snapshot.centerX;
+        point.y = snapshot.centerY;
+        point.z = snapshot.centerZ === undefined ? 0 : snapshot.centerZ;
+        this._transformPointToScene(space, point);
+        snapshot.centerX = point.x;
+        snapshot.centerY = point.y;
+        if (snapshot.centerZ !== undefined) snapshot.centerZ = point.z;
+
+        snapshot.worldBounds = this._makeWorldBounds(object, space);
+        snapshot.isLocalGeometry = true;
+        // The internal layers of a custom object mean nothing outside of it.
+        snapshot.layer = space.layer;
+      }
+
+      /**
+       * The box of `object` in scene coordinates: the 8 corners of its own
+       * box in the space of its parent - its OWN complete transformation
+       * included - moved through the complete transformation of every
+       * custom object above it.
+       */
+      private _makeWorldBounds(
+        object: gdjs.RuntimeObject,
+        space: GameplayTestChildrenSpace
+      ): GameplayTestWorldBounds {
+        const bounds: GameplayTestWorldBounds = {
+          minX: Number.MAX_VALUE,
+          minY: Number.MAX_VALUE,
+          minZ: Number.MAX_VALUE,
+          maxX: -Number.MAX_VALUE,
+          maxY: -Number.MAX_VALUE,
+          maxZ: -Number.MAX_VALUE,
+        };
+        for (const point of this._makeLocalBoxCorners(object)) {
+          this._transformPointToScene(space, point);
+          bounds.minX = Math.min(bounds.minX, point.x);
+          bounds.minY = Math.min(bounds.minY, point.y);
+          bounds.minZ = Math.min(bounds.minZ, point.z);
+          bounds.maxX = Math.max(bounds.maxX, point.x);
+          bounds.maxY = Math.max(bounds.maxY, point.y);
+          bounds.maxZ = Math.max(bounds.maxZ, point.z);
+        }
+        return bounds;
+      }
+
+      /**
+       * The 8 corners of the box of `object` in the space of its parent,
+       * with the COMPLETE transformation of the object itself applied to
+       * them.
+       *
+       * The boxes the runtime computes are not enough on their own: the
+       * axis-aligned `getAABB()` only accounts for the angle around Z, and
+       * `getUnrotatedAABBMinZ/MaxZ` for no rotation at all - so a 3D child
+       * rotated around X or Y would report the box it has when it is not
+       * rotated (a 10x6x4 box turned by 90 degrees around X is 10x4x6 in
+       * its parent). The transformation of the object is read from the
+       * object itself, never re-derived here.
+       */
+      private _makeLocalBoxCorners(
+        object: gdjs.RuntimeObject
+      ): Array<GameplayTestPoint3D> {
+        const anyObject = object as any;
+        if (
+          typeof anyObject.getChildrenContainer === 'function' &&
+          typeof anyObject.getInnerAreaMinX === 'function'
+        ) {
+          // A custom object (2D or 3D): its inner area is its box in the
+          // local space of its own children, so the transformation placing
+          // these children in the space of its parent - the very one used
+          // for their snapshots - moves it there.
+          const transformation = this._makeCustomObjectTransformation(object);
+          const corners = makeBoxCorners(this._getInnerAreaBox(object));
+          for (const corner of corners) transformation(corner);
+          return corners;
+        }
+        const rotation = this._get3DObjectRotation(object);
+        if (rotation) {
+          return this._make3DObjectBoxCorners(object, rotation);
+        }
+        // A 2D object: `getAABB()` is already its complete transformation
+        // (its angle around Z and its custom hit boxes included), and only
+        // its parents place it on the Z axis.
+        const localBox = object.getAABB();
+        const localZRange = this._getLocalZRange(object);
+        return makeBoxCorners({
+          minX: localBox.min[0],
+          minY: localBox.min[1],
+          minZ: localZRange.min,
+          maxX: localBox.max[0],
+          maxY: localBox.max[1],
+          maxZ: localZRange.max,
+        });
+      }
+
+      /**
+       * The box of a custom object in the local space of its children: its
+       * inner area, the box its own width, height and depth describe (see
+       * `CustomRuntimeObject.getUnscaledWidth`), with no Z for a 2D custom
+       * object.
+       */
+      private _getInnerAreaBox(
+        object: gdjs.RuntimeObject
+      ): GameplayTestLocalBox {
+        const anyObject = object as any;
+        const has3DInnerArea =
+          typeof anyObject.getInnerAreaMinZ === 'function' &&
+          typeof anyObject.getInnerAreaMaxZ === 'function';
+        return {
+          minX: anyObject.getInnerAreaMinX(),
+          minY: anyObject.getInnerAreaMinY(),
+          minZ: has3DInnerArea ? anyObject.getInnerAreaMinZ() : 0,
+          maxX: anyObject.getInnerAreaMaxX(),
+          maxY: anyObject.getInnerAreaMaxY(),
+          maxZ: has3DInnerArea ? anyObject.getInnerAreaMaxZ() : 0,
+        };
+      }
+
+      /**
+       * The Euler angles a 3D object (a cube, a 3D model...) is rotated
+       * with: the ones of its THREE object, in the `ZYX` order of the engine
+       * (`RuntimeObject3DRenderer.updateRotation`, called by every
+       * `setAngle`/`setRotationX`/`setRotationY`, keeps them in sync with
+       * the object). Null for anything else than a 3D object rendered with
+       * a THREE object.
+       */
+      private _get3DObjectRotation(
+        object: gdjs.RuntimeObject
+      ): THREE.Euler | null {
+        const anyObject = object as any;
+        if (
+          typeof THREE === 'undefined' ||
+          typeof anyObject.getRotationX !== 'function' ||
+          typeof anyObject.getRotationY !== 'function' ||
+          typeof anyObject.get3DRendererObject !== 'function'
+        ) {
+          return null;
+        }
+        const threeObject3D: THREE.Object3D | null =
+          anyObject.get3DRendererObject() || null;
+        return threeObject3D ? threeObject3D.rotation : null;
+      }
+
+      /**
+       * The 8 corners of the box of a 3D object in the space of its parent,
+       * oriented like the renderer orients it: the box the object has when
+       * it is not rotated, turned around the point the renderer places its
+       * THREE object at - its center (`getCenterXInScene()`...), which is
+       * also the point the engine rotates its hit boxes around - with
+       * `rotation`, whose `ZYX` order includes the angle around Z (hence the
+       * unrotated box, and not `getAABB()`).
+       */
+      private _make3DObjectBoxCorners(
+        object: gdjs.RuntimeObject,
+        rotation: THREE.Euler
+      ): Array<GameplayTestPoint3D> {
+        const anyObject = object as any;
+        const localZRange = this._getLocalZRange(object);
+        const center: GameplayTestPoint3D = {
+          x: object.getCenterXInScene(),
+          y: object.getCenterYInScene(),
+          z:
+            typeof anyObject.getCenterZInScene === 'function'
+              ? anyObject.getCenterZInScene()
+              : 0,
+        };
+        const relativeBox = makeRelativeBox(
+          {
+            minX: object.getDrawableX(),
+            minY: object.getDrawableY(),
+            minZ: localZRange.min,
+            maxX: object.getDrawableX() + object.getWidth(),
+            maxY: object.getDrawableY() + object.getHeight(),
+            maxZ: localZRange.max,
+          },
+          center,
+          {
+            x: isFlippedOnAxis(anyObject, 'isFlippedX'),
+            y: isFlippedOnAxis(anyObject, 'isFlippedY'),
+            z: isFlippedOnAxis(anyObject, 'isFlippedZ'),
+          }
+        );
+        const corners = makeBoxCorners(relativeBox);
+        const vector = new THREE.Vector3();
+        for (const corner of corners) {
+          vector.set(corner.x, corner.y, corner.z).applyEuler(rotation);
+          corner.x = vector.x + center.x;
+          corner.y = vector.y + center.y;
+          corner.z = vector.z + center.z;
+        }
+        return corners;
+      }
+
+      /**
+       * The Z range of an object in the space containing it (0 for an object
+       * without a Z: a 2D object).
+       */
+      private _getLocalZRange(object: gdjs.RuntimeObject): {
+        min: float;
+        max: float;
+      } {
+        const anyObject = object as any;
+        if (
+          typeof anyObject.getUnrotatedAABBMinZ === 'function' &&
+          typeof anyObject.getUnrotatedAABBMaxZ === 'function'
+        ) {
+          return {
+            min: anyObject.getUnrotatedAABBMinZ(),
+            max: anyObject.getUnrotatedAABBMaxZ(),
+          };
+        }
+        if (typeof anyObject.getZ === 'function') {
+          const z = anyObject.getZ();
+          return {
+            min: z,
+            max:
+              z +
+              (typeof anyObject.getDepth === 'function'
+                ? anyObject.getDepth()
+                : 0),
+          };
+        }
+        return { min: 0, max: 0 };
+      }
+
+      /**
+       * How the children of `object` (a custom object) are placed in the
+       * scene: its own complete transformation, followed by the ones already
+       * needed by `object` itself when it is nested in another custom object
+       * (`parentSpace`).
+       */
+      private _makeChildrenSpace(
+        object: gdjs.RuntimeObject,
+        parentSpace: GameplayTestChildrenSpace | null
+      ): GameplayTestChildrenSpace {
+        const transformations = [this._makeCustomObjectTransformation(object)];
+        if (parentSpace) {
+          transformations.push(...parentSpace.transformations);
+        }
+        return {
+          transformations,
+          // The internal layers of a custom object mean nothing outside of
+          // it: every descendant reports the layer of the top custom object.
+          layer: parentSpace ? parentSpace.layer : object.getLayer(),
+        };
+      }
+
+      /**
+       * The complete transformation of a custom object, moving a point from
+       * the local space of its children to the space containing it.
+       *
+       * It is read from the object itself, so it is exactly the one the game
+       * renders - no transformation of the engine is re-derived here:
+       * - a 3D custom object composes its pivot, its Euler rotation (X/Y/Z),
+       *   its scales and its flips in the matrix of its THREE group (see
+       *   `CustomRuntimeObject3DRenderer._updateThreeGroup`). The renderer is
+       *   brought up to date and the matrix recomputed, so a transformation
+       *   changed since the last rendered frame is applied (a stale matrix
+       *   would report the previous position of every descendant);
+       * - a 2D custom object has a complete affine transformation
+       *   (`applyObjectTransformation`: pivot, angle, scales, flips),
+       *   completed by the placement of the children on the Z axis when the
+       *   object has a Z but no THREE object.
+       */
+      private _makeCustomObjectTransformation(
+        object: gdjs.RuntimeObject
+      ): (point: GameplayTestPoint3D) => void {
+        const anyObject = object as any;
+        const threeObject3D: THREE.Object3D | null =
+          typeof THREE !== 'undefined' &&
+          typeof anyObject.get3DRendererObject === 'function'
+            ? anyObject.get3DRendererObject() || null
+            : null;
+        if (threeObject3D) {
+          const renderer = anyObject.getRenderer();
+          if (renderer && typeof renderer.ensureUpToDate === 'function') {
+            // The game may have moved the object since the last rendered
+            // frame: put the THREE group back in sync with it...
+            renderer.ensureUpToDate();
+          }
+          // ...and recompute the matrix from it.
+          threeObject3D.updateMatrix();
+          const matrix = threeObject3D.matrix.clone();
+          const vector = new THREE.Vector3();
+          return (point) => {
+            vector.set(point.x, point.y, point.z).applyMatrix4(matrix);
+            point.x = vector.x;
+            point.y = vector.y;
+            point.z = vector.z;
+          };
+        }
+        if (typeof anyObject.applyObjectTransformation === 'function') {
+          const transformedPoint: FloatPoint = [0, 0];
+          return (point) => {
+            anyObject.applyObjectTransformation(
+              point.x,
+              point.y,
+              transformedPoint
+            );
+            point.x = transformedPoint[0];
+            point.y = transformedPoint[1];
+            if (typeof anyObject.getZ === 'function') {
+              // Children of a 3D custom object are placed at the Z of their
+              // parent, scaled by its Z scale (see
+              // `CustomRuntimeObject3DRenderer._updateThreeGroup`).
+              const parentScaleZ =
+                typeof anyObject.getScaleZ === 'function'
+                  ? anyObject.getScaleZ()
+                  : 1;
+              point.z = anyObject.getZ() + point.z * parentScaleZ;
+            }
+          };
+        }
+        // An object without any transformation: its children are already in
+        // the space containing it.
+        return () => {};
+      }
+
+      /**
+       * Move a point from the local space of the children of a custom object
+       * to the scene space, applying the complete transformation of every
+       * custom object above them (the innermost one first).
+       */
+      private _transformPointToScene(
+        space: GameplayTestChildrenSpace,
+        point: GameplayTestPoint3D
+      ): void {
+        for (const transformation of space.transformations) {
+          transformation(point);
+        }
+      }
+
+      /**
+       * The children depth to use for a snapshot, from the caller options
+       * (default 1 - the direct children only), clamped to
+       * `MAX_CHILDREN_DEPTH`. Malformed options throw, so a mistake is
+       * never silently ignored.
+       */
+      private _getChildrenDepth(
+        options?: GameplayTestSnapshotOptions
+      ): integer {
+        if (options === undefined || options === null) return 1;
+        if (typeof options !== 'object' || Array.isArray(options)) {
+          throw new Error(
+            `Invalid snapshot options: expected an object like { childrenDepth: 2 }, but got ${JSON.stringify(
+              options
+            )}.`
+          );
+        }
+        const childrenDepth = options.childrenDepth;
+        if (childrenDepth === undefined) return 1;
+        if (
+          typeof childrenDepth !== 'number' ||
+          !Number.isFinite(childrenDepth)
+        ) {
+          throw new Error(
+            `Invalid childrenDepth: expected a number between 0 and ${MAX_CHILDREN_DEPTH}, but got ${JSON.stringify(
+              childrenDepth
+            )}.`
+          );
+        }
+        return Math.max(
+          0,
+          Math.min(MAX_CHILDREN_DEPTH, Math.floor(childrenDepth))
+        );
+      }
+
       private _getInstances(objectName: string): Array<gdjs.RuntimeObject> {
+        if (typeof objectName !== 'string') {
+          // Asking the scene for a non-string name would register a phantom
+          // object list named "[object Object]" and silently find nothing.
+          throw new Error(
+            `Expected an object name (a string) but got ${describeNonStringValue(
+              objectName
+            )}. Pass the name of the object; the helpers taking a target (like lookTowardWithMouseDelta) take the reference object name FIRST, then the target.`
+          );
+        }
         return this._getCurrentScene().getObjects(objectName) || [];
       }
 
       /**
        * Get a state snapshot of all the instances of an object.
        * Instances are returned in an unspecified order.
+       *
+       * For a custom object, `children` holds the snapshots of its direct
+       * children: pass `{ childrenDepth: 2 }` (or more, up to 8) to also get
+       * the children of nested custom objects.
        */
-      getObjects(objectName: string): Array<GameplayTestObjectSnapshot> {
+      getObjects(
+        objectName: string,
+        options?: GameplayTestSnapshotOptions
+      ): Array<GameplayTestObjectSnapshot> {
+        const childrenDepth = this._getChildrenDepth(options);
         return this._getInstances(objectName).map((object) =>
-          this._makeObjectSnapshot(object, true)
+          this._makeObjectSnapshot(object, childrenDepth)
         );
       }
 
       /**
        * Get the instances of `objectName` within `radius` of the first
        * instance of `referenceObjectName`, sorted by distance.
+       *
+       * As in `getObjects`, `childrenDepth` (1 by default, 8 at most) sets
+       * how deep the `children` of custom objects are snapshotted.
        */
       getNearby(
         objectName: string,
         referenceObjectName: string,
-        radius: float
+        radius: float,
+        options?: GameplayTestSnapshotOptions
       ): Array<GameplayTestNearbyObjectSnapshot> {
+        const childrenDepth = this._getChildrenDepth(options);
         const referenceInstances = this._getInstances(referenceObjectName);
         if (referenceInstances.length === 0) return [];
-        const reference = this._makeObjectSnapshot(
-          referenceInstances[0],
-          false
-        );
+        const reference = this._makeObjectSnapshot(referenceInstances[0], 0);
         const referenceZ = reference.centerZ || 0;
 
+        const instances = this._getInstances(objectName);
         const nearby: Array<GameplayTestNearbyObjectSnapshot> = [];
-        for (const object of this._getInstances(objectName)) {
-          const snapshot = this._makeObjectSnapshot(object, true);
+        for (const object of instances) {
+          const snapshot = this._makeObjectSnapshot(object, childrenDepth);
           const relativeX = snapshot.centerX - reference.centerX;
           const relativeY = snapshot.centerY - reference.centerY;
           const relativeZ = (snapshot.centerZ || 0) - referenceZ;
@@ -1673,6 +2535,13 @@ namespace gdjs {
           });
         }
         nearby.sort((a, b) => a.distance - b.distance);
+        this._warnOnUnselectiveRadius(
+          objectName,
+          referenceObjectName,
+          radius,
+          nearby.length,
+          instances.length
+        );
         return nearby;
       }
 
@@ -2489,7 +3358,7 @@ namespace gdjs {
         if (layerName !== undefined) {
           object.setLayer(layerName);
         }
-        return this._makeObjectSnapshot(object, false);
+        return this._makeObjectSnapshot(object, 0);
       }
 
       /**
@@ -2661,29 +3530,36 @@ namespace gdjs {
       }
 
       /**
-       * Take a screenshot of the game canvas (downscaled). It's returned
-       * in the test result.
+       * Take a screenshot of the game canvas (downscaled, unless
+       * `fullResolution` is set: the size of the game, which can be set with
+       * `setGameResolutionSize`). The first one and the last ones are
+       * returned in the test result.
        */
-      async takeScreenshot(label: string = ''): Promise<void> {
-        if (this._screenshots.length >= this._maxScreenshots) {
-          logger.warn(
-            `Ignoring screenshot "${label}": already ${this._maxScreenshots} screenshots taken.`
-          );
-          return;
-        }
-        // Let an animation frame happen so the canvas shows the current
-        // state of the game (fast runs only render a few times per second).
-        await this._renderOnce();
+      async takeScreenshot(
+        label: string = '',
+        options?: { fullResolution?: boolean }
+      ): Promise<void> {
+        if (this._maxScreenshots <= 0) return;
+        // Render the current state of the game now: fast runs skip renders,
+        // and a slow renderer delays animation frames, so the canvas could
+        // show an old frame, or be black after a resize.
+        const currentScene = this._runtimeGame
+          .getSceneStack()
+          .getCurrentScene();
+        if (currentScene) currentScene.render();
         const canvas = this._runtimeGame.getRenderer().getCanvas();
         if (!canvas) {
           logger.warn('No canvas found: unable to take a screenshot.');
           return;
         }
         try {
-          const scale = Math.min(
-            1,
-            SCREENSHOT_MAX_SIZE / Math.max(canvas.width, canvas.height, 1)
-          );
+          const fullResolution = !!(options && options.fullResolution);
+          const scale = fullResolution
+            ? 1
+            : Math.min(
+                1,
+                SCREENSHOT_MAX_SIZE / Math.max(canvas.width, canvas.height, 1)
+              );
           const targetWidth = Math.max(1, Math.round(canvas.width * scale));
           const targetHeight = Math.max(1, Math.round(canvas.height * scale));
           const downscaledCanvas = document.createElement('canvas');
@@ -2692,7 +3568,15 @@ namespace gdjs {
           const context = downscaledCanvas.getContext('2d');
           if (!context) return;
           context.drawImage(canvas, 0, 0, targetWidth, targetHeight);
-          const dataUrl = downscaledCanvas.toDataURL('image/jpeg', 0.7);
+          const dataUrl = downscaledCanvas.toDataURL(
+            'image/jpeg',
+            fullResolution ? 0.92 : 0.7
+          );
+          this._screenshotsTakenCount++;
+          if (this._screenshots.length >= this._maxScreenshots) {
+            // Keep the first one and the most recent ones.
+            this._screenshots.splice(this._maxScreenshots > 1 ? 1 : 0, 1);
+          }
           this._screenshots.push({
             label,
             frame: this._framesExecuted,
@@ -2843,6 +3727,162 @@ namespace gdjs {
       }
 
       /**
+       * Replace `Math.random` by a generator seeded with the given number
+       * until the end of the test, so that the game makes the same random
+       * choices at every run.
+       */
+      setRandomSeed(seed: integer): void {
+        if (!this._originalMathRandom) {
+          this._originalMathRandom = Math.random;
+        }
+        // Mulberry32, a small and fast pseudo-random generator.
+        let state = seed >>> 0;
+        Math.random = () => {
+          state = (state + 0x6d2b79f5) >>> 0;
+          let t = state;
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      _restoreMathRandom(): void {
+        if (this._originalMathRandom) {
+          Math.random = this._originalMathRandom;
+          this._originalMathRandom = null;
+        }
+      }
+
+      /**
+       * Step `warmupFrames` frames (not measured: the JavaScript engine
+       * optimizes the code meanwhile), then measure each of the next
+       * `frames` frames, the profiled sections, the draw calls and a
+       * checksum of the final state.
+       * Frames never wait for an animation frame (which renders the game
+       * once more, and can be delayed by the browser), so that two runs of
+       * the same scenario do the same work.
+       */
+      async benchmark(
+        name: string,
+        options?: { warmupFrames?: integer; frames?: integer; dtMs?: float }
+      ): Promise<GameplayTestBenchmarkResult> {
+        const warmupFrames =
+          options && options.warmupFrames !== undefined
+            ? options.warmupFrames
+            : DEFAULT_BENCHMARK_WARMUP_FRAMES;
+        const frames = (options && options.frames) || DEFAULT_BENCHMARK_FRAMES;
+        const dtMs = (options && options.dtMs) || DEFAULT_FRAME_DT_MS;
+        const frameTimesMs: Array<number> = [];
+        const stepFramesWithoutRendering = async (
+          frameCount: integer,
+          isMeasured: boolean
+        ) => {
+          for (let i = 0; i < frameCount; i++) {
+            const stepTimeMs = this._stepSingleFrame(dtMs);
+            if (isMeasured) {
+              frameTimesMs.push(Math.round(stepTimeMs * 1000) / 1000);
+            }
+            await this._waitForGameSceneSwitchIfNeeded();
+            if (Date.now() - this._lastYieldTimeMs >= YIELD_BUDGET_MS) {
+              await new Promise<void>((resolve) => setTimeout(resolve, 0));
+              this._lastYieldTimeMs = Date.now();
+            }
+          }
+        };
+        await stepFramesWithoutRendering(warmupFrames, false);
+
+        // Available when the browser is launched with `--js-flags=--expose-gc`.
+        const collectGarbage = (globalThis as any).gc;
+        if (typeof collectGarbage === 'function') collectGarbage();
+
+        const drawCallsCounter = this._countDrawCalls();
+        this.startProfiling();
+        try {
+          await stepFramesWithoutRendering(frames, true);
+        } finally {
+          if (drawCallsCounter) drawCallsCounter.uninstall();
+        }
+        const profile = this.stopProfiling();
+
+        const sortedFrameTimesMs = [...frameTimesMs].sort((a, b) => a - b);
+        const benchmarkResult: GameplayTestBenchmarkResult = {
+          name,
+          frameTimesMs,
+          medianFrameTimeMs:
+            sortedFrameTimesMs[Math.floor(sortedFrameTimesMs.length / 2)] || 0,
+          sections: profile ? profile.sections : [],
+          drawCallsPerFrame: drawCallsCounter
+            ? Math.round((drawCallsCounter.getCount() / frames) * 100) / 100
+            : null,
+          objectsCount:
+            this._getCurrentScene().getAdhocListOfAllInstances().length,
+          stateChecksum: this._computeStateChecksum(),
+        };
+        this._benchmarks.push(benchmarkResult);
+        if (this._benchmarks.length > MAX_BENCHMARKS_PER_RESULT) {
+          this._benchmarks.shift();
+        }
+        return benchmarkResult;
+      }
+
+      /**
+       * Count the WebGL draw calls, made by PixiJS and Three.js (which
+       * share the same WebGL context), until `uninstall` is called.
+       */
+      private _countDrawCalls(): {
+        getCount: () => integer;
+        uninstall: () => void;
+      } | null {
+        const pixiRenderer = this._runtimeGame.getRenderer().getPIXIRenderer();
+        const gl: any = pixiRenderer ? pixiRenderer.gl : null;
+        if (!gl) return null;
+        let count = 0;
+        const originalMethods: { [methodName: string]: Function } = {};
+        for (const methodName of [
+          'drawArrays',
+          'drawElements',
+          'drawArraysInstanced',
+          'drawElementsInstanced',
+        ]) {
+          const originalMethod = gl[methodName];
+          if (!originalMethod) continue;
+          originalMethods[methodName] = originalMethod;
+          gl[methodName] = function () {
+            count++;
+            return originalMethod.apply(this, arguments);
+          };
+        }
+        return {
+          getCount: () => count,
+          uninstall: () => {
+            for (const methodName in originalMethods) {
+              gl[methodName] = originalMethods[methodName];
+            }
+          },
+        };
+      }
+
+      private _computeStateChecksum(): string {
+        const instances = [
+          ...this._getCurrentScene().getAdhocListOfAllInstances(),
+        ].sort((a, b) => a.id - b.id);
+        // FNV-1a hash of the rounded values.
+        let hash = 0x811c9dc5;
+        const addText = (text: string) => {
+          for (let i = 0; i < text.length; i++) {
+            hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+          }
+        };
+        for (const instance of instances) {
+          addText(instance.getName());
+          addText(instance.getX().toFixed(2));
+          addText(instance.getY().toFixed(2));
+          addText(instance.getAngle().toFixed(2));
+        }
+        return (hash >>> 0).toString(16);
+      }
+
+      /**
        * Record a console log in the test result (also shown in the
        * browser console). Used by the `console` given to the script.
        */
@@ -2964,29 +4004,35 @@ namespace gdjs {
             }
           }
         }
+        const watchedObjectsSummary = summarizeWatchedObjects(watchedObjects);
         return {
           testName: this._payload.testName,
           status,
           framesExecuted: this._framesExecuted,
           durationMs: this._startTimeMs ? Date.now() - this._startTimeMs : 0,
-          loadingMs: Math.round(this._loadingTimeMs),
+          loadingMs: Math.round(this._getLoadingTimeMs()),
           timeoutMs: this._timeoutMs,
           hiddenStallMs: Math.round(this._getHiddenStallTimeMs()),
           gameTimeMs: Math.round(this._gameTimeMs),
           assertions: this._assertions,
           errors: errors.slice(0, MAX_ERRORS),
+          warnings: [...this._runWarnings, ...this._getWarnings()],
           consoleLogs: this._consoleLogs,
           eventLog: this._eventLog,
           finalState: {
             sceneName: currentScene ? currentScene.getName() : '',
             objectCounts: this._getObjectCounts(),
-            watchedObjects,
-            sceneVariables: currentScene
-              ? currentScene.getVariables().getNetworkSyncData({})
-              : [],
+            ...watchedObjectsSummary,
+            ...summarizeSceneVariables(
+              currentScene
+                ? currentScene.getVariables().getNetworkSyncData({})
+                : []
+            ),
           },
           screenshots: this._screenshots,
+          screenshotsTakenCount: this._screenshotsTakenCount,
           profiles: this._profiles,
+          benchmarks: this._benchmarks,
           performance:
             this._framesExecuted > 0
               ? {
@@ -2994,12 +4040,121 @@ namespace gdjs {
                     Math.round(
                       (this._totalStepTimeMs / this._framesExecuted) * 100
                     ) / 100,
-                  worstStepMs: this._worstStepTimeMs,
+                  worstStepMs: Math.round(this._worstStepTimeMs * 100) / 100,
                 }
               : null,
         };
       }
     }
+
+    const summarizeVariables = (
+      variables: Array<VariableNetworkSyncData>
+    ): {
+      summaries: Array<GameplayTestVariableSummary>;
+      isSomethingLeftOut: boolean;
+    } => {
+      let isSomethingLeftOut = variables.length > MAX_SUMMARIZED_VARIABLES;
+      const summaries = variables
+        .slice(0, MAX_SUMMARIZED_VARIABLES)
+        .map(({ name, type, value, children }) => {
+          if (type === 'structure' || type === 'array') {
+            isSomethingLeftOut = true;
+            return {
+              name,
+              type,
+              childrenCount: children ? children.length : 0,
+            };
+          }
+          if (
+            typeof value === 'string' &&
+            value.length > MAX_SUMMARIZED_TEXT_LENGTH
+          ) {
+            isSomethingLeftOut = true;
+            return {
+              name,
+              type,
+              value: value.slice(0, MAX_SUMMARIZED_TEXT_LENGTH) + '…',
+            };
+          }
+          return { name, type, value };
+        });
+      return { summaries, isSomethingLeftOut };
+    };
+
+    const summarizeSceneVariables = (
+      variables: Array<VariableNetworkSyncData>
+    ): {
+      sceneVariables: Array<GameplayTestVariableSummary>;
+      sceneVariablesNote?: string;
+    } => {
+      const { summaries, isSomethingLeftOut } = summarizeVariables(variables);
+      return isSomethingLeftOut
+        ? {
+            sceneVariables: summaries,
+            sceneVariablesNote: `Summarized (${variables.length} variables): read one in full with \`harness.getSceneVariable(name)\` in the test.`,
+          }
+        : { sceneVariables: summaries };
+    };
+
+    const summarizeWatchedObjects = (watchedObjects: {
+      [objectName: string]: Array<GameplayTestObjectSnapshot>;
+    }): {
+      watchedObjects: {
+        [objectName: string]: Array<GameplayTestObjectSnapshot>;
+      };
+      watchedObjectsNote?: string;
+    } => {
+      let areInstancesLeftOut = false;
+      let areVariablesLeftOut = false;
+      const summarizeSnapshot = (
+        snapshot: GameplayTestObjectSnapshot
+      ): GameplayTestObjectSnapshot => {
+        const { summaries, isSomethingLeftOut } = summarizeVariables(
+          snapshot.variables as Array<VariableNetworkSyncData>
+        );
+        areVariablesLeftOut = areVariablesLeftOut || isSomethingLeftOut;
+        if (!snapshot.children) return { ...snapshot, variables: summaries };
+        const children: {
+          [objectName: string]: Array<GameplayTestObjectSnapshot>;
+        } = {};
+        for (const childName in snapshot.children) {
+          children[childName] = summarizeInstances(
+            snapshot.children[childName]
+          );
+        }
+        return { ...snapshot, variables: summaries, children };
+      };
+      const summarizeInstances = (
+        snapshots: Array<GameplayTestObjectSnapshot>
+      ): Array<GameplayTestObjectSnapshot> => {
+        areInstancesLeftOut =
+          areInstancesLeftOut || snapshots.length > MAX_WATCHED_INSTANCES;
+        return snapshots.slice(0, MAX_WATCHED_INSTANCES).map(summarizeSnapshot);
+      };
+
+      const summarizedWatchedObjects: {
+        [objectName: string]: Array<GameplayTestObjectSnapshot>;
+      } = {};
+      for (const objectName in watchedObjects) {
+        summarizedWatchedObjects[objectName] = summarizeInstances(
+          watchedObjects[objectName]
+        );
+      }
+      const notes = [
+        areInstancesLeftOut
+          ? `only the first ${MAX_WATCHED_INSTANCES} instances of an object are listed (see \`objectCounts\`): get them all with \`harness.getObjects(name)\``
+          : '',
+        areVariablesLeftOut
+          ? 'variables are summarized: read one in full with `harness.getObjectVariable(instanceId, variableName)`'
+          : '',
+      ].filter(Boolean);
+      return notes.length
+        ? {
+            watchedObjects: summarizedWatchedObjects,
+            watchedObjectsNote: `Summarized: ${notes.join('; ')}, in the test.`,
+          }
+        : { watchedObjects: summarizedWatchedObjects };
+    };
 
     /**
      * The gameplay test being currently run, if any.
@@ -3185,22 +4340,26 @@ namespace gdjs {
       try {
         // A wall-clock watchdog, in case the script awaits something that
         // never resolves. Checked periodically (not a one-shot timer) so
-        // the time spent loading - which grows `_loadingTimeMs` - stays
-        // excluded from the budget. A synchronous infinite loop can NOT be
+        // the time spent loading - which grows `_loadingTimeMs` - and the
+        // time the page spent hidden (the browser then freezes the game,
+        // see `_installPageVisibilityTracking`) stay excluded from the
+        // budget, as they are in `_checkGuards`: a test in a background
+        // tab is not a test that timed out (the editor gives up on it as
+        // paused, on its side). A synchronous infinite loop can NOT be
         // interrupted (this is a limit of running in the same thread as
         // the game).
         let watchdogIntervalId: any = null;
         const watchdog = new Promise<never>((_, reject) => {
           watchdogIntervalId = setInterval(() => {
             if (
-              Date.now() - harness._startTimeMs - harness._loadingTimeMs >
+              Date.now() -
+                harness._startTimeMs -
+                harness._getLoadingTimeMs() -
+                harness._getHiddenStallTimeMs() >
               harness._timeoutMs + 1000
             ) {
               reject(
-                new GameplayTestTimeoutError(
-                  `The test timed out after ${harness._timeoutMs}ms ` +
-                    '(wall-clock, loading time excluded).'
-                )
+                new GameplayTestTimeoutError(harness._getTimeoutMessage())
               );
             }
           }, 250);
@@ -3265,6 +4424,15 @@ namespace gdjs {
           ]);
         }
       } finally {
+        // The end state is the most useful one to look at, whatever the
+        // outcome, so capture it when the script took no screenshot.
+        if (
+          harness._screenshotsTakenCount === 0 &&
+          !harness._stopped &&
+          runtimeGame.getRenderer().getCanvas()
+        ) {
+          await harness.takeScreenshot('End of the test');
+        }
         // Restore everything, whatever happened:
         try {
           harness.releaseAllInputs();
@@ -3272,6 +4440,7 @@ namespace gdjs {
           // Ignore errors during cleanup.
         }
         inputManager.onFrameEnded = originalOnFrameEnded;
+        harness._restoreMathRandom();
         harness._uninstallPageVisibilityTracking();
         harness._uninstallPointerLockShim();
         harness._uninstallSoundLog();
@@ -3292,6 +4461,7 @@ namespace gdjs {
         currentlyRunningHarness = null;
       }
 
+      result.screenshotsTakenCount = harness._screenshotsTakenCount;
       return result;
     };
   }

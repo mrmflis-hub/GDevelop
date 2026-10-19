@@ -66,16 +66,44 @@ const BYOK_EXTENSION_TOOL_NAMES: Set<string> = new Set([
 ]);
 
 /**
+ * The extension authoring tools whose BYOK implementation KEEPS running,
+ * even though the editor registry now has a real implementation of the same
+ * name (upstream shipped its v18 extension tools).
+ *
+ * Upstream's implementations are NOT the ones this fork ported: they use a
+ * different argument shape (`changed_properties` / `changed_parameters` /
+ * `changed_dependencies`) and they do not support authoring the EventScript
+ * body of a function at all (`event_script`). Letting them win would make the
+ * schema promise arguments the implementation silently ignores — the model
+ * would send `event_script` or `parameters_to_add` and the tool would do
+ * nothing — and would take away the EventScript authoring the BYOK agent
+ * relies on.
+ *
+ * The guard still applies to every other extension tool upstream may add
+ * later: for those, the registry version wins (the upstream-tracking rule of
+ * Phase 8.4).
+ */
+const BYOK_EXTENSION_TOOLS_KEEPING_THEIR_INTERCEPTION: Set<string> = new Set([
+  'create_extension',
+  'change_extension_properties',
+  'create_custom_object',
+  'change_custom_object',
+  'create_custom_behavior',
+  'change_custom_behavior',
+  'create_custom_function',
+  'change_custom_function',
+]);
+
+/**
  * True when the editor registry has a REAL implementation of one of the
- * extension authoring tools: our BYOK interception must then let the
- * registry version run (the upstream-tracking guard of Phase 8.4 — today
- * these names have no registry entry at all, so this stays false until
- * upstream ships the v18 tools).
+ * extension authoring tools that our interception does not claim: the
+ * registry version must then run (the upstream-tracking guard of Phase 8.4).
  */
 export const isByokExtensionToolShadowedByRegistry = (
   name: string
 ): boolean => {
   if (!BYOK_EXTENSION_TOOL_NAMES.has(name)) return false;
+  if (BYOK_EXTENSION_TOOLS_KEEPING_THEIR_INTERCEPTION.has(name)) return false;
   const registryEntry =
     (editorFunctions: any)[name] || (editorFunctionsWithoutProject: any)[name];
   return isRegistryImplementationReal(registryEntry || null);

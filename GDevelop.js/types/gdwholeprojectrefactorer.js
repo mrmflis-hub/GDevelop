@@ -29,6 +29,8 @@ declare class gdWholeProjectRefactorer {
   static moveEventsBasedObject(project: gdProject, eventsFunctionsExtension: gdEventsFunctionsExtension, oldExtensionName: string, newExtensionName: string, oldObjectName: string, newObjectName: string): void;
   static updateObjectNameInEventsBasedObject(project: gdProject, eventsFunctionsExtension: gdEventsFunctionsExtension, eventsBasedObject: gdEventsBasedObject, sourceObjectName: string): void;
   static renameLayout(project: gdProject, oldName: string, newName: string): void;
+  static renameNamedEasing(project: gdProject, oldName: string, newName: string): void;
+  static renameNamedEasingInEventsFunctionsExtension(project: gdProject, eventsFunctionsExtension: gdEventsFunctionsExtension, oldName: string, newName: string): void;
   static renameExternalLayout(project: gdProject, oldName: string, newName: string): void;
   static renameExternalEvents(project: gdProject, oldName: string, newName: string): void;
   static renameLayerInScene(project: gdProject, scene: gdLayout, oldName: string, newName: string): void;
@@ -48,6 +50,7 @@ declare class gdWholeProjectRefactorer {
   static objectRemovedInEventsFunction(project: gdProject, eventsFunction: gdEventsFunction, objectName: string): void;
   static objectOrGroupRenamedInEventsBasedObject(project: gdProject, projectScopedContainers: gdProjectScopedContainers, eventsBasedObject: gdEventsBasedObject, oldName: string, newName: string, isObjectGroup: boolean): void;
   static objectRemovedInEventsBasedObject(project: gdProject, eventsBasedObject: gdEventsBasedObject, objectName: string): void;
+  static removeEventsBasedObjectVariant(project: gdProject, eventsFunctionsExtension: gdEventsFunctionsExtension, eventsBasedObject: gdEventsBasedObject, variantName: string): void;
   static globalObjectOrGroupRenamed(project: gdProject, oldName: string, newName: string, isObjectGroup: boolean): void;
   static globalObjectRemoved(project: gdProject, objectName: string): void;
   static behaviorsAddedToGlobalObject(project: gdProject, objectName: string): void;

@@ -164,6 +164,12 @@ export type Quota = {|
   max: number,
   period: '1day' | '30days' | '7days',
   resetsAt?: number,
+  /** Only for the 30 days quota: when the credits of the oldest request come back. */
+  nextCreditsBackAt?: number,
+  /** Only for the 30 days quota: when the credits of all the requests are back. */
+  fullyRestoredAt?: number,
+  /** Only for the 30 days quota, when the limit is reached: when enough credits are back to make a request again. */
+  availableAgainAt?: number,
 |};
 
 export type Quotas = {
@@ -675,6 +681,55 @@ export const getRedirectToSubscriptionPortalUrl = async (
     endpointName: '/subscription-v2/action/redirect-to-portal of Usage API',
   });
   return data.sessionPortalUrl;
+};
+
+export type SubscriptionPayment = {|
+  id: string,
+  createdAt: string,
+  amount: number,
+  currency: string,
+  planNameByLocale: MessageByLocale | null,
+  invoiceRequest:
+    | {| stripeInvoiceId: string |}
+    | {| paypalSubscriptionId: string, paypalTransactionId: string |},
+|};
+
+export const listSubscriptionPayments = async (
+  getAuthorizationHeader: () => Promise<string>,
+  userId: string
+): Promise<Array<SubscriptionPayment>> => {
+  const authorizationHeader = await getAuthorizationHeader();
+
+  const response = await apiClient.get('/subscription-payment', {
+    params: { userId },
+    headers: { Authorization: authorizationHeader },
+  });
+  return ensureIsArray({
+    data: response.data,
+    endpointName: '/subscription-payment of Usage API',
+  });
+};
+
+export const generateSubscriptionPaymentInvoice = async (
+  getAuthorizationHeader: () => Promise<string>,
+  userId: string,
+  subscriptionPayment: SubscriptionPayment
+): Promise<Blob> => {
+  const authorizationHeader = await getAuthorizationHeader();
+
+  const response = await apiClient.post(
+    '/subscription-v2/action/generate-invoice',
+    subscriptionPayment.invoiceRequest,
+    {
+      params: { userId },
+      headers: {
+        Authorization: authorizationHeader,
+        Accept: 'application/pdf',
+      },
+      responseType: 'blob',
+    }
+  );
+  return response.data;
 };
 
 export const getRedirectToCheckoutUrl = ({

@@ -1,6 +1,7 @@
 // @flow
 import { editorFunctions, type EditorFunctionGenericOutput } from './index';
 import { makeFakeLaunchFunctionOptionsWithProject } from './TestHelpers';
+import { PixiResourcesLoaderMock } from '../fixtures/TestPixiResourcesLoader';
 
 const gd: libGDevelop = global.gd;
 
@@ -69,6 +70,33 @@ describe('put_2d_instances (modifications of existing instances)', () => {
     expect(result.success).toBe(true);
     return result;
   };
+
+  it('lists the existing layers when the layer does not exist', async () => {
+    testScene.insertNewLayer('UI', testScene.getLayersCount());
+
+    const result: EditorFunctionGenericOutput = await editorFunctions.put_2d_instances.launchFunction(
+      {
+        ...makeFakeLaunchFunctionOptionsWithProject(project),
+        args: {
+          scene_name: 'TestScene',
+          object_name: 'Player',
+          layer_name: 'HUD',
+          brush_kind: 'point',
+          brush_position: '10,20',
+        },
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      'Layer not found: HUD in scene "TestScene". ' +
+        'Existing layers: "" (the base layer), "UI". ' +
+        'Use one of them, or add the layer first with ' +
+        '`change_scene_properties_layers_effects_groups` (a `changed_layers` ' +
+        'entry creates the layer when its `layer_name` does not exist yet).'
+    );
+    expect(getInstances(testScene)).toHaveLength(0);
+  });
 
   it('moves an existing instance to a different layer with the none brush', async () => {
     testScene.insertNewLayer('UI', testScene.getLayersCount());
@@ -478,5 +506,398 @@ describe('put_2d_instances (instances_hidden)', () => {
     });
     expect(result.success).toBe(true);
     expect(created.isHidden()).toBe(true);
+  });
+});
+
+describe('put_2d_instances (brush_position_anchor)', () => {
+  let project: gdProject;
+  let testScene: gdLayout;
+
+  // A custom object whose area is symmetric on X and starts at 0 on Y: its
+  // origin is in the middle of its width and at the top of its height.
+  beforeEach(() => {
+    // $FlowFixMe[invalid-constructor]
+    project = new gd.ProjectHelper.createNewGDJSProject();
+    const extension = project.insertNewEventsFunctionsExtension('UI', 0);
+    const panel = extension.getEventsBasedObjects().insertNew('Panel', 0);
+    panel.setAreaMinX(-50);
+    panel.setAreaMaxX(50);
+    panel.setAreaMinY(0);
+    panel.setAreaMaxY(40);
+    testScene = project.insertNewLayout('TestScene', 0);
+    testScene.getObjects().insertNewObject(project, 'UI::Panel', 'Panel', 0);
+    testScene
+      .getObjects()
+      .insertNewObject(project, 'TextObject::Text', 'Title', 1);
+  });
+
+  afterEach(() => {
+    project.delete();
+  });
+
+  const putInstances = async (args: any) =>
+    await editorFunctions.put_2d_instances.launchFunction({
+      ...makeFakeLaunchFunctionOptionsWithProject(project),
+      args: {
+        scene_name: 'TestScene',
+        object_name: 'Panel',
+        layer_name: '',
+        brush_kind: 'point',
+        new_instances_count: 1,
+        ...args,
+      },
+    });
+
+  const getPlacedPosition = () => {
+    const positions = [];
+    const functor = new gd.InitialInstanceJSFunctor();
+    // $FlowFixMe[cannot-write]
+    functor.invoke = instancePtr => {
+      const instance: gdInitialInstance = gd.wrapPointer(
+        // $FlowFixMe[incompatible-type]
+        instancePtr,
+        gd.InitialInstance
+      );
+      positions.push([instance.getX(), instance.getY()]);
+    };
+    // $FlowFixMe[incompatible-type]
+    testScene.getInitialInstances().iterateOverInstances(functor);
+    functor.delete();
+    return positions[0];
+  };
+
+  it('centers the box of the instances on the position', async () => {
+    const result = await putInstances({
+      brush_position: '100,100',
+      brush_position_anchor: 'center',
+    });
+
+    expect(result.success).toBe(true);
+    // The origin is already in the middle of the width: only Y moves.
+    expect(getPlacedPosition()).toEqual([100, 80]);
+    expect(result.message).toEqual(
+      expect.stringContaining(
+        'anchored by their center on 100, 100, origin at this position, each occupies X 50 to 150, Y 80 to 120'
+      )
+    );
+  });
+
+  it('puts the minimum corner of the box on the position', async () => {
+    const result = await putInstances({
+      brush_position: '0,0',
+      brush_position_anchor: 'min_corner',
+    });
+
+    expect(result.success).toBe(true);
+    expect(getPlacedPosition()).toEqual([50, 0]);
+  });
+
+  it('refuses an anchor on an object with no size of its own, until the instances get one', async () => {
+    // A text is as big as what it displays: nothing knows its box here.
+    const refused = await putInstances({
+      object_name: 'Title',
+      brush_position: '100,100',
+      brush_position_anchor: 'center',
+    });
+
+    expect(refused.success).toBe(false);
+    expect(refused.message).toEqual(
+      expect.stringContaining(
+        '`brush_position_anchor: "center"` needs the box of "Title", which is unknown. Give the instances a size with `instances_size`'
+      )
+    );
+
+    const sized = await putInstances({
+      object_name: 'Title',
+      brush_position: '100,100',
+      brush_position_anchor: 'center',
+      instances_size: '200,40',
+    });
+
+    expect(sized.success).toBe(true);
+    // A text is positioned by the corner of its box: centering it moves it by
+    // half the size given to its instances.
+    expect(getPlacedPosition()).toEqual([0, 80]);
+  });
+
+  describe('with a sprite whose texture is not loaded yet', () => {
+    // Like a sprite just installed from the asset store: the editor has not
+    // drawn it yet, so its texture is only known once loaded.
+    const makeLoaderLoadingTexturesOnDemand = () => {
+      const loadedResourceNames = new Set<string>();
+      return {
+        ...PixiResourcesLoaderMock,
+        loadTextures: async (
+          project: gdProject,
+          resourceNames: Array<string>
+        ) => {
+          resourceNames.forEach(name => loadedResourceNames.add(name));
+        },
+        getPIXITexture: (project: gdProject, resourceName: string) =>
+          loadedResourceNames.has(resourceName)
+            ? { valid: true, width: 64, height: 128 }
+            : PixiResourcesLoaderMock.getInvalidPIXITexture(),
+      };
+    };
+
+    beforeEach(() => {
+      const door = testScene
+        .getObjects()
+        .insertNewObject(project, 'Sprite', 'Door', 0);
+      const animation = new gd.Animation();
+      animation.setDirectionsCount(1);
+      const sprite = new gd.Sprite();
+      sprite.setImageName('FreshlyInstalledDoor');
+      animation.getDirection(0).addSprite(sprite);
+      gd.asSpriteConfiguration(door.getConfiguration())
+        .getAnimations()
+        .addAnimation(animation);
+      sprite.delete();
+      animation.delete();
+    });
+
+    const putDoor = async (args: any) =>
+      await editorFunctions.put_2d_instances.launchFunction({
+        ...makeFakeLaunchFunctionOptionsWithProject(project),
+        PixiResourcesLoader: makeLoaderLoadingTexturesOnDemand(),
+        args: {
+          scene_name: 'TestScene',
+          object_name: 'Door',
+          layer_name: '',
+          brush_kind: 'point',
+          brush_position: '100,100',
+          brush_position_anchor: 'center',
+          ...args,
+        },
+      });
+
+    it('centers it using the size of its texture', async () => {
+      const result = await putDoor({});
+
+      expect(result.success).toBe(true);
+      expect(getPlacedPosition()).toEqual([68, 36]);
+    });
+
+    it('centers it using the size given to its instances', async () => {
+      const result = await putDoor({ instances_size: '320,320' });
+
+      expect(result.success).toBe(true);
+      expect(getPlacedPosition()).toEqual([-60, -60]);
+    });
+  });
+
+  it('refuses the anchors of 3D objects', async () => {
+    const result = await putInstances({
+      brush_position: '0,0',
+      brush_position_anchor: 'bottom_center',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toEqual(
+      expect.stringContaining(
+        '`brush_position_anchor` must be one of: origin, min_corner, center (got "bottom_center").'
+      )
+    );
+  });
+});
+
+// The AI often writes these calls in a script without having read the
+// instances: a "none" or "erase" brush naming an object, with no ids nor
+// position, targets every instance of that object on the layer.
+describe('put_2d_instances (every instance of an object)', () => {
+  let project: gdProject;
+  let testScene: gdLayout;
+
+  beforeEach(() => {
+    // $FlowFixMe[invalid-constructor]
+    project = new gd.ProjectHelper.createNewGDJSProject();
+    testScene = project.insertNewLayout('TestScene', 0);
+    testScene.insertNewLayer('UI', testScene.getLayersCount());
+    testScene.getObjects().insertNewObject(project, 'Sprite', 'Wall', 0);
+    testScene.getObjects().insertNewObject(project, 'Sprite', 'Coin', 1);
+  });
+
+  afterEach(() => {
+    project.delete();
+  });
+
+  const launchPut2dInstances = (args: any) =>
+    editorFunctions.put_2d_instances.launchFunction({
+      ...makeFakeLaunchFunctionOptionsWithProject(project),
+      args: { scene_name: 'TestScene', ...args },
+    });
+
+  const placeInstances = async (
+    objectName: string,
+    layerName: string,
+    count: number
+  ) => {
+    const result = await launchPut2dInstances({
+      object_name: objectName,
+      layer_name: layerName,
+      brush_kind: 'point',
+      brush_position: '100,200',
+      new_instances_count: count,
+    });
+    expect(result.success).toBe(true);
+  };
+
+  const getInstances = (): Array<{|
+    objectName: string,
+    layer: string,
+    zOrder: number,
+  |}> => {
+    const instances = [];
+    const functor = new gd.InitialInstanceJSFunctor();
+    // $FlowFixMe[cannot-write]
+    functor.invoke = instancePtr => {
+      const instance: gdInitialInstance = gd.wrapPointer(
+        // $FlowFixMe[incompatible-type]
+        instancePtr,
+        gd.InitialInstance
+      );
+      instances.push({
+        objectName: instance.getObjectName(),
+        layer: instance.getLayer(),
+        zOrder: instance.getZOrder(),
+      });
+    };
+    // $FlowFixMe[incompatible-type]
+    testScene.getInitialInstances().iterateOverInstances(functor);
+    functor.delete();
+    return instances;
+  };
+
+  it('changes every instance of the object on the layer with the none brush', async () => {
+    await placeInstances('Wall', '', 3);
+    await placeInstances('Wall', 'UI', 1);
+    await placeInstances('Coin', '', 1);
+
+    const result = await launchPut2dInstances({
+      object_name: 'Wall',
+      layer_name: '',
+      brush_kind: 'none',
+      existing_instance_ids: '',
+      instances_z_order: 7,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toEqual(
+      expect.stringContaining('Changed Z-order of 3 instances of "Wall" to 7.')
+    );
+    expect(getInstances()).toEqual([
+      { objectName: 'Wall', layer: '', zOrder: 7 },
+      { objectName: 'Wall', layer: '', zOrder: 7 },
+      { objectName: 'Wall', layer: '', zOrder: 7 },
+      { objectName: 'Wall', layer: 'UI', zOrder: 0 },
+      { objectName: 'Coin', layer: '', zOrder: 0 },
+    ]);
+  });
+
+  it('erases every instance of the object on the layer with the erase brush', async () => {
+    await placeInstances('Wall', '', 2);
+    await placeInstances('Wall', 'UI', 1);
+    await placeInstances('Coin', '', 1);
+
+    const result = await launchPut2dInstances({
+      object_name: 'Wall',
+      layer_name: '',
+      brush_kind: 'erase',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toEqual(
+      expect.stringContaining('Erased 2 instances')
+    );
+    expect(getInstances()).toEqual([
+      { objectName: 'Wall', layer: 'UI', zOrder: 0 },
+      { objectName: 'Coin', layer: '', zOrder: 0 },
+    ]);
+  });
+
+  it('fails, naming their layers, when the instances of the object are on other layers', async () => {
+    await placeInstances('Wall', 'UI', 2);
+
+    const result = await launchPut2dInstances({
+      object_name: 'Wall',
+      layer_name: '',
+      brush_kind: 'erase',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toEqual(
+      expect.stringContaining(
+        '"Wall" has no instance on the base layer (""): its instances are on layer "UI". Nothing was changed.'
+      )
+    );
+    expect(getInstances()).toHaveLength(2);
+  });
+
+  it('erases nothing, successfully, when the object has no instance', async () => {
+    const result = await launchPut2dInstances({
+      object_name: 'Wall',
+      layer_name: '',
+      brush_kind: 'erase',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toEqual(
+      expect.stringContaining(
+        '"Wall" has no instance in scene "TestScene": nothing to erase.'
+      )
+    );
+  });
+
+  it('fails to change instances of an object having none', async () => {
+    const result = await launchPut2dInstances({
+      object_name: 'Wall',
+      layer_name: '',
+      brush_kind: 'none',
+      instances_z_order: 7,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toEqual(
+      expect.stringContaining(
+        '"Wall" has no instance in scene "TestScene", so nothing was changed.'
+      )
+    );
+    expect(getInstances()).toEqual([]);
+  });
+
+  it('still fails when no change is requested', async () => {
+    await placeInstances('Wall', '', 2);
+
+    const result = await launchPut2dInstances({
+      object_name: 'Wall',
+      layer_name: '',
+      brush_kind: 'none',
+      existing_instance_ids: '',
+      instances_size: '',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toEqual(
+      expect.stringContaining(
+        'Matched 2 existing instances but no change was requested'
+      )
+    );
+  });
+
+  it('still fails without object_name', async () => {
+    await placeInstances('Wall', '', 2);
+
+    const result = await launchPut2dInstances({
+      layer_name: '',
+      brush_kind: 'none',
+      existing_instance_ids: '',
+      instances_z_order: 7,
+    });
+
+    expect(result.success).toBe(false);
+    expect(getInstances()).toEqual([
+      { objectName: 'Wall', layer: '', zOrder: 0 },
+      { objectName: 'Wall', layer: '', zOrder: 0 },
+    ]);
   });
 });

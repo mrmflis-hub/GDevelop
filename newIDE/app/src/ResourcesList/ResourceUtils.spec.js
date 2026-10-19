@@ -1,5 +1,6 @@
 // @flow
 import {
+  getLocalResourceFullPath,
   parseLocalFilePathOrExtensionFromMetadata,
   renameResourcesInProject,
   updateResourceJsonMetadata,
@@ -25,6 +26,32 @@ const addNewAnimationWithImageToSpriteObject = (
 };
 
 describe('ResourceUtils', () => {
+  it('gives the path on disk of a local resource, even with special characters', () => {
+    const project = gd.ProjectHelper.createNewGDJSProject();
+    project.setProjectFile('/home/user/My Project/game.json');
+    const resource = new gd.AudioResource();
+    resource.setName('Track #3');
+    resource.setFile('assets/Track #3 (100%).wav');
+    project.getResourcesManager().addResource(resource);
+    const urlResource = new gd.ImageResource();
+    urlResource.setName('Remote');
+    urlResource.setFile('https://example.com/a%23b.png');
+    project.getResourcesManager().addResource(urlResource);
+
+    // The path is resolved to an absolute path, so on Windows it carries
+    // the drive letter of the current drive (upstream's CI runs on Linux,
+    // where the path stays as written).
+    expect(getLocalResourceFullPath(project, 'Track #3')).toMatch(
+      /^([A-Za-z]:)?\/home\/user\/My Project\/assets\/Track #3 \(100%\)\.wav$/
+    );
+    expect(getLocalResourceFullPath(project, 'Remote')).toBe(
+      'https://example.com/a%23b.png'
+    );
+    expect(getLocalResourceFullPath(project, 'Unknown')).toBe('');
+
+    project.delete();
+  });
+
   it('can rename a resource in the whole project', () => {
     const project = gd.ProjectHelper.createNewGDJSProject();
 

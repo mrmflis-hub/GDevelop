@@ -520,6 +520,9 @@ type Props = {|
     objects: Array<gdObject>,
     isTheFirstOfItsTypeInProject: boolean
   ) => void,
+  // An effect from the asset store was put on a layer: the game shown by the
+  // editor must reload it.
+  onEffectAdded: () => void,
   onObjectEdited: (
     objectWithContext: ObjectWithContext,
     hasResourceChanged: boolean
@@ -570,6 +573,7 @@ const ObjectsList = React.forwardRef<Props, ObjectsListInterface>(
       onExportAssets,
       onImportAssets,
       onObjectCreated,
+      onEffectAdded,
       onObjectEdited,
       onObjectFolderOrObjectsWithContextSelected,
       onObjectPasted,
@@ -2021,6 +2025,10 @@ const ObjectsList = React.forwardRef<Props, ObjectsListInterface>(
             onClose={() => setNewObjectDialogOpen(null)}
             onCreateNewObject={addObject}
             onObjectsAddedFromAssets={onObjectsAddedFromAssets}
+            onLayerEffectAddedFromAssets={() => {
+              if (unsavedChanges) unsavedChanges.triggerUnsavedChanges();
+              onEffectAdded();
+            }}
             project={project}
             layout={layout}
             eventsFunctionsExtension={eventsFunctionsExtension}

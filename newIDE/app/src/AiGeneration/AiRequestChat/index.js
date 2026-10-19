@@ -79,6 +79,11 @@ import { EditApprovalRow } from './EditApprovalRow';
 import { type EditApprovalRequest } from '../Utils';
 import { canPayForAiRequest } from './Utils';
 import { AiUsageIndicator } from './AiUsageIndicator';
+import { useAiAttachmentDrafts } from '../AiAttachments/UseAiAttachmentDrafts';
+import { AiAttachmentDrafts } from '../AiAttachments/AiAttachmentDrafts';
+import { AttachFilesButton } from '../AiAttachments/AttachFilesButton';
+import { useFileDropZone } from '../AiAttachments/UseFileDropZone';
+import attachmentsClasses from '../AiAttachments/AiAttachments.module.css';
 
 const TOO_MANY_USER_MESSAGES_WARNING_COUNT = 15;
 const TOO_MANY_USER_MESSAGES_ERROR_COUNT = 20;
@@ -154,12 +159,15 @@ type Props = {|
   onStartNewAiRequest: ({|
     mode: 'chat' | 'agent' | 'orchestrator',
     userRequest: string,
+    attachmentIds: Array<string>,
     aiConfigurationPresetId: string,
   |}) => void,
   onSendUserMessage: ({|
     userMessage: string,
     // The "+" attach button's image ids (Phase 13.3, BYOK chats only).
     byokImageIds?: Array<string>,
+    // The ids of the files uploaded to the cloud storage (hosted chats).
+    attachmentIds: Array<string>,
   |}) => Promise<void>,
   // Called whenever the local "Auto edit" toggle changes (and on mount), so the
   // container can gate project-modifying tool calls behind a confirmation when
@@ -449,6 +457,24 @@ export const AiRequestChat: React.ComponentType<{
       [onAttachByokFile, byokChatControls]
     );
 
+    // When a chat is opened, show the reasoning level it was created with,
+    // so a chat started elsewhere (e.g. from the home page) or reopened later
+    // does not fall back to the default preset. Keyed on the request id so the
+    // user can still change the level while the request is being updated.
+    const openedAiRequestId = aiRequest ? aiRequest.id : null;
+    const openedAiRequestPresetId =
+      aiRequest && aiRequest.aiConfiguration
+        ? aiRequest.aiConfiguration.presetId
+        : null;
+    React.useEffect(
+      () => {
+        if (!openedAiRequestId || !openedAiRequestPresetId) return;
+        setAiConfigurationPresetId(openedAiRequestPresetId);
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [openedAiRequestId]
+    );
+
     React.useEffect(
       () => {
         if (!aiConfigurationPresetsWithAvailability.length) return;
@@ -478,6 +504,30 @@ export const AiRequestChat: React.ComponentType<{
       userRequestTextPerAiRequestId,
       setUserRequestTextPerRequestId,
     ] = React.useState<{ [string]: string }>({});
+    const {
+      draftsPerAiRequestId: attachmentDraftsPerAiRequestId,
+      addFiles: addAttachmentFiles,
+      removeDraft: removeAttachmentDraft,
+      clearDrafts: clearAttachmentDrafts,
+    } = useAiAttachmentDrafts();
+    // The new chat form uses the '' key, like its text.
+    const attachmentsKey = !aiRequest || standAloneForm ? '' : aiRequestId;
+    const attachmentDrafts =
+      attachmentDraftsPerAiRequestId[attachmentsKey] || [];
+    const isUploadingAttachments = attachmentDrafts.some(
+      draft => draft.status === 'uploading'
+    );
+    const uploadedAttachmentIds = attachmentDrafts
+      .map(draft => (draft.status === 'uploaded' ? draft.attachmentId : null))
+      .filter(Boolean);
+    const addAttachmentFilesToMessage = React.useCallback(
+      (files: Array<File>) => addAttachmentFiles(attachmentsKey, files),
+      [addAttachmentFiles, attachmentsKey]
+    );
+    const {
+      isDraggingFilesOver,
+      dropZoneProps: attachmentsDropZoneProps,
+    } = useFileDropZone(addAttachmentFilesToMessage);
 
     const scrollViewRef = React.useRef<ScrollViewInterface | null>(null);
     const newChatTextFieldRef = React.useRef<CompactTextAreaFieldWithControlsInterface | null>(
@@ -593,6 +643,7 @@ export const AiRequestChat: React.ComponentType<{
       resetUserInput: (aiRequestId: string | null) => {
         const aiRequestIdToReset: string = aiRequestId || '';
         onUserRequestTextChange('', aiRequestIdToReset);
+        clearAttachmentDrafts(aiRequestIdToReset);
 
         scrollToBottom();
       },
@@ -732,7 +783,9 @@ export const AiRequestChat: React.ComponentType<{
       hasStartedRequestButCannotContinue ||
       isWorking ||
       isForking ||
-      !userRequestTextPerAiRequestId[aiRequestId];
+      isUploadingAttachments ||
+      (!userRequestTextPerAiRequestId[aiRequestId] &&
+        uploadedAttachmentIds.length === 0);
     const shouldReplaceFormWithCreditsOrSubscriptionPrompt =
       hasStartedRequestButCannotContinue &&
       // We only replace the form if no Ai Request exists yet (Editor or StandAlone form),
@@ -747,6 +800,8 @@ export const AiRequestChat: React.ComponentType<{
 
         setHasTriedToSendWhileBlocked(cannotContinue);
         if (cannotContinue) return;
+        // The keyboard shortcut can send while the button is disabled.
+        if (shouldDisableButton) return;
 
         if (hasOpenedProject && standAloneForm) {
           const response = await showConfirmation({
@@ -761,7 +816,8 @@ export const AiRequestChat: React.ComponentType<{
         }
 
         onStartNewAiRequest({
-          userRequest: userRequestTextPerAiRequestId[''],
+          userRequest: userRequestTextPerAiRequestId[''] || '',
+          attachmentIds: uploadedAttachmentIds,
           aiConfigurationPresetId: chosenOrDefaultAiConfigurationPresetId,
           mode: selectedMode,
         });
@@ -769,9 +825,11 @@ export const AiRequestChat: React.ComponentType<{
       [
         onStartNewAiRequest,
         userRequestTextPerAiRequestId,
+        uploadedAttachmentIds,
         chosenOrDefaultAiConfigurationPresetId,
         scrollToBottom,
         cannotContinue,
+        shouldDisableButton,
         hasOpenedProject,
         showConfirmation,
         standAloneForm,
@@ -784,6 +842,8 @@ export const AiRequestChat: React.ComponentType<{
 
         setHasTriedToSendWhileBlocked(cannotContinue);
         if (cannotContinue) return;
+        // The keyboard shortcut can send while the button is disabled.
+        if (shouldDisableButton) return;
 
         // The text attachments are inlined into the message, the image ones
         // ride as ids (Phase 13.3) — both join this one message.
@@ -798,15 +858,18 @@ export const AiRequestChat: React.ComponentType<{
         return onSendUserMessage({
           userMessage,
           byokImageIds: byokImageIds.length > 0 ? byokImageIds : undefined,
+          attachmentIds: uploadedAttachmentIds,
         });
       },
       [
         aiRequestId,
         onSendUserMessage,
         userRequestTextPerAiRequestId,
+        uploadedAttachmentIds,
         scrollToBottom,
         cannotContinue,
         byokPendingAttachments,
+        shouldDisableButton,
       ]
     );
 
@@ -895,7 +958,13 @@ export const AiRequestChat: React.ComponentType<{
                 </Text>
               </Column>
             )}
-            <form onSubmit={onClickNewChatButton}>
+            <form
+              onSubmit={onClickNewChatButton}
+              {...attachmentsDropZoneProps}
+              className={classNames(attachmentsClasses.dropZone, {
+                [attachmentsClasses.isDraggingFiles]: isDraggingFilesOver,
+              })}
+            >
               <ColumnStackLayout
                 noMargin
                 alignItems="stretch"
@@ -915,6 +984,15 @@ export const AiRequestChat: React.ComponentType<{
                     }}
                     onNavigateHistory={handleNavigateHistory}
                     onSubmit={onClickNewChatButton}
+                    header={
+                      <AiAttachmentDrafts
+                        drafts={attachmentDrafts}
+                        onRemove={localId =>
+                          removeAttachmentDraft(attachmentsKey, localId)
+                        }
+                      />
+                    }
+                    onPasteFiles={addAttachmentFilesToMessage}
                     placeholder={
                       isWorking
                         ? t`Thinking about your request...`
@@ -924,9 +1002,13 @@ export const AiRequestChat: React.ComponentType<{
                     controls={
                       <Column>
                         <LineStackLayout
-                          alignItems="flex-end"
-                          justifyContent="flex-end"
+                          alignItems="center"
+                          justifyContent="space-between"
                         >
+                          <AttachFilesButton
+                            disabled={isWorking}
+                            onFilesChosen={addAttachmentFilesToMessage}
+                          />
                           <RaisedButton
                             color="primary"
                             icon={sendButtonIcon}
@@ -1232,10 +1314,13 @@ export const AiRequestChat: React.ComponentType<{
         </ScrollView>
         <form
           onSubmit={onSubmitForExistingChat}
-          className={classNames({
+          {...attachmentsDropZoneProps}
+          className={classNames(
+            attachmentsClasses.dropZone,
             // Move the form up when the soft keyboard is open:
-            'avoid-soft-keyboard': true,
-          })}
+            'avoid-soft-keyboard',
+            { [attachmentsClasses.isDraggingFiles]: isDraggingFilesOver }
+          )}
         >
           <ColumnStackLayout
             justifyContent="stretch"
@@ -1316,11 +1401,20 @@ export const AiRequestChat: React.ComponentType<{
                 rows={2}
                 maxRows={6}
                 onSubmit={onClickExistingChatButton}
+                header={
+                  <AiAttachmentDrafts
+                    drafts={attachmentDrafts}
+                    onRemove={localId =>
+                      removeAttachmentDraft(attachmentsKey, localId)
+                    }
+                  />
+                }
+                onPasteFiles={addAttachmentFilesToMessage}
                 controls={
                   <Column>
                     <LineStackLayout
                       alignItems="center"
-                      justifyContent="flex-end"
+                      justifyContent="space-between"
                     >
                       {/* The "+" attach button (Phase 13.3, D13-5),
                           immediately left of Send — BYOK chats with a local
@@ -1334,6 +1428,15 @@ export const AiRequestChat: React.ComponentType<{
                             </IconButton>
                           }
                           buildMenuTemplate={buildAttachMenuTemplate}
+                        />
+                      )}
+                      {/* Hosted chats upload their attachments to the cloud
+                          storage instead; BYOK chats use the local picker
+                          above (byokChatControls is only set for them). */}
+                      {!byokChatControls && (
+                        <AttachFilesButton
+                          disabled={isWorking || isForAnotherProject}
+                          onFilesChosen={addAttachmentFilesToMessage}
                         />
                       )}
                       <RaisedButton

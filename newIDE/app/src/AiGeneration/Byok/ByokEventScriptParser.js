@@ -846,9 +846,17 @@ type ByokStatementKind =
   | 'group'
   | 'comment'
   | 'link'
+  | 'js-code'
   | 'local-variable'
   | 'action'
   | 'pass';
+
+/**
+ * Whether a statement opens a JavaScript code fence: `js """` or
+ * `js(<objects>) """` (the objects are the instances the code can use).
+ */
+const isJsCodeHeader = (statementText: string): boolean =>
+  /^js(\([^)]*\))?\s*"""$/.test(statementText.trim());
 
 const classifyStatement = (statementText: string): ByokStatementKind => {
   if (statementText === 'always') return 'standard-always';
@@ -863,6 +871,9 @@ const classifyStatement = (statementText: string): ByokStatementKind => {
   if (statementText.startsWith('group ')) return 'group';
   if (statementText.startsWith('comment ')) return 'comment';
   if (statementText.startsWith('link ')) return 'link';
+  // A JavaScript code event: `js """` or `js(<objects>) """`, opening a
+  // fence whose code lines are read until the closing `"""`.
+  if (isJsCodeHeader(statementText)) return 'js-code';
   if (statementText.startsWith('local ')) return 'local-variable';
   return 'action';
 };
@@ -901,6 +912,20 @@ const parseEventHeader = (
       event: {
         type: 'BuiltinCommonInstructions::Group',
         name: parseStandaloneQuotedArgument('group', statementText, line),
+      },
+      isStandalone: false,
+    };
+  }
+  if (kind === 'js-code') {
+    const parameterObjects = parseJsCodeParameterObjects(statementText);
+    return {
+      event: {
+        type: 'BuiltinCommonInstructions::JsCode',
+        // The code is read from the lines of the fence (see parseJsCodeBody).
+        inlineCode: '',
+        parameterObjects,
+        useStrict: true,
+        eventsSheetExpanded: false,
       },
       isStandalone: false,
     };
@@ -973,6 +998,52 @@ const parseEventHeader = (
   };
 };
 
+/**
+ * The objects of a `js(<objects>) """` header: the instances the code
+ * can use. Empty when the header has no parenthesis.
+ */
+const parseJsCodeParameterObjects = (statementText: string): string => {
+  const match = /^js\(([^)]*)\)\s*"""$/.exec(statementText.trim());
+  return match ? match[1].trim() : '';
+};
+
+/**
+ * Read the code of a JavaScript code event: the lines of the fence, until
+ * the closing `"""`. The code is taken verbatim (the renderer keeps it
+ * character for character), with the line endings normalized to LF.
+ */
+const parseJsCodeBody = (
+  lines: Array<ByokSourceLine>,
+  startIndex: number,
+  headerLine: ByokSourceLine
+): {| inlineCode: string, nextIndex: number |} => {
+  // The renderer re-indents the code of the event by the indentation of the
+  // event itself, so the code is stored relative to the fence: the common
+  // indentation of the header is removed from every line.
+  const baseIndent = getLineIndent(headerLine.text);
+  const codeLines: Array<string> = [];
+  let index = startIndex;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.text.trim() === '"""') {
+      return { inlineCode: codeLines.join('\n'), nextIndex: index + 1 };
+    }
+    const text = line.text;
+    codeLines.push(
+      baseIndent > 0 && text.startsWith(' '.repeat(baseIndent))
+        ? text.slice(baseIndent)
+        : text
+    );
+    index++;
+  }
+  throw new ByokEventScriptSyntaxError(
+    'This JavaScript code event is never closed: the `"""` that ends it is missing.',
+    headerLine.lineNumber,
+    1,
+    headerLine.text
+  );
+};
+
 /** Parse the events of one depth level until a line is shallower. */
 const parseEventsList = (
   lines: Array<ByokSourceLine>,
@@ -1011,7 +1082,7 @@ const parseEventsList = (
     const kind = classifyStatement(headerText);
     if (!isEventHeaderKind(kind)) {
       throw new ByokEventScriptSyntaxError(
-        `"${headerText}" is not an event statement — expected one of: if …:, always:, else:, else if …:, while …:, repeat … times:, for each …:, for each child in …:, group "…":, comment "…", link "…".`,
+        `"${headerText}" is not an event statement — expected one of: if …:, always:, else:, else if …:, while …:, repeat … times:, for each …:, for each child in …:, group "…":, comment "…", link "…", js """…""".`,
         line.lineNumber,
         1,
         line.text
@@ -1026,6 +1097,15 @@ const parseEventsList = (
     if (isDisabled) event.disabled = true;
     events.push(event);
     index++;
+
+    // A JavaScript code event has no sub-events: its body is the fence of
+    // code, read until the closing `"""`.
+    if (kind === 'js-code') {
+      const { inlineCode, nextIndex } = parseJsCodeBody(lines, index, line);
+      event.inlineCode = inlineCode;
+      index = nextIndex;
+      continue;
+    }
 
     if (isStandalone) {
       const followUp = index < lines.length ? lines[index] : null;
@@ -1127,6 +1207,7 @@ const isEventHeaderKind = (kind: ByokStatementKind): boolean => {
   if (kind === 'repeat') return true;
   if (kind === 'for-each') return true;
   if (kind === 'for-each-child') return true;
+  if (kind === 'js-code') return true;
   return kind === 'group';
 };
 

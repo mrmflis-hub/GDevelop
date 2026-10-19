@@ -350,6 +350,14 @@ describe('gdjs.TweenRuntimeBehavior', () => {
     expect(camera.getCameraY(runtimeScene, '', 0)).to.be(660);
   });
 
+  it('can tween a layer camera Z position', () => {
+    const layer = runtimeScene.getLayer('');
+    layer.setCameraZ(200, 45);
+    tween.tweenCameraZ(runtimeScene, 'MyTween', 600, '', 'linear', 0.25);
+    checkProgress(6, () => layer.getCameraZ(45));
+    expect(layer.getCameraZ(45)).to.be(440);
+  });
+
   it('can tween a layer camera zoom', () => {
     camera.setCameraZoom(runtimeScene, 200, '', 0);
     tween.tweenCameraZoom2(runtimeScene, 'MyTween', 600, '', 'linear', 0.25);
@@ -451,5 +459,36 @@ describe('gdjs.TweenRuntimeBehavior', () => {
     expect(
       layer.getRendererEffects()['MyEffect'].getColorParameter('color')
     ).to.be(gdjs.rgbOrHexStringToNumber('76;235;27'));
+  });
+
+  it('can play a scene tween with a custom easing', () => {
+    const easingIdentifier = 'cubic-bezier(.42,0,.58,1)';
+    camera.setCameraRotation(runtimeScene, 200, '', 0);
+    tween.tweenCameraRotation2(
+      runtimeScene,
+      'MyTween',
+      600,
+      '',
+      easingIdentifier,
+      0.25
+    );
+
+    expect(tween.sceneTweenExists(runtimeScene, 'MyTween')).to.be(true);
+    for (let i = 0; i < 3; i++) {
+      runtimeScene.renderAndStep(1000 / 60);
+    }
+    const progress = tween.getProgress(runtimeScene, 'MyTween');
+    expect(camera.getCameraRotation(runtimeScene, '', 0)).to.be(
+      tween.ease(easingIdentifier, 200, 600, progress)
+    );
+    expect(camera.getCameraRotation(runtimeScene, '', 0)).not.to.be(
+      tween.ease('linear', 200, 600, progress)
+    );
+
+    for (let i = 0; i < 8; i++) {
+      runtimeScene.renderAndStep(1000 / 60);
+    }
+    expect(tween.sceneTweenHasFinished(runtimeScene, 'MyTween')).to.be(true);
+    expect(camera.getCameraRotation(runtimeScene, '', 0)).to.be(600);
   });
 });

@@ -902,7 +902,8 @@ void Project::UnserializeFrom(const SerializerElement& element) {
     layout.UnserializeFrom(*this, layoutElement);
   }
   SetFirstLayout(element.GetChild("firstLayout").GetStringValue());
-  SetPreviewLayout(element.GetChild("previewLayout").GetStringValue());
+  // The preview layout is only serialized when it is set.
+  SetPreviewLayout(element.GetStringAttribute("previewLayout"));
 
   externalEvents.clear();
   const SerializerElement& externalEventsElement =
@@ -921,6 +922,11 @@ void Project::UnserializeFrom(const SerializerElement& element) {
   tests.ClearTests();
   if (element.HasChild("tests")) {
     tests.UnserializeTestsFrom(element.GetChild("tests"));
+  }
+
+  namedEasings.ClearNamedEasings();
+  if (element.HasChild("namedEasings")) {
+    namedEasings.UnserializeNamedEasingsFrom(element.GetChild("namedEasings"));
   }
 
   externalLayouts.clear();
@@ -1180,6 +1186,10 @@ void Project::SerializeTo(SerializerElement& element) const {
     tests.SerializeTestsTo(element.AddChild("tests"));
   }
 
+  if (namedEasings.GetNamedEasingsCount() > 0) {
+    namedEasings.SerializeNamedEasingsTo(element.AddChild("namedEasings"));
+  }
+
   SerializerElement& eventsFunctionsExtensionsElement =
       element.AddChild("eventsFunctionsExtensions");
   eventsFunctionsExtensionsElement.ConsiderAsArrayOf(
@@ -1304,6 +1314,8 @@ void Project::Init(const gd::Project& game) {
   externalEvents = gd::Clone(game.externalEvents);
 
   tests = game.tests;
+
+  namedEasings = game.namedEasings;
 
   externalLayouts = gd::Clone(game.externalLayouts);
   eventsFunctionsExtensions = gd::Clone(game.eventsFunctionsExtensions);

@@ -827,4 +827,26 @@ manual in the same session and say so in the worklog.
   Owner follow-ups: `usertasks.md` §6 — `[P19-qa]` desktop QA (needs the
   `[P16-abi]` Electron-ABI `sharp` rebuild first).
 
-*Last updated: 2026-10-09.*
+  Owner follow-ups: `usertasks.md` §6 — `[P19-qa]` desktop QA (needs the
+  `[P16-abi]` Electron-ABI `sharp` rebuild first).
+- **UPSTREAM SYNC 2026-10-19** (owner order: "bring the code up to date
+  with GDevelop main repo and resolve the conflicts so our code
+  implementation still works"): `upstream/master` (140 commits, up to
+  `987b9d3919`) merged into `master` — 19 files conflicted, all 45 hunks
+  resolved by reading both sides, all gates green (332 suites / 4,073
+  tests + 1 skip, lint 0/0, Flow 0, prettier clean app + electron-app).
+  Our head was `1230fc6e18`; the backup branch
+  `backup/pre-upstream-sync-2026-10-19` keeps it. Resolutions: the hosted
+  file attachments (upstream) and the BYOK "+" attach button (ours) now
+  coexist in the chat; upstream's redesigned Preferences dialog was rebuilt
+  from upstream with our BYOK / RAG / Build tabs re-added; upstream's
+  v18 extension tools (same names as ours, different argument shape, no
+  `event_script`) are shadowed by ours on purpose (see
+  `deferred.md` → `[I-fork-vs-upstream-extension-tools]`); the BYOK
+  EventScript parser learned upstream's new JavaScript code events
+  (`js """…"""`); our instance-id ambiguity guard was ported into
+  upstream's `put_2d_instances`; the prebuilt `libGD` WASM was re-imported
+  (the Core C++ changed). Owner follow-ups: `usertasks.md` §7.
+
+*Last updated: 2026-10-19.*
+

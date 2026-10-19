@@ -157,8 +157,6 @@ const makeCaptureOptions = (signedUrl: string): CaptureOptions => ({
 
 const makeLauncherProps = (onCaptureFinished: any): PreviewLauncherProps => ({
   crashReportUploadLevel: 'crash',
-  previewContext: 'preview-test',
-  sourceGameId: 'source-game-id',
   getIncludeFileHashs: () => ({}),
   onExport: () => {},
   onCaptureFinished,
