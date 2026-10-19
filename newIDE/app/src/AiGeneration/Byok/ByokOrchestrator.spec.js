@@ -2469,7 +2469,7 @@ describe('ByokOrchestrator: tool-call pairing safety net', () => {
           toolCalls: [
             makeToolCall(
               'call-1',
-              'create_extension',
+              'create_extension_BYOK',
               '{"extension_name":"MyExt"}'
             ),
             makeToolCall('call-2', 'describe_instances', '{}'),
@@ -2487,7 +2487,7 @@ describe('ByokOrchestrator: tool-call pairing safety net', () => {
       setCategory: mockFn(jest.fn()),
       setOrigin: mockFn(jest.fn()),
     };
-    // The extension does not exist until create_extension inserts it; the
+    // The extension does not exist until create_extension_BYOK inserts it; the
     // metadata reload then finds it by name.
     let extensionExists = false;
     const projectStub: any = {
@@ -2515,7 +2515,7 @@ describe('ByokOrchestrator: tool-call pairing safety net', () => {
     // gets its output, and the assertion below fails.
     expect(reloadAttempted).toBe(true);
     expect(orphanCallIds(aiRequest.output || [])).toEqual([]);
-    // (The chat's final status is not asserted: create_extension trips the
+    // (The chat's final status is not asserted: create_extension_BYOK trips the
     // completion gate, which is orthogonal to the pairing invariant.)
   });
 

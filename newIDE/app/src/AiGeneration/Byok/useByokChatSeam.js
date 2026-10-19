@@ -83,7 +83,6 @@ import {
 } from './ByokExtraTools';
 import { flushByokExtensionRegeneration } from './ByokExtensionTools';
 import { runExclusiveByokProjectMutation } from './ByokMutationLock';
-import { isByokExtensionToolShadowedByRegistry } from './ByokExtensionTools';
 import { makeDefaultByokImageStore } from './ByokImageContent';
 import {
   getByokMcpToolHost,
@@ -930,8 +929,6 @@ export const useByokChatSeam = (options: ByokChatSeamOptions): ByokChatSeam => {
           return result;
         },
         getExtraTool: name => findByNameokExtraTool(name),
-        isExtraToolShadowedByRegistry: name =>
-          isByokExtensionToolShadowedByRegistry(name),
         editorFunctions,
         editorFunctionsWithoutProject,
         getProject: getByokLiveProject,

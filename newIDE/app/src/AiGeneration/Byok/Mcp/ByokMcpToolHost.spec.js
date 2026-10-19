@@ -29,7 +29,6 @@ const makeHostBag = (overrides?: Object) => ({
     didModifyProject: false,
   }),
   getExtraTool: (jest.fn(): any).mockReturnValue(null),
-  isExtraToolShadowedByRegistry: (jest.fn(): any).mockReturnValue(false),
   editorFunctions: {},
   editorFunctionsWithoutProject: {},
   getProject: (jest.fn(): any).mockReturnValue(null),

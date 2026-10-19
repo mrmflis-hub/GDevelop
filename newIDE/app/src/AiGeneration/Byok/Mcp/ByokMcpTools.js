@@ -372,7 +372,7 @@ const findToolMeta = (
   host: ByokMcpToolHost
 ): ?{| meta: ByokMcpToolMeta, source: ToolMetaSource |} => {
   const extraTool = host.getExtraTool(name);
-  if (extraTool && !host.isExtraToolShadowedByRegistry(name)) {
+  if (extraTool) {
     return {
       meta: { modifiesProject: extraTool.modifiesProject },
       source: 'extra',

@@ -21,7 +21,6 @@ const makeFakeHost = (overrides?: Object): any => ({
   executeRegistryTool: jest.fn(),
   executeExtraTool: jest.fn(),
   getExtraTool: (jest.fn(): any).mockReturnValue(null),
-  isExtraToolShadowedByRegistry: (jest.fn(): any).mockReturnValue(false),
   editorFunctions: {},
   editorFunctionsWithoutProject: {},
   getProject: (jest.fn(): any).mockReturnValue(null),
@@ -53,7 +52,7 @@ describe('makeByokMcpToolDescriptors', () => {
     expect(names).toContain('load_skill');
     expect(names).toContain('capture_scene_screenshot');
     expect(names).toContain('run_explorer_agent');
-    expect(names).toContain('create_extension');
+    expect(names).toContain('create_extension_BYOK');
     expect(names).toContain('run_script');
   });
 
@@ -325,32 +324,54 @@ describe('runByokMcpToolCall', () => {
     expect(detailed.outcome).toBe('completed');
   });
 
-  it('routes shadowed extras and plain registry tools to executeRegistryTool', async () => {
-    const shadowed = makeFakeHost({
+  it('routes an extra tool to executeExtraTool and a plain registry tool to executeRegistryTool', async () => {
+    // An intercepted tool is ours BY NAME (the extension tools carry a
+    // `_BYOK` suffix), so a name that resolves to an extra tool always runs
+    // the extra tool — even when the editor registry has an entry with the
+    // same name (the fork deliberately bypasses it).
+    const extra = makeFakeHost({
       getExtraTool: (jest.fn(): any).mockReturnValue({
         name: 'add_scene_events',
         modifiesProject: true,
       }),
-      isExtraToolShadowedByRegistry: (jest.fn(): any).mockReturnValue(true),
       editorFunctions: { add_scene_events: { modifiesProject: true } },
-      executeRegistryTool: (jest.fn(): any).mockResolvedValue({
-        status: 'finished',
-        call_id: 'call-4',
-        success: true,
-        output: { ok: 1 },
+      executeExtraTool: (jest.fn(): any).mockResolvedValue({
+        output: { success: true, message: 'done' },
+        didModifyProject: true,
       }),
     });
     const detailed = await runByokMcpToolCall(
       { name: 'add_scene_events', args: { sceneName: 'Menu' } },
       'call-4',
-      shadowed
+      extra
     );
-    expect(shadowed.executeRegistryTool).toHaveBeenCalledWith(
-      'add_scene_events',
-      JSON.stringify({ sceneName: 'Menu' }),
-      'call-4'
-    );
+    expect(extra.executeExtraTool).toHaveBeenCalledWith('add_scene_events', {
+      sceneName: 'Menu',
+    });
+    expect(extra.executeRegistryTool).not.toHaveBeenCalled();
     expect(detailed.result.isError).toBeUndefined();
+
+    // A name that is not intercepted goes to the editor registry.
+    const registry = makeFakeHost({
+      getExtraTool: (jest.fn(): any).mockReturnValue(null),
+      editorFunctions: { describe_instances: { modifiesProject: false } },
+      executeRegistryTool: (jest.fn(): any).mockResolvedValue({
+        status: 'finished',
+        call_id: 'call-5',
+        success: true,
+        output: { ok: 1 },
+      }),
+    });
+    await runByokMcpToolCall(
+      { name: 'describe_instances', args: { sceneName: 'Menu' } },
+      'call-5',
+      registry
+    );
+    expect(registry.executeRegistryTool).toHaveBeenCalledWith(
+      'describe_instances',
+      JSON.stringify({ sceneName: 'Menu' }),
+      'call-5'
+    );
   });
 
   it('rejects modifying calls in read-only mode with the unlocking instructions', async () => {

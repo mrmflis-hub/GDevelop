@@ -179,15 +179,15 @@ const effectChangeProperty = objectProperty('One effect change.', {
   'run_review_agent',
   // Events-based extension authoring (Phase 8.4), ported from the upstream
   // v18 branch: intercepted (ByokExtensionTools), driving libGD directly.
-  'create_extension',
-  'change_extension_properties',
-  'create_custom_object',
-  'change_custom_object',
-  'create_custom_behavior',
-  'change_custom_behavior',
-  'create_custom_function',
-  'change_custom_function',
-  'find_extension_usages',
+  'create_extension_BYOK',
+  'change_extension_properties_BYOK',
+  'create_custom_object_BYOK',
+  'change_custom_object_BYOK',
+  'create_custom_behavior_BYOK',
+  'change_custom_behavior_BYOK',
+  'create_custom_function_BYOK',
+  'change_custom_function_BYOK',
+  'find_extension_usages_BYOK',
   // Restore points (Phase 8.6): rewind the project to a pre-message
   // snapshot. Intercepted (ByokExtraTools), approval-gated.
   'restore_project_point',
@@ -1353,9 +1353,9 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'create_extension',
+    name: 'create_extension_BYOK',
     description:
-      'Create a new, empty events-based extension in the project — the container for custom functions, custom objects and custom behaviors authored with events. Follow up with create_custom_function / create_custom_object / create_custom_behavior.',
+      'Create a new, empty events-based extension in the project — the container for custom functions, custom objects and custom behaviors authored with events. Follow up with create_custom_function_BYOK / create_custom_object_BYOK / create_custom_behavior_BYOK.',
     parameters: {
       type: 'object',
       properties: {
@@ -1373,7 +1373,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'change_extension_properties',
+    name: 'change_extension_properties_BYOK',
     description:
       'Change the properties of an extension, rename it (updating every reference in the project), or delete it. Deletion is refused while the extension is still used, unless delete_even_if_used is true. Its dependencies (other extensions it requires) are managed with dependencies_to_add/dependencies_to_remove.',
     parameters: {
@@ -1421,7 +1421,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'create_custom_object',
+    name: 'create_custom_object_BYOK',
     description:
       'Create a custom (composed) object inside an extension: a reusable object with its own child objects, layers, properties and functions. Use it when a grouping of objects + logic repeats across the game.',
     parameters: {
@@ -1444,7 +1444,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'change_custom_object',
+    name: 'change_custom_object_BYOK',
     description:
       'Change a custom object (rename it with project-wide reference updates, change its properties or metadata), or delete it. Deletion is refused while its object type is used. Its child objects are managed with children_to_add/children_to_remove.',
     parameters: {
@@ -1496,7 +1496,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'create_custom_behavior',
+    name: 'create_custom_behavior_BYOK',
     description:
       'Create a custom behavior inside an extension: reusable logic attached to objects, with its own properties and functions (doStepPreEvents, onCreated…). Use it when behavior-like state + per-frame logic is needed.',
     parameters: {
@@ -1514,7 +1514,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'change_custom_behavior',
+    name: 'change_custom_behavior_BYOK',
     description:
       'Change a custom behavior (rename it with project-wide reference updates, change its properties or metadata), or delete it. Deletion is refused while objects still use the behavior.',
     parameters: {
@@ -1546,7 +1546,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'create_custom_function',
+    name: 'create_custom_function_BYOK',
     description:
       'Create a function of an extension (a free action/condition/expression), or of a custom behavior or custom object (pass custom_behavior_name / custom_object_name). The function body is authored as EventScript (event_script) — the same syntax add_scene_events accepts.',
     parameters: {
@@ -1593,7 +1593,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'change_custom_function',
+    name: 'change_custom_function_BYOK',
     description:
       'Change a function (rename it with project-wide reference updates, change its settings) or replace its events — or delete it. Its parameters are managed with parameters_to_add/parameters_to_remove/parameters_to_move.',
     parameters: {
@@ -1665,7 +1665,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
     },
   },
   {
-    name: 'find_extension_usages',
+    name: 'find_extension_usages_BYOK',
     description:
       'List where an extension is used in the project: the extensions depending on it, and the object types using its custom objects or behaviors. Run it before deleting or renaming anything.',
     parameters: {
@@ -2485,15 +2485,15 @@ export const BYOK_ONLY_TOOL_NAMES: Array<string> = [
   // exist upstream at all. The Phase 8.4 extension authoring tools have no
   // registry entry either (they are our port of the v18 surface).
   'run_review_agent',
-  'create_extension',
-  'change_extension_properties',
-  'create_custom_object',
-  'change_custom_object',
-  'create_custom_behavior',
-  'change_custom_behavior',
-  'create_custom_function',
-  'change_custom_function',
-  'find_extension_usages',
+  'create_extension_BYOK',
+  'change_extension_properties_BYOK',
+  'create_custom_object_BYOK',
+  'change_custom_object_BYOK',
+  'create_custom_behavior_BYOK',
+  'change_custom_behavior_BYOK',
+  'create_custom_function_BYOK',
+  'change_custom_function_BYOK',
+  'find_extension_usages_BYOK',
   'restore_project_point',
   // Phase 11 authoring-reach tools: no registry entry (Byok's own
   // implementations in ByokExternalSceneTools / ByokCatalogTools /

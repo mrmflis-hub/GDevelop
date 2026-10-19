@@ -357,7 +357,7 @@ and external tools" note. No further action.
 ---
 
 
-## 7. Upstream sync — 2026-10-19 `[needs your eye on two resolutions]`
+## 7. Upstream sync — 2026-10-19 `[one resolution closed, one left as-is]`
 
 `upstream/master` (140 commits, up to `987b9d3919`) is merged into `master`.
 19 files conflicted; all 45 hunks are resolved and every gate is green (332
@@ -365,29 +365,35 @@ suites / 4073 tests, lint 0, Flow 0, prettier clean). The merge commit is on
 `master`; `backup/pre-upstream-sync-2026-10-19` keeps our previous head
 (`1230fc6e18`) if you want to compare.
 
-Two resolutions deserve a look, because they are the fork choosing to diverge
-from upstream rather than follow it:
+One resolution was a fork divergence, and it is now settled:
 
-1. **The extension-authoring tools.** Upstream shipped its own
-   `create_extension` / `create_custom_*` / `change_custom_*` with a
-   different argument shape and no `event_script` support. Ours keep running
-   (the BYOK schema teaches our shape — letting upstream's win would make the
-   model send arguments that are ignored). Consequence: the BYOK agent and
-   the hosted agent answer the same tool names with different arguments.
-   Details: `deferred.md` → `[I-fork-vs-upstream-extension-tools]`.
-   → decide: keep the fork's shape, or re-shape the BYOK schema onto
-   upstream's (a schema + prompt rewrite).
-2. **The Preferences dialog.** Upstream redesigned it (search bar, section
-   list, scroll spy). Our BYOK / RAG / Build tabs were re-added on top of the
-   new structure, but they are plain tabs — they are NOT searchable sections
-   and they do not appear in the section list.
-   → decide: leave them as tabs, or fold them into the new section list.
+1. **The extension-authoring tools — RESOLVED (owner decision,
+   2026-10-19).** Upstream shipped its own `create_extension` /
+   `create_custom_*` / `change_custom_*` with a different argument shape and
+   no `event_script` support. The fork's tools now live in their own
+   namespace — `create_extension_BYOK`, `create_custom_function_BYOK`,
+   `change_custom_object_BYOK`, `find_extension_usages_BYOK` and the five
+   others — so a name can never reach the wrong implementation, the name
+   says which one runs, and the "which implementation wins" guard is gone.
+   The cost: the BYOK agent answers different names than the hosted agent
+   for the same job, and cannot use upstream's richer variants (duplication,
+   expression types, the lifecycle-name rejection). Details:
+   `deferred.md` → `[I-fork-vs-upstream-extension-tools]`.
+   → nothing to decide; the entry stays as the standing note for the next
+   upstream merge.
+2. **The Preferences dialog — left as is (owner decision, 2026-10-19).**
+   Upstream redesigned it (search bar, section list, scroll spy); our BYOK /
+   RAG / Build tabs were re-added on top of the new structure as plain tabs.
+   They are NOT searchable sections and they do not appear in the section
+   list. Keeping them as tabs is deliberate: it makes them stand out as
+   fork-only panels.
 
 Desktop QA: the merge changed the chat surface (the hosted file attachments
-and the BYOK "+" attach button now coexist), the extension tools and the
-Preferences tabs — a pass over the chat (attach a file, send a message) and
-over the Preferences tabs is worth a run. The BYOK RAG bundle (Task 2) still
-needs its v3 rebuild + upload: the corpus hash changed with this merge.
+and the BYOK "+" attach button now coexist), the extension tools (they are
+renamed — the agent now calls `create_extension_BYOK`) and the Preferences
+tabs — a pass over the chat (attach a file, send a message) and over the
+Preferences tabs is worth a run. The BYOK RAG bundle (Task 2) still needs its
+v3 rebuild + upload: the corpus hash changed with this merge.
 
 ## Reference (no action)
 

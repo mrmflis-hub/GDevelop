@@ -841,7 +841,8 @@ manual in the same session and say so in the worklog.
   coexist in the chat; upstream's redesigned Preferences dialog was rebuilt
   from upstream with our BYOK / RAG / Build tabs re-added; upstream's
   v18 extension tools (same names as ours, different argument shape, no
-  `event_script`) are shadowed by ours on purpose (see
+  `event_script`) are kept apart by a `_BYOK` namespace on OUR tools
+  (`create_extension_BYOK` and friends — owner decision; see
   `deferred.md` → `[I-fork-vs-upstream-extension-tools]`); the BYOK
   EventScript parser learned upstream's new JavaScript code events
   (`js """…"""`); our instance-id ambiguity guard was ported into

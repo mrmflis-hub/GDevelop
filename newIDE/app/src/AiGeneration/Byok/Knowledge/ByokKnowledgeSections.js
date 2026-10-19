@@ -255,7 +255,8 @@ export const BYOK_TASK_CATALOG: Array<{|
   },
   {
     task: 'Custom objects, behaviors or functions',
-    guidance: 'load_skill("extend-with-js") + the create_extension family.',
+    guidance:
+      'load_skill("extend-with-js") + the create_extension_BYOK family.',
     skillName: 'extend-with-js',
     toolQuery: 'extension',
   },

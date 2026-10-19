@@ -3,7 +3,6 @@ import {
   flushByokExtensionRegeneration,
   findByokExtensionUsages,
   getByokExtensionTools,
-  isByokExtensionToolShadowedByRegistry,
   resetByokExtensionBatchForTests,
 } from './ByokExtensionTools';
 import { findByNameokExtraTool } from './ByokExtraTools';
@@ -36,15 +35,15 @@ describe('ByokExtensionTools: registration and guards', () => {
   it('registers every tool in the interception registry', () => {
     const names = getByokExtensionTools().map(tool => tool.name);
     expect(names).toEqual([
-      'create_extension',
-      'change_extension_properties',
-      'create_custom_object',
-      'change_custom_object',
-      'create_custom_behavior',
-      'change_custom_behavior',
-      'create_custom_function',
-      'change_custom_function',
-      'find_extension_usages',
+      'create_extension_BYOK',
+      'change_extension_properties_BYOK',
+      'create_custom_object_BYOK',
+      'change_custom_object_BYOK',
+      'create_custom_behavior_BYOK',
+      'change_custom_behavior_BYOK',
+      'create_custom_function_BYOK',
+      'change_custom_function_BYOK',
+      'find_extension_usages_BYOK',
     ]);
     for (const name of names) {
       expect(findByNameokExtraTool(name)).toBeTruthy();
@@ -56,20 +55,18 @@ describe('ByokExtensionTools: registration and guards', () => {
     }
   });
 
-  it('is not shadowed today, and never applies outside the extension tools', () => {
-    // The extension tools have no registry entry in master: the guard
-    // stays false (our interception runs).
-    expect(isByokExtensionToolShadowedByRegistry('create_extension')).toBe(
-      false
-    );
-    // The deliberately-intercepted tools are NOT covered by the guard,
-    // even though add_scene_events has a real registry implementation.
-    expect(isByokExtensionToolShadowedByRegistry('add_scene_events')).toBe(
-      false
-    );
-    expect(isByokExtensionToolShadowedByRegistry('run_gameplay_test')).toBe(
-      false
-    );
+  it('uses the _BYOK namespace, so no name can collide with upstream', () => {
+    // Upstream ships its own extension authoring tools with the same names
+    // but a different argument shape: the suffix keeps the two apart, so
+    // the model always calls the implementation the schema describes.
+    for (const name of getByokExtensionTools().map(tool => tool.name)) {
+      expect(name.endsWith('_BYOK')).toBe(true);
+    }
+    // The upstream names are NOT advertised: they are the hosted agent's
+    // tools, with another argument shape.
+    const dispatchable = new Set(getByokDispatchableToolNames());
+    expect(dispatchable.has('create_extension')).toBe(false);
+    expect(dispatchable.has('create_extension_BYOK')).toBe(true);
   });
 });
 
@@ -90,7 +87,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
     const collaborators = makeCollaborators(project);
 
     const created = await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       {
         extension_name: 'CoinLogic',
         full_name: 'Coin logic',
@@ -105,7 +102,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
     );
 
     const behavior = await runTool(
-      'create_custom_behavior',
+      'create_custom_behavior_BYOK',
       {
         extension_name: 'CoinLogic',
         custom_behavior_name: 'Magnet',
@@ -117,7 +114,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
     expect(behavior.output.behavior_type).toBe('CoinLogic::Magnet');
 
     const object = await runTool(
-      'create_custom_object',
+      'create_custom_object_BYOK',
       {
         extension_name: 'CoinLogic',
         custom_object_name: 'Coin',
@@ -130,7 +127,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
 
     // A function with an EventScript body, on the behavior.
     const behaviorFunction = await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'CoinLogic',
         custom_behavior_name: 'Magnet',
@@ -144,7 +141,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
 
     // A free expression function with typed parameters.
     const expression = await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'CoinLogic',
         function_name: 'CountCoins',
@@ -183,12 +180,12 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
   it('changes and renames with project-wide reference updates', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'OldName' },
       collaborators
     );
     await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'OldName',
         function_name: 'DoThing',
@@ -199,7 +196,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
     );
 
     const renamed = await runTool(
-      'change_extension_properties',
+      'change_extension_properties_BYOK',
       { extension_name: 'OldName', new_name: 'New Name' },
       collaborators
     );
@@ -215,9 +212,9 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
         .hasEventsFunctionNamed('DoThing')
     ).toBe(true);
 
-    // Function rename through change_custom_function.
+    // Function rename through change_custom_function_BYOK.
     const functionRenamed = await runTool(
-      'change_custom_function',
+      'change_custom_function_BYOK',
       {
         extension_name: 'New_Name',
         function_name: 'DoThing',
@@ -242,9 +239,9 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
       reloadEventsFunctionsExtensionMetadata: reloadMetadata,
     });
 
-    // Batch 1: a metadata-only change (create_extension).
+    // Batch 1: a metadata-only change (create_extension_BYOK).
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'MetaOnly' },
       collaborators
     );
@@ -254,7 +251,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
 
     // Batch 2: a structural change (a function).
     await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'MetaOnly',
         function_name: 'DoThing',
@@ -264,7 +261,7 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
     );
     // Several calls in the same batch flush once:
     await runTool(
-      'change_custom_function',
+      'change_custom_function_BYOK',
       {
         extension_name: 'MetaOnly',
         function_name: 'DoThing',
@@ -302,12 +299,12 @@ describe('ByokExtensionTools: deletion safety', () => {
   it('refuses to delete a used custom object, allows it with the override', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'Objects' },
       collaborators
     );
     await runTool(
-      'create_custom_object',
+      'create_custom_object_BYOK',
       { extension_name: 'Objects', custom_object_name: 'Crate' },
       collaborators
     );
@@ -318,7 +315,7 @@ describe('ByokExtensionTools: deletion safety', () => {
     layout.getObjects().insertNewObject(project, 'Objects::Crate', 'Crate', 0);
 
     const refused = await runTool(
-      'change_custom_object',
+      'change_custom_object_BYOK',
       {
         extension_name: 'Objects',
         custom_object_name: 'Crate',
@@ -330,7 +327,7 @@ describe('ByokExtensionTools: deletion safety', () => {
     expect(refused.output.message).toContain('used in the project');
 
     const forced = await runTool(
-      'change_custom_object',
+      'change_custom_object_BYOK',
       {
         extension_name: 'Objects',
         custom_object_name: 'Crate',
@@ -351,19 +348,19 @@ describe('ByokExtensionTools: deletion safety', () => {
   it('lists the usages of an extension as plain text', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'Used' },
       collaborators
     );
     await runTool(
-      'create_custom_object',
+      'create_custom_object_BYOK',
       { extension_name: 'Used', custom_object_name: 'Barrel' },
       collaborators
     );
 
     // Unused for now.
     const empty = await runTool(
-      'find_extension_usages',
+      'find_extension_usages_BYOK',
       { extension_name: 'Used' },
       collaborators
     );
@@ -374,7 +371,7 @@ describe('ByokExtensionTools: deletion safety', () => {
     const layout = project.insertNewLayout('Scene', 0);
     layout.getObjects().insertNewObject(project, 'Used::Barrel', 'Barrel', 0);
     const used = await runTool(
-      'find_extension_usages',
+      'find_extension_usages_BYOK',
       { extension_name: 'Used' },
       collaborators
     );
@@ -385,7 +382,7 @@ describe('ByokExtensionTools: deletion safety', () => {
     const extension = project.getEventsFunctionsExtension('Used');
     expect(findByokExtensionUsages(project, extension).length).toBe(1);
     const refused = await runTool(
-      'change_extension_properties',
+      'change_extension_properties_BYOK',
       { extension_name: 'Used', delete_this_extension: true },
       collaborators
     );
@@ -395,11 +392,11 @@ describe('ByokExtensionTools: deletion safety', () => {
 
   it('refuses invalid input instead of crashing', async () => {
     const collaborators = makeCollaborators(project);
-    const noName = await runTool('create_extension', {}, collaborators);
+    const noName = await runTool('create_extension_BYOK', {}, collaborators);
     expect(noName.output.success).toBe(false);
 
     const missing = await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'DoesNotExist',
         function_name: 'F',
@@ -410,9 +407,13 @@ describe('ByokExtensionTools: deletion safety', () => {
     expect(missing.output.success).toBe(false);
     expect(missing.output.message).toContain('DoesNotExist');
 
-    await runTool('create_extension', { extension_name: 'X' }, collaborators);
+    await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'X' },
+      collaborators
+    );
     const badType = await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       { extension_name: 'X', function_name: 'F', function_type: 'Wrong' },
       collaborators
     );
@@ -420,7 +421,7 @@ describe('ByokExtensionTools: deletion safety', () => {
     expect(badType.output.message).toContain('function_type');
 
     const badScript = await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'X',
         function_name: 'F',
@@ -450,12 +451,12 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
 
   const makeExtensionWithFunction = async (collaborators: Object) => {
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'Internals' },
       collaborators
     );
     await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'Internals',
         function_name: 'DoThing',
@@ -471,7 +472,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     await makeExtensionWithFunction(collaborators);
 
     const added = await runTool(
-      'change_custom_function',
+      'change_custom_function_BYOK',
       {
         extension_name: 'Internals',
         function_name: 'DoThing',
@@ -497,7 +498,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     expect(parameters.getParameter('Label').getDescription()).toBe('A label.');
 
     const moved = await runTool(
-      'change_custom_function',
+      'change_custom_function_BYOK',
       {
         extension_name: 'Internals',
         function_name: 'DoThing',
@@ -509,7 +510,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     expect(parameters.getParameterAt(0).getName()).toBe('Label');
 
     const removed = await runTool(
-      'change_custom_function',
+      'change_custom_function_BYOK',
       {
         extension_name: 'Internals',
         function_name: 'DoThing',
@@ -549,7 +550,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     };
     (gd: any).ObjectsContainer = CountedObjectsContainer;
     const changed = await runTool(
-      'change_custom_function',
+      'change_custom_function_BYOK',
       {
         extension_name: 'Internals',
         function_name: 'DoThing',
@@ -582,17 +583,17 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
   it('changes a parameter type inside a custom behavior function', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'Internals' },
       collaborators
     );
     await runTool(
-      'create_custom_behavior',
+      'create_custom_behavior_BYOK',
       { extension_name: 'Internals', custom_behavior_name: 'Magnet' },
       collaborators
     );
     await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'Internals',
         custom_behavior_name: 'Magnet',
@@ -604,7 +605,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     );
 
     const changed = await runTool(
-      'change_custom_function',
+      'change_custom_function_BYOK',
       {
         extension_name: 'Internals',
         custom_behavior_name: 'Magnet',
@@ -627,12 +628,12 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
   it('adds and removes custom-object children, with the usage guard', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'Internals' },
       collaborators
     );
     await runTool(
-      'create_custom_object',
+      'create_custom_object_BYOK',
       {
         extension_name: 'Internals',
         custom_object_name: 'Button',
@@ -641,7 +642,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     );
 
     const added = await runTool(
-      'change_custom_object',
+      'change_custom_object_BYOK',
       {
         extension_name: 'Internals',
         custom_object_name: 'Button',
@@ -661,7 +662,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
 
     // The usage guard: an event referencing the child blocks the removal.
     const guarded = await runTool(
-      'change_custom_object',
+      'change_custom_object_BYOK',
       {
         extension_name: 'Internals',
         custom_object_name: 'Button',
@@ -677,17 +678,17 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
   it('refuses to remove a child used by the object events', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'Internals' },
       collaborators
     );
     await runTool(
-      'create_custom_object',
+      'create_custom_object_BYOK',
       { extension_name: 'Internals', custom_object_name: 'Button' },
       collaborators
     );
     await runTool(
-      'change_custom_object',
+      'change_custom_object_BYOK',
       {
         extension_name: 'Internals',
         custom_object_name: 'Button',
@@ -703,7 +704,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
       .getEventsBasedObjects()
       .get('Button');
     const referenced = await runTool(
-      'create_custom_function',
+      'create_custom_function_BYOK',
       {
         extension_name: 'Internals',
         custom_object_name: 'Button',
@@ -716,7 +717,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     expect(referenced.output.success).toBe(true);
 
     const guarded = await runTool(
-      'change_custom_object',
+      'change_custom_object_BYOK',
       {
         extension_name: 'Internals',
         custom_object_name: 'Button',
@@ -734,19 +735,19 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
   it('adds a child with initial property values, reporting unknown ones', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'Internals' },
       collaborators
     );
     await runTool(
-      'create_custom_object',
+      'create_custom_object_BYOK',
       { extension_name: 'Internals', custom_object_name: 'Scoreboard' },
       collaborators
     );
     // Declare a property on the custom object type: children of this type
     // can then receive initial values for it.
     await runTool(
-      'change_custom_object',
+      'change_custom_object_BYOK',
       {
         extension_name: 'Internals',
         custom_object_name: 'Scoreboard',
@@ -756,7 +757,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     );
 
     const added = await runTool(
-      'change_custom_object',
+      'change_custom_object_BYOK',
       {
         extension_name: 'Internals',
         custom_object_name: 'Scoreboard',
@@ -790,13 +791,13 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
   it('adds and removes extension dependencies, always listing them', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
-      'create_extension',
+      'create_extension_BYOK',
       { extension_name: 'Internals' },
       collaborators
     );
 
     const added = await runTool(
-      'change_extension_properties',
+      'change_extension_properties_BYOK',
       {
         extension_name: 'Internals',
         dependencies_to_add: [
@@ -817,7 +818,7 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     ).toBe('npm');
 
     const removed = await runTool(
-      'change_extension_properties',
+      'change_extension_properties_BYOK',
       {
         extension_name: 'Internals',
         dependencies_to_remove: ['cordova-plugin-admob'],
@@ -849,16 +850,16 @@ describe('ByokExtensionTools: reserved lifecycle names (audit100226 UP-12)', () 
   });
 
   it('refuses a BEHAVIOR lifecycle name (the engine creates it at runtime)', async () => {
-    const created = await runTool('create_extension', {
+    const created = await runTool('create_extension_BYOK', {
       extension_name: 'MagnetLogic',
     });
     expect(created.output.success).toBe(true);
     // The scope must exist before the reserved-name check is reached.
-    await runTool('create_custom_behavior', {
+    await runTool('create_custom_behavior_BYOK', {
       extension_name: 'MagnetLogic',
       custom_behavior_name: 'Magnet',
     });
-    const refusal = await runTool('create_custom_function', {
+    const refusal = await runTool('create_custom_function_BYOK', {
       extension_name: 'MagnetLogic',
       custom_behavior_name: 'Magnet',
       function_name: 'doStepPreEvents',
@@ -870,8 +871,8 @@ describe('ByokExtensionTools: reserved lifecycle names (audit100226 UP-12)', () 
   });
 
   it('refuses an EXTENSION lifecycle name for a free function', async () => {
-    await runTool('create_extension', { extension_name: 'Helpers' });
-    const refusal = await runTool('create_custom_function', {
+    await runTool('create_extension_BYOK', { extension_name: 'Helpers' });
+    const refusal = await runTool('create_custom_function_BYOK', {
       extension_name: 'Helpers',
       function_name: 'onSceneLoaded',
       function_type: 'Action',
@@ -881,8 +882,8 @@ describe('ByokExtensionTools: reserved lifecycle names (audit100226 UP-12)', () 
   });
 
   it('still accepts an ordinary function name', async () => {
-    await runTool('create_extension', { extension_name: 'Helpers2' });
-    const created = await runTool('create_custom_function', {
+    await runTool('create_extension_BYOK', { extension_name: 'Helpers2' });
+    const created = await runTool('create_custom_function_BYOK', {
       extension_name: 'Helpers2',
       function_name: 'spawnEnemies',
       function_type: 'Action',
@@ -891,7 +892,7 @@ describe('ByokExtensionTools: reserved lifecycle names (audit100226 UP-12)', () 
   });
 
   it('sanitizes a name with invalid characters before inserting', async () => {
-    const created = await runTool('create_extension', {
+    const created = await runTool('create_extension_BYOK', {
       extension_name: 'My Extension!',
     });
     expect(created.output.success).toBe(true);

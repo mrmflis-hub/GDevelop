@@ -49,7 +49,6 @@ export type ByokMcpToolHostBag = {|
     args: Object
   ) => Promise<ByokExtraToolResult>,
   +getExtraTool: (name: string) => ?ByokExtraTool,
-  +isExtraToolShadowedByRegistry: (name: string) => boolean,
   +editorFunctions: {| +[string]: ?ByokMcpToolMeta |},
   +editorFunctionsWithoutProject: {| +[string]: ?ByokMcpToolMeta |},
   +getProject: () => any,
@@ -75,7 +74,6 @@ export type ByokMcpToolHost = {|
     args: Object
   ) => Promise<ByokExtraToolResult>,
   +getExtraTool: (name: string) => ?ByokExtraTool,
-  +isExtraToolShadowedByRegistry: (name: string) => boolean,
   +editorFunctions: {| +[string]: ?ByokMcpToolMeta |},
   +editorFunctionsWithoutProject: {| +[string]: ?ByokMcpToolMeta |},
   +getProject: () => any,

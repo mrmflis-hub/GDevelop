@@ -14,9 +14,9 @@ description: Authoring JavaScript in a GDevelop project — events-based extensi
   see load_skill("game-code-authoring") (the `<GameName>Code/` folder and
   its write_game_code_file tool).
 - Reach for an EXTENSION when logic must be REUSED (a custom behavior, a
-  custom object, a shared action/expression) — `create_extension` then
-  `create_custom_function` / `create_custom_object` /
-  `create_custom_behavior`.
+  custom object, a shared action/expression) — `create_extension_BYOK` then
+  `create_custom_function_BYOK` / `create_custom_object_BYOK` /
+  `create_custom_behavior_BYOK`.
 
 ## JS code events (the limit of EventScript)
 
@@ -30,11 +30,11 @@ description: Authoring JavaScript in a GDevelop project — events-based extensi
 
 ## Extension authoring pipeline
 
-1. `create_extension` — the container (its name is the namespace).
+1. `create_extension_BYOK` — the container (its name is the namespace).
 2. Add the parts:
-   - `create_custom_function` for free actions/conditions/expressions;
-   - `create_custom_behavior` for attachable state + per-frame logic;
-   - `create_custom_object` for reusable composed objects.
+   - `create_custom_function_BYOK` for free actions/conditions/expressions;
+   - `create_custom_behavior_BYOK` for attachable state + per-frame logic;
+   - `create_custom_object_BYOK` for reusable composed objects.
 3. Author the BODIES as EventScript (`event_script` argument). Behavior
    lifecycle names matter: `onCreated`, `onDestroyed`, `doStepPreEvents`…
    run at the right engine moments.
@@ -46,7 +46,7 @@ description: Authoring JavaScript in a GDevelop project — events-based extensi
 
 ## Discipline
 
-- `find_extension_usages` before any delete or rename; deletes are refused
+- `find_extension_usages_BYOK` before any delete or rename; deletes are refused
   while used unless you pass `delete_even_if_used: true` (say so to the
   user before passing it).
 - One extension per concern; name it after the mechanic, not the author.

@@ -156,6 +156,16 @@ const collectCallTokens = (text: string): Set<string> => {
   for (const match of text.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g)) {
     tokens.add(match[0]);
   }
+  // The namespaced tools (`create_extension_BYOK`): snake_case with an
+  // UPPERCASE suffix. The pattern above cannot match them (the underscore
+  // of the suffix is a word character, so there is no word boundary after
+  // the snake_case part) — without this second pass, the namespaced tools
+  // would escape the guard entirely.
+  for (const match of text.matchAll(
+    /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)*_[A-Z][A-Z0-9]+\b/g
+  )) {
+    tokens.add(match[0]);
+  }
   return tokens;
 };
 

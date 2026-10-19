@@ -466,8 +466,8 @@ describe('getByokToolSchemas', () => {
       return schema;
     };
 
-    // change_extension_properties: dependency management.
-    const extensionProperties = findSchema('change_extension_properties')
+    // change_extension_properties_BYOK: dependency management.
+    const extensionProperties = findSchema('change_extension_properties_BYOK')
       .parameters.properties;
     expect(
       Object.keys(extensionProperties.dependencies_to_add.items.properties)
@@ -476,8 +476,8 @@ describe('getByokToolSchemas', () => {
       'string'
     );
 
-    // change_custom_object: child management (with initial values).
-    const objectProperties = findSchema('change_custom_object').parameters
+    // change_custom_object_BYOK: child management (with initial values).
+    const objectProperties = findSchema('change_custom_object_BYOK').parameters
       .properties;
     const childItems = objectProperties.children_to_add.items.properties;
     expect(Object.keys(childItems)).toEqual([
@@ -490,9 +490,9 @@ describe('getByokToolSchemas', () => {
     );
     expect(objectProperties.children_to_remove.items.type).toBe('string');
 
-    // change_custom_function: parameter management (incl. type changes).
-    const functionProperties = findSchema('change_custom_function').parameters
-      .properties;
+    // change_custom_function_BYOK: parameter management (incl. type changes).
+    const functionProperties = findSchema('change_custom_function_BYOK')
+      .parameters.properties;
     expect(
       Object.keys(functionProperties.parameters_to_add.items.properties)
     ).toEqual(['name', 'type', 'description']);

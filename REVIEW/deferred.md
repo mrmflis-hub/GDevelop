@@ -553,11 +553,12 @@ re-checked every iteration, so the While event itself is the loop), the
 duplicate-once rule scans the guard list as its own list, and the picking
 advisory counts guard conditions as picking. Real-gd spec coverage included.
 
+
 ## 2026-10-19 — Upstream sync (`upstream/master` @ 987b9d3919)
 
 `[I-fork-vs-upstream-extension-tools]` **Our extension-authoring tools and
-upstream's v18 tools are NOT the same API, and ours now permanently shadow
-them.** Upstream merged its own `create_extension`,
+upstream's v18 tools are NOT the same API, so the fork's live in their own
+`_BYOK` namespace.** Upstream merged its own `create_extension`,
 `change_extension_properties`, `create_custom_object`,
 `change_custom_object`, `create_custom_behavior`, `change_custom_behavior`,
 `create_custom_function` and `change_custom_function` into the editor
@@ -567,17 +568,22 @@ and NO support for authoring the EventScript body of a function
 (`event_script`). Ours (Phase 8.4 / Phase 11) use `parameters_to_add` /
 `parameters_to_remove` / `parameters_to_move`, `children_to_add` /
 `children_to_remove`, `dependencies_to_add` / `dependencies_to_remove`, and
-`event_script`. Why deferred: the two cannot both run — the BYOK schema
-teaches ONE shape, and letting upstream's implementation win while our
-schema advertises the other would make the model send arguments the
-implementation silently ignores (the tool would do nothing). Ours therefore
-keeps the interception for those eight names
-(`BYOK_EXTENSION_TOOLS_KEEPING_THEIR_INTERCEPTION` in
-`ByokExtensionTools.js`), and the fork accepts that the BYOK agent and the
-hosted agent answer the same tool names with different arguments. When it
-should be tackled: the next time upstream's extension tools grow the
-EventScript authoring and the extended change lists (or when the fork
-decides to align with upstream and re-shape its schema), this entry is
-revisited — and at EVERY upstream merge, the eight names must be re-checked
-(they are the only place where the fork and upstream implement the same
-tool).
+`event_script`. Why deferred: the two cannot both answer the same name — the
+BYOK schema teaches ONE shape, and letting upstream's implementation answer a
+name our schema advertises would make the model send arguments the
+implementation silently ignores (the tool would do nothing). The fork's
+tools are therefore NAMESPACED: `create_extension_BYOK`,
+`change_extension_properties_BYOK`, `create_custom_object_BYOK`,
+`change_custom_object_BYOK`, `create_custom_behavior_BYOK`,
+`change_custom_behavior_BYOK`, `create_custom_function_BYOK`,
+`change_custom_function_BYOK` and `find_extension_usages_BYOK` (owner
+decision, 2026-10-19). A name can no longer reach the wrong
+implementation, the name says which one runs, and the "which implementation
+wins" guard is gone. Consequence to keep in mind: the BYOK agent and the
+hosted agent answer DIFFERENT names for the same job, and the BYOK agent
+cannot use upstream's richer variants (duplication, expression types, the
+lifecycle-name rejection) — it has the fork's ones. When it should be
+tackled: if upstream's extension tools ever grow the EventScript authoring
+and the extended change lists (or if the fork decides to align with
+upstream and re-shape its schema), this entry is revisited — and at EVERY
+upstream merge, the two families must be compared again.

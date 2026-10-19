@@ -6693,3 +6693,107 @@ REVIEW/usertasks.md                                            (the sync is reco
 - **`usertasks.md`** — the upstream sync is recorded (branch, commit, the
   resolutions that need the owner's eye: the extension-tools divergence and
   the Preferences tabs), and the desktop QA lists are unchanged.
+
+## 2026-10-19 — The BYOK extension tools move to their own `_BYOK` namespace (owner decision)
+
+**Agent:** ZCode main orchestrator (no subagents — one rename with a
+mechanical reach, verified by the gates).
+
+**Owner order (chat):** "could we just slightly rename our tools by adding
+BYOK at the end of each? it adds only one token per tool but makes
+everything very readable" (and, for the Preferences dialog: "Lets leave as
+is, makes it more distinct for users to notice this is fork not upstream
+element").
+
+**Actions:**
+
+1. **The rename.** The nine BYOK extension-authoring tools now carry a
+   `_BYOK` suffix: `create_extension_BYOK`,
+   `change_extension_properties_BYOK`, `create_custom_object_BYOK`,
+   `change_custom_object_BYOK`, `create_custom_behavior_BYOK`,
+   `change_custom_behavior_BYOK`, `create_custom_function_BYOK`,
+   `change_custom_function_BYOK` and `find_extension_usages_BYOK`. The
+   rename was applied as whole words in the nine BYOK files that mention
+   them — the implementations, the schema (entries + the two name lists),
+   the specs, the task catalog, the MCP spec and the `extend-with-js` skill
+   (the skills index was regenerated with
+   `scripts/generate-byok-skills-index.js`, then prettier-formatted). The
+   tool OUTPUT MESSAGES were renamed too (they tell the model which tool
+   to call next).
+2. **The guard is gone.** With the namespace, a name can no longer reach
+   the wrong implementation, so the whole "which implementation wins"
+   machinery was removed: `isByokExtensionToolShadowedByRegistry`,
+   `isRegistryImplementationReal`, the two name sets and the
+   `editorFunctions` import in `ByokExtensionTools.js`; the orchestrator's
+   dispatch check; and the MCP layer's `isExtraToolShadowedByRegistry`
+   collaborator (its host type, its dispatch and the fake hosts of four
+   specs). The MCP spec that tested the "shadowed extra" routing was
+   rewritten to state the new rule (an intercepted tool is ours BY NAME;
+   a name that is not intercepted goes to the editor registry).
+3. **The prompt guard learned the suffix.** The taught-token guard
+   collected `snake_case` tokens with `\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b`,
+   which cannot match `create_extension_BYOK` (the `_` of the suffix is a
+   word character, so there is no word boundary after the snake_case
+   part) — the namespaced tools would have escaped the guard entirely. A
+   second pattern collects the `snake_case_UPPERCASE` shape.
+4. **The prompt version** went `byok-v15` → `byok-v16` (the taught names
+   changed), with the reason recorded in `ByokPrompts.js`.
+5. **The Preferences dialog is left as is** (owner decision): our BYOK /
+   RAG / Build tabs stay plain tabs on top of upstream's redesigned dialog,
+   which also makes them stand out as fork-only panels.
+
+**Bugs found:**
+
+- `[B-prompt-guard-blind-to-suffix]` the taught-token guard would have
+  stopped seeing the namespaced tools (the snake_case pattern cannot match
+  a name ending in `_UPPERCASE`) — a second pattern was added, and the
+  guard spec (which really walks the composed prompt, the skill bodies and
+  the docs-min template) stays green.
+
+**Issues found:**
+
+- `[I-fork-vs-upstream-extension-tools]` (updated, not new) — the fork's
+  extension tools and upstream's v18 ones are different APIs; the fork's
+  now live in their own namespace. The standing note in `deferred.md` was
+  rewritten with the new decision and its consequence (the BYOK agent
+  answers different names than the hosted agent, and cannot use upstream's
+  richer variants).
+- The BYOK agent's extension tools are not reachable under upstream's
+  names any more — by design, and recorded.
+
+**Files worked on:**
+
+```
+newIDE/app/src/AiGeneration/Byok/ByokExtensionTools.js         * (the 9 names, the guard removed)
+newIDE/app/src/AiGeneration/Byok/ByokExtensionTools.spec.js    * (the names, the guard spec rewritten)
+newIDE/app/src/AiGeneration/Byok/ByokToolSchema.js             * (the schema + the two name lists)
+newIDE/app/src/AiGeneration/Byok/ByokToolSchema.spec.js        * (the names)
+newIDE/app/src/AiGeneration/Byok/ByokOrchestrator.js            * (the dispatch, no guard)
+newIDE/app/src/AiGeneration/Byok/ByokOrchestrator.spec.js       * (the names)
+newIDE/app/src/AiGeneration/Byok/ByokPrompts.js                 * (byok-v16)
+newIDE/app/src/AiGeneration/Byok/ByokPrompts.spec.js            * (the version pin)
+newIDE/app/src/AiGeneration/Byok/ByokPromptGuard.spec.js        * (the suffix pattern)
+newIDE/app/src/AiGeneration/Byok/Knowledge/ByokKnowledgeSections.js * (the task catalog)
+newIDE/app/src/AiGeneration/Byok/Skills/extend-with-js.md      * (the taught names)
+newIDE/app/src/AiGeneration/Byok/Skills/ByokBuiltinSkills.generated.js * (regenerated)
+newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpTools.js            * (the shadowing check)
+newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpToolHost.js        * (the host type)
+newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpTools.spec.js       * (the names, the routing spec)
+newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpToolHost.spec.js    * (the fake host)
+newIDE/app/src/AiGeneration/Byok/Mcp/ByokMcpSettingsCard.spec.js * (the fake host)
+newIDE/app/src/AiGeneration/Byok/Mcp/useByokMcpServer.spec.js   * (the fake host)
+newIDE/app/src/AiGeneration/Byok/useByokChatSeam.js             * (the collaborator)
+REVIEW/deferred.md                                            * (the entry rewritten)
+REVIEW/usertasks.md                                           * (§7 rewritten)
+REVIEW/worklog.md                                              (this entry)
+```
+
+### Triage
+
+- **`outofscoped.md`** — no new entry.
+- **`deferred.md`** — one entry REWRITTEN: `[I-fork-vs-upstream-extension-tools]`
+  (the namespace replaces the shadowing rule; the consequence is recorded).
+  `no deferred` for new items.
+- **`usertasks.md`** — §7 rewritten: the extension-tools question is closed
+  by the owner's decision, the Preferences dialog is closed as "leave as
+  is", and the desktop-QA note mentions the renamed tools.

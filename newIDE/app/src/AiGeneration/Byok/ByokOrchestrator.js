@@ -33,10 +33,7 @@ import {
 } from './ByokCompletionGate';
 import { getByokPreviewHasCrashed } from './ByokRuntimeTools';
 import { serializeToJSON } from '../../Utils/Serializer';
-import {
-  flushByokExtensionRegeneration,
-  isByokExtensionToolShadowedByRegistry,
-} from './ByokExtensionTools';
+import { flushByokExtensionRegeneration } from './ByokExtensionTools';
 import { takeByokProjectSnapshot } from './ByokFork';
 import { runExclusiveByokProjectMutation } from './ByokMutationLock';
 import {
@@ -1446,18 +1443,15 @@ export const createByokOrchestrator = (
     }
 
     // The plan tool is handled by the orchestrator itself; intercepted
-    // tools (ByokExtraTools) run here — unless the registry grew a REAL
-    // implementation of the same name, which then wins (the
-    // upstream-tracking guard of Phase 8.4); everything else goes to the
-    // editor executor.
+    // tools (ByokExtraTools) run here; everything else goes to the editor
+    // executor. The intercepted tools that upstream also implements (the
+    // extension authoring ones) carry a `_BYOK` suffix, so no name can
+    // reach the wrong implementation.
     const editorFunctionCalls = [];
     const extraToolCalls = [];
     for (const functionCall of proceedingCalls) {
       if (appendPlanToolOutput(functionCall)) continue;
-      if (
-        findByNameokExtraTool(functionCall.name) &&
-        !isByokExtensionToolShadowedByRegistry(functionCall.name)
-      ) {
+      if (findByNameokExtraTool(functionCall.name)) {
         extraToolCalls.push(functionCall);
         continue;
       }

@@ -1,9 +1,5 @@
 // @flow
 import {
-  editorFunctions,
-  editorFunctionsWithoutProject,
-} from '../../EditorFunctions';
-import {
   serializeToJSON,
   unserializeFromJSObject,
 } from '../../Utils/Serializer';
@@ -22,92 +18,22 @@ import type { ByokExtraTool, ByokExtraToolResult } from './ByokExtraTools';
  * Design rules carried over from the v18 lesson:
  * - regeneration (code generation for events functions) is triggered ONCE
  *   PER BATCH of changes, not per call (see the batch accumulator below);
- * - destructive changes (deletes) are guarded by a usage check;
- * - if master later gains REAL registry implementations of these tools,
- *   the interception must get out of the way (see
- *   isByokExtensionToolShadowedByRegistry).
+ * - destructive changes (deletes) are guarded by a usage check.
+ *
+ * The tools are NAMESPACED with a `_BYOK` suffix, and that is what keeps
+ * them apart from upstream: upstream shipped its own extension authoring
+ * tools (`create_extension`, `create_custom_function`…) with a DIFFERENT
+ * argument shape (`changed_properties` / `changed_parameters` /
+ * `changed_dependencies`) and NO support for authoring the EventScript body
+ * of a function (`event_script`). Same names would have meant the two
+ * implementations colliding on one dispatch table — with the schema
+ * promising arguments the other implementation silently ignores, so the
+ * tool would do nothing. With the suffix, the fork's tools are their own
+ * namespace: no collision is possible, and the name says which
+ * implementation runs.
  */
 
 const gd: libGDevelop = global.gd;
-
-// -----------------------------------------------------------------------
-// The upstream-stub delegation guard
-// -----------------------------------------------------------------------
-
-/**
- * Whether a registry entry is a real implementation (not one of the
- * permanent "handled server-side" stubs). The stubs say so in their
- * failure message; a real launchFunction never does. Heuristic on
- * purpose: it only decides whether OUR interception stays active.
- */
-const isRegistryImplementationReal = (editorFunction: any): boolean => {
-  if (!editorFunction) return false;
-  if (typeof editorFunction.launchFunction !== 'function') return false;
-  return !String(editorFunction.launchFunction).includes('handled server-side');
-};
-
-/**
- * The names of the extension authoring tools — the ONLY tools the
- * delegation guard below ever applies to. The other interceptions
- * (add_scene_events, run_gameplay_test…) have real registry
- * implementations that we deliberately bypass (backend-bound, or shaped
- * differently); the guard must never affect them.
- */
-const BYOK_EXTENSION_TOOL_NAMES: Set<string> = new Set([
-  'create_extension',
-  'change_extension_properties',
-  'create_custom_object',
-  'change_custom_object',
-  'create_custom_behavior',
-  'change_custom_behavior',
-  'create_custom_function',
-  'change_custom_function',
-  'find_extension_usages',
-]);
-
-/**
- * The extension authoring tools whose BYOK implementation KEEPS running,
- * even though the editor registry now has a real implementation of the same
- * name (upstream shipped its v18 extension tools).
- *
- * Upstream's implementations are NOT the ones this fork ported: they use a
- * different argument shape (`changed_properties` / `changed_parameters` /
- * `changed_dependencies`) and they do not support authoring the EventScript
- * body of a function at all (`event_script`). Letting them win would make the
- * schema promise arguments the implementation silently ignores — the model
- * would send `event_script` or `parameters_to_add` and the tool would do
- * nothing — and would take away the EventScript authoring the BYOK agent
- * relies on.
- *
- * The guard still applies to every other extension tool upstream may add
- * later: for those, the registry version wins (the upstream-tracking rule of
- * Phase 8.4).
- */
-const BYOK_EXTENSION_TOOLS_KEEPING_THEIR_INTERCEPTION: Set<string> = new Set([
-  'create_extension',
-  'change_extension_properties',
-  'create_custom_object',
-  'change_custom_object',
-  'create_custom_behavior',
-  'change_custom_behavior',
-  'create_custom_function',
-  'change_custom_function',
-]);
-
-/**
- * True when the editor registry has a REAL implementation of one of the
- * extension authoring tools that our interception does not claim: the
- * registry version must then run (the upstream-tracking guard of Phase 8.4).
- */
-export const isByokExtensionToolShadowedByRegistry = (
-  name: string
-): boolean => {
-  if (!BYOK_EXTENSION_TOOL_NAMES.has(name)) return false;
-  if (BYOK_EXTENSION_TOOLS_KEEPING_THEIR_INTERCEPTION.has(name)) return false;
-  const registryEntry =
-    (editorFunctions: any)[name] || (editorFunctionsWithoutProject: any)[name];
-  return isRegistryImplementationReal(registryEntry || null);
-};
 
 // -----------------------------------------------------------------------
 // The regeneration batch accumulator (once per batch, not per call)
@@ -203,7 +129,7 @@ const getExtensionOrFailure = (
     return {
       extension: null,
       failure: makeFailure(
-        `No extension named "${extensionName}" in the project — create it with create_extension first.`
+        `No extension named "${extensionName}" in the project — create it with create_extension_BYOK first.`
       ),
     };
   }
@@ -216,7 +142,7 @@ const getExtensionOrFailure = (
 /**
  * The plain-text usage list of an extension: the other project extensions
  * depending on it, and the object types using its custom objects or
- * behaviors. Returned by find_extension_usages AND shown before refusing
+ * behaviors. Returned by find_extension_usages_BYOK AND shown before refusing
  * an unsafe delete.
  */
 export const findByokExtensionUsages = (
@@ -472,7 +398,7 @@ const refactorParameterTypeChange = (
 };
 
 /**
- * Apply the parameter operations of change_custom_function (Phase 11):
+ * Apply the parameter operations of change_custom_function_BYOK (Phase 11):
  * parameters_to_add / parameters_to_remove / parameters_to_move, executed
  * in that order. Returns one message per applied change; a wrong name or a
  * duplicate is skipped with the reason (the rest still applies).
@@ -633,7 +559,7 @@ const applyChildInitialProperties = (
 };
 
 /**
- * Apply the children operations of change_custom_object (Phase 11):
+ * Apply the children operations of change_custom_object_BYOK (Phase 11):
  * children_to_add (name + object type + optional initial property values)
  * and children_to_remove (guarded by the usage check). Returns the
  * messages; nothing is applied when the guard refuses (the failure is
@@ -731,7 +657,7 @@ export const listByokExtensionDependencies = (
 };
 
 /**
- * Apply the dependency operations of change_extension_properties
+ * Apply the dependency operations of change_extension_properties_BYOK
  * (Phase 11): dependencies_to_add / dependencies_to_remove.
  */
 export const applyExtensionDependencyChanges = (
@@ -869,7 +795,7 @@ const getFunctionsContainerOrFailure = (
 // -----------------------------------------------------------------------
 
 const createExtensionTool: ByokExtraTool = {
-  name: 'create_extension',
+  name: 'create_extension_BYOK',
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
@@ -884,7 +810,7 @@ const createExtensionTool: ByokExtraTool = {
 
     if (project.hasEventsFunctionsExtensionNamed(extensionName)) {
       return makeFailure(
-        `An extension named "${extensionName}" already exists — use change_extension_properties to modify it.`
+        `An extension named "${extensionName}" already exists — use change_extension_properties_BYOK to modify it.`
       );
     }
 
@@ -912,7 +838,7 @@ const createExtensionTool: ByokExtraTool = {
     return {
       output: {
         success: true,
-        message: `Extension "${extensionName}" created (empty). Add functions with create_custom_function, custom objects or behaviors next.`,
+        message: `Extension "${extensionName}" created (empty). Add functions with create_custom_function_BYOK, custom objects or behaviors next.`,
         extension_name: extensionName,
       },
       didModifyProject: true,
@@ -921,7 +847,7 @@ const createExtensionTool: ByokExtraTool = {
 };
 
 const changeExtensionPropertiesTool: ByokExtraTool = {
-  name: 'change_extension_properties',
+  name: 'change_extension_properties_BYOK',
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
@@ -1005,7 +931,7 @@ const changeExtensionPropertiesTool: ByokExtraTool = {
 };
 
 const createCustomObjectTool: ByokExtraTool = {
-  name: 'create_custom_object',
+  name: 'create_custom_object_BYOK',
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
@@ -1015,7 +941,7 @@ const createCustomObjectTool: ByokExtraTool = {
     if (!requestedObjectName) return makeFailure('Missing custom_object_name.');
     // Every editor path sanitizes before inserting; the create tools did not,
     // so a model could create object types the editor can never produce
-    // (audit100226 UP-12). The FIRST occurrence is create_custom_object.
+    // (audit100226 UP-12). The FIRST occurrence is create_custom_object_BYOK.
     const customObjectName = gd.Project.getSafeName(requestedObjectName);
     const { extension, failure } = getExtensionOrFailure(
       project,
@@ -1059,7 +985,7 @@ const createCustomObjectTool: ByokExtraTool = {
     return {
       output: {
         success: true,
-        message: `Custom object created with type "${objectType}". Add child objects and its functions next (create_custom_function with custom_object_name).`,
+        message: `Custom object created with type "${objectType}". Add child objects and its functions next (create_custom_function_BYOK with custom_object_name).`,
         extension_name: extensionName,
         custom_object_name: customObjectName,
         object_type: objectType,
@@ -1070,7 +996,7 @@ const createCustomObjectTool: ByokExtraTool = {
 };
 
 const changeCustomObjectTool: ByokExtraTool = {
-  name: 'change_custom_object',
+  name: 'change_custom_object_BYOK',
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
@@ -1175,7 +1101,7 @@ const changeCustomObjectTool: ByokExtraTool = {
 };
 
 const createCustomBehaviorTool: ByokExtraTool = {
-  name: 'create_custom_behavior',
+  name: 'create_custom_behavior_BYOK',
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
@@ -1223,7 +1149,7 @@ const createCustomBehaviorTool: ByokExtraTool = {
     return {
       output: {
         success: true,
-        message: `Custom behavior created with type "${behaviorType}". Add its functions next (create_custom_function with custom_behavior_name).`,
+        message: `Custom behavior created with type "${behaviorType}". Add its functions next (create_custom_function_BYOK with custom_behavior_name).`,
         extension_name: extensionName,
         custom_behavior_name: customBehaviorName,
         behavior_type: behaviorType,
@@ -1234,7 +1160,7 @@ const createCustomBehaviorTool: ByokExtraTool = {
 };
 
 const changeCustomBehaviorTool: ByokExtraTool = {
-  name: 'change_custom_behavior',
+  name: 'change_custom_behavior_BYOK',
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
@@ -1335,7 +1261,7 @@ const changeCustomBehaviorTool: ByokExtraTool = {
 };
 
 const createCustomFunctionTool: ByokExtraTool = {
-  name: 'create_custom_function',
+  name: 'create_custom_function_BYOK',
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
@@ -1359,7 +1285,7 @@ const createCustomFunctionTool: ByokExtraTool = {
 
     if (functionsContainer.hasEventsFunctionNamed(functionName)) {
       return makeFailure(
-        `A function named "${functionName}" already exists in this scope — use change_custom_function to modify it.`
+        `A function named "${functionName}" already exists in this scope — use change_custom_function_BYOK to modify it.`
       );
     }
 
@@ -1465,7 +1391,7 @@ const createCustomFunctionTool: ByokExtraTool = {
 };
 
 const changeCustomFunctionTool: ByokExtraTool = {
-  name: 'change_custom_function',
+  name: 'change_custom_function_BYOK',
   modifiesProject: true,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();
@@ -1616,7 +1542,7 @@ const changeCustomFunctionTool: ByokExtraTool = {
 };
 
 const findExtensionUsagesTool: ByokExtraTool = {
-  name: 'find_extension_usages',
+  name: 'find_extension_usages_BYOK',
   modifiesProject: false,
   run: async (args, collaborators) => {
     const project = collaborators.getProject();

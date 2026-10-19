@@ -21,7 +21,11 @@ import './Knowledge/ByokJsApiPack';
  * one. Quality here decides BYOK quality.
  *
  * Bump BYOK_AGENT_PROMPT_VERSION whenever a change alters the prompt's
- * behavior, and note it in the worklog. byok-v15 (Phase 19.5): the
+ * behavior, and note it in the worklog. byok-v16 (2026-10-19, upstream
+ * sync): the extension authoring tools moved to the `_BYOK` namespace
+ * (`create_extension_BYOK` and friends) so they cannot collide with
+ * upstream's own extension tools, which use another argument shape and no
+ * `event_script` at all. byok-v15 (Phase 19.5): the
  * task-catalog entry that lets `search_tools` surface `import_sprite_sheet`
  * (D19-1 — dispatchable and discoverable, never advertised inline, so the
  * token budget is untouched). byok-v14 (Phases 17.7 + 18.3): the
@@ -57,7 +61,7 @@ import './Knowledge/ByokJsApiPack';
  * completion rules, skill pointers). byok-v5 (Phase 7): section composer
  * with a token budget + the F2 progress discipline in the planning section.
  */
-export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v15';
+export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v16';
 
 /**
  * Build the system prompt of the BYOK agent loop. The signature keeps the
