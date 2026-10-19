@@ -6797,3 +6797,113 @@ REVIEW/worklog.md                                              (this entry)
 - **`usertasks.md`** — §7 rewritten: the extension-tools question is closed
   by the owner's decision, the Preferences dialog is closed as "leave as
   is", and the desktop-QA note mentions the renamed tools.
+
+## 2026-10-19 — The BYOK extension tools gain upstream's duplication, expression type and getter (owner order)
+
+**Agent:** ZCode main orchestrator (no subagents — one focused feature in one
+file, verified by the gates).
+
+**Owner order (chat):** "but the hosted tools are not available by the fork
+either way as they are on the server I thought? Also if their variants are
+really goods we can implement them on our end too with a different name?"
+
+**Actions:**
+
+1. **The question answered (the facts, checked in the tree).** Upstream's
+   extension tools are NOT server-only: upstream ships IDE-side
+   implementations in `newIDE/app/src/EditorFunctions/Extensions/`, and the
+   fork inherits them — they are in the fork's editor-function registry
+   (`EditorFunctions/index.js:12351`), which is where the hosted agent's
+   server-issued calls are executed. So the fork's HOSTED agent has them.
+   The BYOK agent does not: they are not in the BYOK dispatch list, so they
+   are neither advertised nor dispatchable (the MCP surface advertises the
+   same BYOK list).
+2. **The gap, measured.** A field-by-field comparison of the fork's schema
+   against upstream's implementations found three real gaps (not the ones I
+   had named): the **duplication** arguments (upstream can copy an
+   extension, a function, a custom object or a custom behavior; the fork
+   could not), the **expression type** (what an "Expression" returns), and
+   the **getter name** (the "Expression" an "ActionWithOperator" changes).
+   The **lifecycle-name rejection**, which I had listed as a gap, is in the
+   fork's tools already (audit100226 UP-12) — my earlier statement was
+   wrong on that point.
+3. **The gap closed, in the fork's own tools** (same libGD calls as
+   upstream, in `ByokExtensionTools.js`):
+   - `create_extension_BYOK` accepts `duplicated_extension_name`: the source
+     is unserialized into the new extension, its name and origin are reset,
+     and `WholeProjectRefactorer.updateExtensionNameInExtension` renames
+     everything it contains. The explicit settings are applied AFTER the
+     copy, so they win over the copied ones. A copied extension needs the
+     code generation, an empty one does not.
+   - `create_custom_function_BYOK` accepts `duplicated_function_name` (the
+     clone keeps the parameters and the events of its source; passing
+     `parameters` with it is refused), `expression_type` ("number" or
+     "string", applied with `PropertyFunctionGenerator.updateReturnActionType`)
+     and `getter_name` (the "Expression" of the same scope an
+     "ActionWithOperator" changes).
+   - `create_custom_object_BYOK` and `create_custom_behavior_BYOK` accept
+     `duplicated_custom_object_name` / `duplicated_custom_behavior_name`
+     plus `duplicated_from_extension_name` (to copy from another
+     extension), with the same rename refactoring as upstream.
+   - The two new arguments are VALIDATED before anything is inserted, so a
+     refusal never leaves a half-created function behind.
+4. **The surfaces.** The schema advertises the new arguments (the model
+   must be able to discover them), the `extend-with-js` skill teaches the
+   duplication ("Copying instead of writing from scratch"), the skills
+   index was regenerated, the prompt version went `byok-v16` → `byok-v17`,
+   and the prompt guard's argument allowlist learned the seven new names.
+5. **The tests.** Four new specs (extension copy, function copy with its
+   parameters and events, expression type + getter, object/behavior copy
+   across extensions). Every one was checked to be NON-VACUOUS by neutering
+   the implementation and watching the test go red — the first version of
+   the object/behavior spec was vacuous (a fresh empty object passed the
+   same assertions as a copy) and was rewritten to assert that the copy
+   brought the source's settings.
+
+**Bugs found:**
+
+- `[B-vacuous-copy-spec]` the first object/behavior copy spec asserted
+  only that an object with the right name existed — a fresh empty object
+  passed it. Rewritten to assert the copy brought the source's settings
+  (and verified non-vacuous by neutering the implementation).
+- `[B-late-validation]` the first version of the expression-type and
+  getter checks ran AFTER the function was inserted, so a refusal left the
+  function behind. The validation was moved before the insertion.
+
+**Issues found:**
+
+- `[I-fork-vs-upstream-extension-tools]` (updated, not new) — the fork's
+  extension tools and upstream's v18 ones are still different APIs, but
+  the duplication, expression type and getter are now on BOTH sides. The
+  remaining differences are upstream's `changed_variants` (the custom
+  object's named variants), `changed_shared_properties` and
+  `fit_area_to_children` — the variant model is a different design, not a
+  missing argument. The entry in `deferred.md` was rewritten with the
+  precise remaining list.
+
+**Files worked on:**
+
+```
+newIDE/app/src/AiGeneration/Byok/ByokExtensionTools.js         * (the duplication + expression type + getter)
+newIDE/app/src/AiGeneration/Byok/ByokExtensionTools.spec.js    * (4 new specs)
+newIDE/app/src/AiGeneration/Byok/ByokToolSchema.js             * (the new arguments)
+newIDE/app/src/AiGeneration/Byok/ByokPrompts.js                 * (byok-v17)
+newIDE/app/src/AiGeneration/Byok/ByokPrompts.spec.js            * (the version pin)
+newIDE/app/src/AiGeneration/Byok/ByokPromptGuard.spec.js        * (the argument allowlist)
+newIDE/app/src/AiGeneration/Byok/Skills/extend-with-js.md      * (the duplication section)
+newIDE/app/src/AiGeneration/Byok/Skills/ByokBuiltinSkills.generated.js * (regenerated)
+REVIEW/deferred.md                                            * (the entry rewritten)
+REVIEW/usertasks.md                                           * (§7 updated)
+REVIEW/worklog.md                                              (this entry)
+```
+
+### Triage
+
+- **`outofscoped.md`** — no new entry.
+- **`deferred.md`** — one entry REWRITTEN: `[I-fork-vs-upstream-extension-tools]`
+  (the remaining differences are now named precisely: the variant model,
+  the shared properties and `fit_area_to_children`).
+  `no deferred` for new items.
+- **`usertasks.md`** — §7 updated: the BYOK extension tools now have the
+  duplication, so the "the BYOK agent cannot use upstream's richer
+  variants" caveat is narrowed to the three remaining differences.

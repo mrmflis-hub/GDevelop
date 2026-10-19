@@ -1355,12 +1355,15 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'create_extension_BYOK',
     description:
-      'Create a new, empty events-based extension in the project — the container for custom functions, custom objects and custom behaviors authored with events. Follow up with create_custom_function_BYOK / create_custom_object_BYOK / create_custom_behavior_BYOK.',
+      'Create a new events-based extension in the project — the container for custom functions, custom objects and custom behaviors authored with events. Pass duplicated_extension_name to copy an existing extension instead of creating an empty one. Follow up with create_custom_function_BYOK / create_custom_object_BYOK / create_custom_behavior_BYOK.',
     parameters: {
       type: 'object',
       properties: {
         extension_name: stringProperty(
           'Name of the extension (its namespace: functions are called as "ExtensionName::FunctionName").'
+        ),
+        duplicated_extension_name: stringProperty(
+          'Copy this existing extension instead of creating an empty one: the copy keeps its functions, objects and behaviors, and everything it contains is renamed after the new extension.'
         ),
         full_name: stringProperty('Optional full, human-readable name.'),
         short_description: stringProperty('Optional one-line description.'),
@@ -1423,12 +1426,18 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'create_custom_object_BYOK',
     description:
-      'Create a custom (composed) object inside an extension: a reusable object with its own child objects, layers, properties and functions. Use it when a grouping of objects + logic repeats across the game.',
+      'Create a custom (composed) object inside an extension: a reusable object with its own child objects, layers, properties and functions. Use it when a grouping of objects + logic repeats across the game. Pass duplicated_custom_object_name to copy an existing custom object instead of creating an empty one.',
     parameters: {
       type: 'object',
       properties: {
         extension_name: stringProperty('Name of the extension.'),
         custom_object_name: stringProperty('Name of the custom object.'),
+        duplicated_custom_object_name: stringProperty(
+          'Copy this existing custom object instead of creating an empty one: the copy keeps its children, properties and functions.'
+        ),
+        duplicated_from_extension_name: stringProperty(
+          'The extension the custom object to copy comes from (when it is not the one being created).'
+        ),
         full_name: stringProperty('Optional full, human-readable name.'),
         description: stringProperty('Optional description.'),
         default_name: stringProperty(
@@ -1498,12 +1507,18 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'create_custom_behavior_BYOK',
     description:
-      'Create a custom behavior inside an extension: reusable logic attached to objects, with its own properties and functions (doStepPreEvents, onCreated…). Use it when behavior-like state + per-frame logic is needed.',
+      'Create a custom behavior inside an extension: reusable logic attached to objects, with its own properties and functions (doStepPreEvents, onCreated…). Use it when behavior-like state + per-frame logic is needed. Pass duplicated_custom_behavior_name to copy an existing custom behavior instead of creating an empty one.',
     parameters: {
       type: 'object',
       properties: {
         extension_name: stringProperty('Name of the extension.'),
         custom_behavior_name: stringProperty('Name of the custom behavior.'),
+        duplicated_custom_behavior_name: stringProperty(
+          'Copy this existing custom behavior instead of creating an empty one: the copy keeps its properties and functions.'
+        ),
+        duplicated_from_extension_name: stringProperty(
+          'The extension the custom behavior to copy comes from (when it is not the one being created).'
+        ),
         full_name: stringProperty('Optional full, human-readable name.'),
         description: stringProperty('Optional description.'),
         object_type: stringProperty(
@@ -1561,6 +1576,16 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
           'ExpressionAndCondition',
           'ActionWithOperator',
         ]),
+        duplicated_function_name: stringProperty(
+          'Copy this existing function of the same scope instead of creating an empty one: the copy keeps the parameters and the events of its source (do not pass `parameters` with it).'
+        ),
+        expression_type: enumProperty(
+          'What an "Expression" returns: "number" or "string". Only for an "Expression" or "ExpressionAndCondition".',
+          ['number', 'string']
+        ),
+        getter_name: stringProperty(
+          'For an "ActionWithOperator": the name of the "Expression" (or "ExpressionAndCondition") of the same scope whose value this action changes.'
+        ),
         custom_behavior_name: stringProperty(
           'Create the function inside this custom behavior of the extension.'
         ),

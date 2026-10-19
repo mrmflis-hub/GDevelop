@@ -44,6 +44,22 @@ description: Authoring JavaScript in a GDevelop project — events-based extensi
 5. Regeneration is automatic after your batch — but verify: read the
    function back, then exercise it (preview or gameplay test).
 
+## Copying instead of writing from scratch
+
+- `create_extension_BYOK` with `duplicated_extension_name` copies an
+  extension (its functions, objects and behaviors come along, renamed
+  after the new one).
+- `create_custom_function_BYOK` with `duplicated_function_name` copies a
+  function of the same scope, with its parameters and its events (do not
+  pass `parameters` with it).
+- `create_custom_object_BYOK` / `create_custom_behavior_BYOK` with
+  `duplicated_custom_object_name` / `duplicated_custom_behavior_name` copy
+  an existing one; add `duplicated_from_extension_name` when it lives in
+  another extension.
+- An "Expression" says what it returns with `expression_type`
+  ("number" or "string"); an "ActionWithOperator" says which
+  "Expression" it changes with `getter_name`.
+
 ## Discipline
 
 - `find_extension_usages_BYOK` before any delete or rename; deletes are refused

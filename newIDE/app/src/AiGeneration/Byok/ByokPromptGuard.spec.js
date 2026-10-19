@@ -134,6 +134,15 @@ const TOOL_ARGUMENT_TOKENS = new Set([
   'set_frame_image',
   // The docs pages argument.
   'about_translations',
+  // The extension authoring arguments (duplication, expression type and
+  // the getter an ActionWithOperator changes).
+  'duplicated_extension_name',
+  'duplicated_function_name',
+  'duplicated_custom_object_name',
+  'duplicated_custom_behavior_name',
+  'duplicated_from_extension_name',
+  'expression_type',
+  'getter_name',
 ]);
 
 /**

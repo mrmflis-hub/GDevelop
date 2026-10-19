@@ -1,5 +1,6 @@
 // @flow
 import {
+  serializeToJSObject,
   serializeToJSON,
   unserializeFromJSObject,
 } from '../../Utils/Serializer';
@@ -740,6 +741,25 @@ const readFunctionType = (value: any): number | null => {
 };
 
 /**
+ * What an "Expression" function returns, as the editor names it: a
+ * "string" or a number (the editor calls a number "expression").
+ */
+const setByokExpressionType = (
+  project: any,
+  eventsFunction: any,
+  expressionType: string
+) => {
+  const valueTypeMetadata = new gd.ValueTypeMetadata();
+  valueTypeMetadata.setName(
+    expressionType === 'string' ? 'string' : 'expression'
+  );
+  eventsFunction.setExpressionType(valueTypeMetadata);
+  valueTypeMetadata.delete();
+  // The return action of the events must return the same type.
+  gd.PropertyFunctionGenerator.updateReturnActionType(project, eventsFunction);
+};
+
+/**
  * Resolve the functions container addressed by a call: the extension
  * itself, or the behavior / custom object inside it.
  */
@@ -808,6 +828,24 @@ const createExtensionTool: ByokExtraTool = {
     // editor can never produce (audit100226 UP-12).
     const extensionName = gd.Project.getSafeName(requestedExtensionName);
 
+    // Duplication: copy an existing extension instead of creating an empty
+    // one (the AI's "duplicate this extension and change it" task).
+    const duplicatedExtensionName = readOptionalString(
+      args,
+      'duplicated_extension_name'
+    );
+    let sourceExtension: any = null;
+    if (duplicatedExtensionName) {
+      if (!project.hasEventsFunctionsExtensionNamed(duplicatedExtensionName)) {
+        return makeFailure(
+          `Extension to duplicate not found: "${duplicatedExtensionName}".`
+        );
+      }
+      sourceExtension = project.getEventsFunctionsExtension(
+        duplicatedExtensionName
+      );
+    }
+
     if (project.hasEventsFunctionsExtensionNamed(extensionName)) {
       return makeFailure(
         `An extension named "${extensionName}" already exists — use change_extension_properties_BYOK to modify it.`
@@ -819,6 +857,27 @@ const createExtensionTool: ByokExtraTool = {
       project.getEventsFunctionsExtensionsCount()
     );
     extension.setName(extensionName);
+    if (sourceExtension) {
+      const sourceExtensionName = sourceExtension.getName();
+      unserializeFromJSObject(
+        extension,
+        serializeToJSObject(sourceExtension),
+        'unserializeFrom',
+        project
+      );
+      // The unserialization brought back the name and the origin of the
+      // source: the copy is the user's own, and its contents are renamed
+      // after it.
+      extension.setName(extensionName);
+      extension.setOrigin('', '');
+      gd.WholeProjectRefactorer.updateExtensionNameInExtension(
+        project,
+        extension,
+        sourceExtensionName
+      );
+    }
+    // The explicit settings are applied AFTER the copy, so they win over the
+    // copied ones.
     const fullName = readOptionalString(args, 'full_name');
     if (fullName) extension.setFullName(fullName);
     const shortDescription = readOptionalString(args, 'short_description');
@@ -834,11 +893,15 @@ const createExtensionTool: ByokExtraTool = {
     // A project extension is authored here: no store origin.
     extension.setOrigin('', '');
 
-    markExtensionModified(extensionName, false);
+    // A copied extension carries its functions: they must be code
+    // generated, an empty one has nothing to generate.
+    markExtensionModified(extensionName, !!sourceExtension);
     return {
       output: {
         success: true,
-        message: `Extension "${extensionName}" created (empty). Add functions with create_custom_function_BYOK, custom objects or behaviors next.`,
+        message: sourceExtension
+          ? `Extension "${extensionName}" created as a copy of "${sourceExtension.getName()}". Everything it contains is now called "${extensionName}::<Name>".`
+          : `Extension "${extensionName}" created (empty). Add functions with create_custom_function_BYOK, custom objects or behaviors next.`,
         extension_name: extensionName,
       },
       didModifyProject: true,
@@ -949,6 +1012,42 @@ const createCustomObjectTool: ByokExtraTool = {
     );
     if (failure || !extension) return failure || makeFailure('Unknown error.');
 
+    // Duplication: copy a custom object — of this extension, or of
+    // another one — instead of creating an empty one.
+    const duplicatedObjectName = readOptionalString(
+      args,
+      'duplicated_custom_object_name'
+    );
+    const duplicatedFromExtensionName = readOptionalString(
+      args,
+      'duplicated_from_extension_name'
+    );
+    if (duplicatedFromExtensionName && !duplicatedObjectName) {
+      return makeFailure(
+        '`duplicated_from_extension_name` needs `duplicated_custom_object_name`: it says which extension the custom object to copy comes from.'
+      );
+    }
+    let sourceObject = null;
+    let sourceExtensionName = extensionName;
+    if (duplicatedObjectName) {
+      sourceExtensionName = duplicatedFromExtensionName || extensionName;
+      if (!project.hasEventsFunctionsExtensionNamed(sourceExtensionName)) {
+        return makeFailure(
+          `Extension to copy from not found: "${sourceExtensionName}".`
+        );
+      }
+      const sourceExtension = project.getEventsFunctionsExtension(
+        sourceExtensionName
+      );
+      const sourceObjects = sourceExtension.getEventsBasedObjects();
+      if (!sourceObjects.has(duplicatedObjectName)) {
+        return makeFailure(
+          `Custom object to duplicate not found: "${duplicatedObjectName}" in extension "${sourceExtensionName}".`
+        );
+      }
+      sourceObject = sourceObjects.get(duplicatedObjectName);
+    }
+
     const objects = extension.getEventsBasedObjects();
     if (objects.has(customObjectName)) {
       return makeFailure(
@@ -960,6 +1059,34 @@ const createCustomObjectTool: ByokExtraTool = {
       objects.getCount()
     );
     eventsBasedObject.setName(customObjectName);
+    if (sourceObject) {
+      const sourceObjectName = sourceObject.getName();
+      unserializeFromJSObject(
+        eventsBasedObject,
+        serializeToJSObject(sourceObject),
+        'unserializeFrom',
+        project
+      );
+      // The unserialization brought back the name of the source: the copy
+      // and everything it contains are renamed after it.
+      eventsBasedObject.setName(customObjectName);
+      if (sourceExtensionName !== extensionName) {
+        gd.WholeProjectRefactorer.updateExtensionNameInEventsBasedObject(
+          project,
+          extension,
+          eventsBasedObject,
+          sourceExtensionName
+        );
+      }
+      if (sourceObjectName !== customObjectName) {
+        gd.WholeProjectRefactorer.updateObjectNameInEventsBasedObject(
+          project,
+          extension,
+          eventsBasedObject,
+          sourceObjectName
+        );
+      }
+    }
     const fullName = readOptionalString(args, 'full_name');
     if (fullName) eventsBasedObject.setFullName(fullName);
     const description = readOptionalString(args, 'description');
@@ -985,7 +1112,9 @@ const createCustomObjectTool: ByokExtraTool = {
     return {
       output: {
         success: true,
-        message: `Custom object created with type "${objectType}". Add child objects and its functions next (create_custom_function_BYOK with custom_object_name).`,
+        message: sourceObject
+          ? `Custom object created with type "${objectType}", as a copy of "${sourceExtensionName}::${sourceObject.getName()}".`
+          : `Custom object created with type "${objectType}". Add child objects and its functions next (create_custom_function_BYOK with custom_object_name).`,
         extension_name: extensionName,
         custom_object_name: customObjectName,
         object_type: objectType,
@@ -1121,6 +1250,42 @@ const createCustomBehaviorTool: ByokExtraTool = {
     );
     if (failure || !extension) return failure || makeFailure('Unknown error.');
 
+    // Duplication: copy a custom behavior — of this extension, or of
+    // another one — instead of creating an empty one.
+    const duplicatedBehaviorName = readOptionalString(
+      args,
+      'duplicated_custom_behavior_name'
+    );
+    const duplicatedFromExtensionName = readOptionalString(
+      args,
+      'duplicated_from_extension_name'
+    );
+    if (duplicatedFromExtensionName && !duplicatedBehaviorName) {
+      return makeFailure(
+        '`duplicated_from_extension_name` needs `duplicated_custom_behavior_name`: it says which extension the custom behavior to copy comes from.'
+      );
+    }
+    let sourceBehavior = null;
+    let sourceExtensionName = extensionName;
+    if (duplicatedBehaviorName) {
+      sourceExtensionName = duplicatedFromExtensionName || extensionName;
+      if (!project.hasEventsFunctionsExtensionNamed(sourceExtensionName)) {
+        return makeFailure(
+          `Extension to copy from not found: "${sourceExtensionName}".`
+        );
+      }
+      const sourceExtension = project.getEventsFunctionsExtension(
+        sourceExtensionName
+      );
+      const sourceBehaviors = sourceExtension.getEventsBasedBehaviors();
+      if (!sourceBehaviors.has(duplicatedBehaviorName)) {
+        return makeFailure(
+          `Custom behavior to duplicate not found: "${duplicatedBehaviorName}" in extension "${sourceExtensionName}".`
+        );
+      }
+      sourceBehavior = sourceBehaviors.get(duplicatedBehaviorName);
+    }
+
     const behaviors = extension.getEventsBasedBehaviors();
     if (behaviors.has(customBehaviorName)) {
       return makeFailure(
@@ -1132,6 +1297,34 @@ const createCustomBehaviorTool: ByokExtraTool = {
       behaviors.getCount()
     );
     eventsBasedBehavior.setName(customBehaviorName);
+    if (sourceBehavior) {
+      const sourceBehaviorName = sourceBehavior.getName();
+      unserializeFromJSObject(
+        eventsBasedBehavior,
+        serializeToJSObject(sourceBehavior),
+        'unserializeFrom',
+        project
+      );
+      // The unserialization brought back the name of the source: the copy
+      // and everything it contains are renamed after it.
+      eventsBasedBehavior.setName(customBehaviorName);
+      if (sourceExtensionName !== extensionName) {
+        gd.WholeProjectRefactorer.updateExtensionNameInEventsBasedBehavior(
+          project,
+          extension,
+          eventsBasedBehavior,
+          sourceExtensionName
+        );
+      }
+      if (sourceBehaviorName !== customBehaviorName) {
+        gd.WholeProjectRefactorer.updateBehaviorNameInEventsBasedBehavior(
+          project,
+          extension,
+          eventsBasedBehavior,
+          sourceBehaviorName
+        );
+      }
+    }
     const fullName = readOptionalString(args, 'full_name');
     if (fullName) eventsBasedBehavior.setFullName(fullName);
     const description = readOptionalString(args, 'description');
@@ -1149,7 +1342,9 @@ const createCustomBehaviorTool: ByokExtraTool = {
     return {
       output: {
         success: true,
-        message: `Custom behavior created with type "${behaviorType}". Add its functions next (create_custom_function_BYOK with custom_behavior_name).`,
+        message: sourceBehavior
+          ? `Custom behavior created with type "${behaviorType}", as a copy of "${sourceExtensionName}::${sourceBehavior.getName()}".`
+          : `Custom behavior created with type "${behaviorType}". Add its functions next (create_custom_function_BYOK with custom_behavior_name).`,
         extension_name: extensionName,
         custom_behavior_name: customBehaviorName,
         behavior_type: behaviorType,
@@ -1316,6 +1511,30 @@ const createCustomFunctionTool: ByokExtraTool = {
       );
     }
 
+    // Duplication: copy an existing function of the same scope (the AI's
+    // "duplicate this function and change it" task). The copy brings the
+    // parameters and the events of its source.
+    const duplicatedFunctionName = readOptionalString(
+      args,
+      'duplicated_function_name'
+    );
+    let sourceFunction = null;
+    if (duplicatedFunctionName) {
+      if (!functionsContainer.hasEventsFunctionNamed(duplicatedFunctionName)) {
+        return makeFailure(
+          `Function to duplicate not found: "${duplicatedFunctionName}" in this scope.`
+        );
+      }
+      if (Array.isArray(args.parameters)) {
+        return makeFailure(
+          'A copy keeps the parameters of its source: do not pass `parameters` with `duplicated_function_name`.'
+        );
+      }
+      sourceFunction = functionsContainer.getEventsFunction(
+        duplicatedFunctionName
+      );
+    }
+
     // The script is validated BEFORE anything is inserted: a parse failure
     // after the insert left a half-created function while reporting
     // didModifyProject:false (audit011026 B-TOOL-3).
@@ -1325,11 +1544,66 @@ const createCustomFunctionTool: ByokExtraTool = {
       if (invalidScript) return makeFailure(invalidScript);
     }
 
-    const eventsFunction = functionsContainer.insertNewEventsFunction(
-      functionName,
-      functionsContainer.getEventsFunctionsCount()
-    );
-    eventsFunction.setName(functionName);
+    // What an "Expression" returns (the editor calls a number "expression"),
+    // and the "Expression" an "ActionWithOperator" changes the value of.
+    // Both are CHECKED before anything is inserted: a refusal must not leave
+    // a half-created function behind.
+    const expressionType = readOptionalString(args, 'expression_type');
+    if (expressionType) {
+      if (
+        functionType !== gd.EventsFunction.Expression &&
+        functionType !== gd.EventsFunction.ExpressionAndCondition
+      ) {
+        return makeFailure(
+          '`expression_type` only applies to an "Expression" or "ExpressionAndCondition" (it says what the function returns).'
+        );
+      }
+      if (expressionType !== 'number' && expressionType !== 'string') {
+        return makeFailure(
+          `Invalid \`expression_type\`: "${expressionType}". It is "number" or "string".`
+        );
+      }
+    }
+    const getterName = readOptionalString(args, 'getter_name');
+    if (getterName) {
+      if (functionType !== gd.EventsFunction.ActionWithOperator) {
+        return makeFailure(
+          '`getter_name` only applies to an "ActionWithOperator" (the action that changes the value another function reads).'
+        );
+      }
+      if (!functionsContainer.hasEventsFunctionNamed(getterName)) {
+        return makeFailure(
+          `The getter "${getterName}" is not a function of this scope.`
+        );
+      }
+      const getter = functionsContainer.getEventsFunction(getterName);
+      const getterType = getter.getFunctionType();
+      if (
+        getterType !== gd.EventsFunction.Expression &&
+        getterType !== gd.EventsFunction.ExpressionAndCondition
+      ) {
+        return makeFailure(
+          `\`getter_name\` "${getterName}" is not an "Expression" or "ExpressionAndCondition" of this scope.`
+        );
+      }
+    }
+
+    let eventsFunction;
+    if (sourceFunction) {
+      const clonedFunction = sourceFunction.clone();
+      eventsFunction = functionsContainer.insertEventsFunction(
+        clonedFunction,
+        functionsContainer.getEventsFunctionsCount()
+      );
+      clonedFunction.delete();
+      eventsFunction.setName(functionName);
+    } else {
+      eventsFunction = functionsContainer.insertNewEventsFunction(
+        functionName,
+        functionsContainer.getEventsFunctionsCount()
+      );
+      eventsFunction.setName(functionName);
+    }
     eventsFunction.setFunctionType(functionType);
     const fullName = readOptionalString(args, 'full_name');
     if (fullName) eventsFunction.setFullName(fullName);
@@ -1341,6 +1615,14 @@ const createCustomFunctionTool: ByokExtraTool = {
     if (group) eventsFunction.setGroup(group);
     if (args.is_private === true) eventsFunction.setPrivate(true);
     if (args.is_async === true) eventsFunction.setAsync(true);
+
+    // The validated expression type and getter are applied now.
+    if (expressionType) {
+      setByokExpressionType(project, eventsFunction, expressionType);
+    }
+    if (getterName) {
+      eventsFunction.setGetterName(getterName);
+    }
 
     // The typed parameters, in order.
     if (Array.isArray(args.parameters)) {

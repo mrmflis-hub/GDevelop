@@ -554,6 +554,7 @@ duplicate-once rule scans the guard list as its own list, and the picking
 advisory counts guard conditions as picking. Real-gd spec coverage included.
 
 
+
 ## 2026-10-19 — Upstream sync (`upstream/master` @ 987b9d3919)
 
 `[I-fork-vs-upstream-extension-tools]` **Our extension-authoring tools and
@@ -568,10 +569,10 @@ and NO support for authoring the EventScript body of a function
 (`event_script`). Ours (Phase 8.4 / Phase 11) use `parameters_to_add` /
 `parameters_to_remove` / `parameters_to_move`, `children_to_add` /
 `children_to_remove`, `dependencies_to_add` / `dependencies_to_remove`, and
-`event_script`. Why deferred: the two cannot both answer the same name — the
-BYOK schema teaches ONE shape, and letting upstream's implementation answer a
-name our schema advertises would make the model send arguments the
-implementation silently ignores (the tool would do nothing). The fork's
+`event_script`. Why deferred: the two cannot both answer the same name —
+the BYOK schema teaches ONE shape, and letting upstream's implementation
+answer a name our schema advertises would make the model send arguments
+the implementation silently ignores (the tool would do nothing). The fork's
 tools are therefore NAMESPACED: `create_extension_BYOK`,
 `change_extension_properties_BYOK`, `create_custom_object_BYOK`,
 `change_custom_object_BYOK`, `create_custom_behavior_BYOK`,
@@ -579,11 +580,27 @@ tools are therefore NAMESPACED: `create_extension_BYOK`,
 `change_custom_function_BYOK` and `find_extension_usages_BYOK` (owner
 decision, 2026-10-19). A name can no longer reach the wrong
 implementation, the name says which one runs, and the "which implementation
-wins" guard is gone. Consequence to keep in mind: the BYOK agent and the
-hosted agent answer DIFFERENT names for the same job, and the BYOK agent
-cannot use upstream's richer variants (duplication, expression types, the
-lifecycle-name rejection) — it has the fork's ones. When it should be
-tackled: if upstream's extension tools ever grow the EventScript authoring
-and the extended change lists (or if the fork decides to align with
-upstream and re-shape its schema), this entry is revisited — and at EVERY
-upstream merge, the two families must be compared again.
+wins" guard is gone.
+
+**What the fork's tools gained on top of upstream's (2026-10-19):** the
+duplication arguments (`duplicated_extension_name`,
+`duplicated_function_name`, `duplicated_custom_object_name`,
+`duplicated_custom_behavior_name`, `duplicated_from_extension_name`), the
+`expression_type` of an Expression and the `getter_name` of an
+ActionWithOperator — upstream's capabilities, ported to the fork's own
+tools (same libGD calls). What the fork's tools have that upstream's do
+NOT: the EventScript body of a function (`event_script`), the extended
+change lists (`parameters_to_add/remove/move`, `children_to_add/remove`,
+`dependencies_to_add/remove`) and `find_extension_usages`.
+
+**What is still different, and why it is not ported:** upstream's
+`changed_variants` (the custom object's NAMED VARIANTS — each variant is a
+set of children), `changed_shared_properties` (the behavior's shared
+properties) and `fit_area_to_children`. The first two belong to upstream's
+variant model, which is a different design from the fork's
+`children_to_add`/`children_to_remove` (the default variant's children) —
+porting it would be a redesign, not a missing argument. `fit_area_to_children`
+is a single libGD call and could be added whenever it is wanted. When it
+should be tackled: if the fork decides it wants the variant model, this
+entry is revisited — and at EVERY upstream merge, the two families must be
+compared again.

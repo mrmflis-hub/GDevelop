@@ -177,6 +177,328 @@ describe('ByokExtensionTools: create → change → regenerate', () => {
     ).toBeGreaterThan(0);
   });
 
+  it('copies an extension instead of creating an empty one', async () => {
+    const collaborators = makeCollaborators(project);
+    // A source extension with a function in it.
+    await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'Source' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Source',
+        function_name: 'DoThing',
+        function_type: 'Action',
+        event_script: 'always:\n  Wait(0.1)',
+      },
+      collaborators
+    );
+
+    const copied = await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'Copy', duplicated_extension_name: 'Source' },
+      collaborators
+    );
+    expect(copied.output.success).toBe(true);
+    expect(copied.output.extension_name).toBe('Copy');
+
+    // The copy holds the function of the source...
+    const copy = project.getEventsFunctionsExtension('Copy');
+    expect(copy.getEventsFunctions().hasEventsFunctionNamed('DoThing')).toBe(
+      true
+    );
+    // ...and the source is untouched.
+    expect(
+      project
+        .getEventsFunctionsExtension('Source')
+        .getEventsFunctions()
+        .hasEventsFunctionNamed('DoThing')
+    ).toBe(true);
+    // The copy is the user's own: no store origin.
+    expect(copy.getOriginName()).toBe('');
+
+    // The explicit settings win over the copied ones.
+    const renamed = await runTool(
+      'create_extension_BYOK',
+      {
+        extension_name: 'Copy2',
+        duplicated_extension_name: 'Source',
+        full_name: 'My copy',
+      },
+      collaborators
+    );
+    expect(renamed.output.success).toBe(true);
+    expect(project.getEventsFunctionsExtension('Copy2').getFullName()).toBe(
+      'My copy'
+    );
+
+    // A source that does not exist is refused, with nothing created.
+    const missing = await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'Copy3', duplicated_extension_name: 'Nope' },
+      collaborators
+    );
+    expect(missing.output.success).toBe(false);
+    expect(missing.output.message).toContain('not found');
+    expect(project.hasEventsFunctionsExtensionNamed('Copy3')).toBe(false);
+  });
+
+  it('copies a function with its parameters and events', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'Ext' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Ext',
+        function_name: 'Source',
+        function_type: 'Action',
+        parameters: [{ name: 'Speed', type: 'expression' }],
+        event_script: 'always:\n  Wait(0.1)',
+      },
+      collaborators
+    );
+
+    const copied = await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Ext',
+        function_name: 'Copy',
+        function_type: 'Action',
+        duplicated_function_name: 'Source',
+      },
+      collaborators
+    );
+    expect(copied.output.success).toBe(true);
+
+    const functions = project
+      .getEventsFunctionsExtension('Ext')
+      .getEventsFunctions();
+    const copy = functions.getEventsFunction('Copy');
+    expect(copy).toBeTruthy();
+    // The parameters of the source came with the copy.
+    expect(copy.getParameters().getParametersCount()).toBeGreaterThan(0);
+    // The events of the source came with the copy.
+    expect(copy.getEvents().getEventsCount()).toBeGreaterThan(0);
+    // The source is untouched.
+    expect(functions.getEventsFunction('Source')).toBeTruthy();
+
+    // Passing `parameters` with a copy is refused (the copy keeps them).
+    const refused = await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Ext',
+        function_name: 'Copy2',
+        function_type: 'Action',
+        duplicated_function_name: 'Source',
+        parameters: [{ name: 'Speed', type: 'expression' }],
+      },
+      collaborators
+    );
+    expect(refused.output.success).toBe(false);
+    expect(functions.hasEventsFunctionNamed('Copy2')).toBe(false);
+
+    // A source that does not exist is refused.
+    const missing = await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Ext',
+        function_name: 'Copy3',
+        function_type: 'Action',
+        duplicated_function_name: 'Nope',
+      },
+      collaborators
+    );
+    expect(missing.output.success).toBe(false);
+    expect(missing.output.message).toContain('not found');
+    expect(functions.hasEventsFunctionNamed('Copy3')).toBe(false);
+  });
+
+  it('sets what an Expression returns, and the getter of an ActionWithOperator', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'Ext' },
+      collaborators
+    );
+
+    const expression = await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Ext',
+        function_name: 'GetScore',
+        function_type: 'Expression',
+        expression_type: 'string',
+      },
+      collaborators
+    );
+    expect(expression.output.success).toBe(true);
+    const functions = project
+      .getEventsFunctionsExtension('Ext')
+      .getEventsFunctions();
+    expect(
+      functions
+        .getEventsFunction('GetScore')
+        .getExpressionType()
+        .getName()
+    ).toBe('string');
+
+    // An `expression_type` on a non-expression is refused.
+    const refused = await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Ext',
+        function_name: 'DoThing',
+        function_type: 'Action',
+        expression_type: 'number',
+      },
+      collaborators
+    );
+    expect(refused.output.success).toBe(false);
+    expect(functions.hasEventsFunctionNamed('DoThing')).toBe(false);
+
+    // An ActionWithOperator points at the expression it changes.
+    const action = await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Ext',
+        function_name: 'SetScore',
+        function_type: 'ActionWithOperator',
+        getter_name: 'GetScore',
+      },
+      collaborators
+    );
+    expect(action.output.success).toBe(true);
+    expect(functions.getEventsFunction('SetScore').getGetterName()).toBe(
+      'GetScore'
+    );
+
+    // A getter that is not an Expression of the scope is refused.
+    const badGetter = await runTool(
+      'create_custom_function_BYOK',
+      {
+        extension_name: 'Ext',
+        function_name: 'SetScore2',
+        function_type: 'ActionWithOperator',
+        getter_name: 'DoThing',
+      },
+      collaborators
+    );
+    expect(badGetter.output.success).toBe(false);
+    expect(functions.hasEventsFunctionNamed('SetScore2')).toBe(false);
+  });
+
+  it('copies a custom object or a custom behavior, from this extension or another one', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'Source' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_object_BYOK',
+      {
+        extension_name: 'Source',
+        custom_object_name: 'Chest',
+        full_name: 'The source chest',
+      },
+      collaborators
+    );
+    await runTool(
+      'create_custom_behavior_BYOK',
+      {
+        extension_name: 'Source',
+        custom_behavior_name: 'Magnet',
+        description: 'The source magnet',
+      },
+      collaborators
+    );
+    await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'Target' },
+      collaborators
+    );
+
+    const object = await runTool(
+      'create_custom_object_BYOK',
+      {
+        extension_name: 'Target',
+        custom_object_name: 'ChestCopy',
+        duplicated_custom_object_name: 'Chest',
+        duplicated_from_extension_name: 'Source',
+      },
+      collaborators
+    );
+    expect(object.output.success).toBe(true);
+    expect(object.output.object_type).toBe('Target::ChestCopy');
+    const copiedObject = project
+      .getEventsFunctionsExtension('Target')
+      .getEventsBasedObjects()
+      .get('ChestCopy');
+    expect(copiedObject).toBeTruthy();
+    // The copy brought the SETTINGS of the source (a fresh object would
+    // have none).
+    expect(copiedObject.getFullName()).toBe('The source chest');
+
+    const behavior = await runTool(
+      'create_custom_behavior_BYOK',
+      {
+        extension_name: 'Target',
+        custom_behavior_name: 'MagnetCopy',
+        duplicated_custom_behavior_name: 'Magnet',
+        duplicated_from_extension_name: 'Source',
+      },
+      collaborators
+    );
+    expect(behavior.output.success).toBe(true);
+    expect(behavior.output.behavior_type).toBe('Target::MagnetCopy');
+    const copiedBehavior = project
+      .getEventsFunctionsExtension('Target')
+      .getEventsBasedBehaviors()
+      .get('MagnetCopy');
+    expect(copiedBehavior).toBeTruthy();
+    // The copy brought the SETTINGS of the source (a fresh behavior would
+    // have none).
+    expect(copiedBehavior.getDescription()).toBe('The source magnet');
+
+    // A source that does not exist is refused.
+    const missing = await runTool(
+      'create_custom_object_BYOK',
+      {
+        extension_name: 'Target',
+        custom_object_name: 'ChestCopy2',
+        duplicated_custom_object_name: 'Nope',
+        duplicated_from_extension_name: 'Source',
+      },
+      collaborators
+    );
+    expect(missing.output.success).toBe(false);
+    expect(
+      project
+        .getEventsFunctionsExtension('Target')
+        .getEventsBasedObjects()
+        .has('ChestCopy2')
+    ).toBe(false);
+
+    // The extension to copy from is needed when a copy is asked for.
+    const alone = await runTool(
+      'create_custom_object_BYOK',
+      {
+        extension_name: 'Target',
+        custom_object_name: 'ChestCopy3',
+        duplicated_from_extension_name: 'Source',
+      },
+      collaborators
+    );
+    expect(alone.output.success).toBe(false);
+    expect(alone.output.message).toContain('duplicated_custom_object_name');
+  });
+
   it('changes and renames with project-wide reference updates', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(
