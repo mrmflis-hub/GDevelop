@@ -70,6 +70,11 @@ export type ByokExtraToolCollaborators = {|
   // payload the registry tools send, so open editors redraw. Optional —
   // hosts without it still apply the changes.
   onObjectsModifiedOutsideEditor?: (changes: any) => void,
+  // The resources loader, when the host has one: the tools that MEASURE
+  // something (the area of a custom object fitted to its children) need it
+  // to read a 3D model file. Optional: without it, a 3D model is not
+  // measured and the measurement is refused rather than guessed.
+  getPixiResourcesLoader?: () => any,
   // Fired by the external-items tools (put_external_layout_instances,
   // add_external_events) so an already-open editor of that item redraws —
   // the fan-out channel these items never had (scenes key on their

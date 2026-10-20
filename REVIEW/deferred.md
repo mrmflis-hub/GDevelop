@@ -595,12 +595,11 @@ change lists (`parameters_to_add/remove/move`, `children_to_add/remove`,
 
 **What is still different, and why it is not ported:** upstream's
 `changed_variants` (the custom object's NAMED VARIANTS — each variant is a
-set of children), `changed_shared_properties` (the behavior's shared
-properties) and `fit_area_to_children`. The first two belong to upstream's
-variant model, which is a different design from the fork's
-`children_to_add`/`children_to_remove` (the default variant's children) —
-porting it would be a redesign, not a missing argument. `fit_area_to_children`
-is a single libGD call and could be added whenever it is wanted. When it
-should be tackled: if the fork decides it wants the variant model, this
-entry is revisited — and at EVERY upstream merge, the two families must be
-compared again.
+set of children) and `changed_shared_properties` (the behavior's shared
+properties). Both belong to upstream's variant model, which is a different
+design from the fork's `children_to_add`/`children_to_remove` (the default
+variant's children) — porting them would be a redesign, not a missing
+argument. (`fit_area_to_children`, the third one, was added on 2026-10-19:
+upstream's own module is called, not copied.) When it should be tackled: if
+the fork decides it wants the variant model, this entry is revisited — and at
+EVERY upstream merge, the two families must be compared again.

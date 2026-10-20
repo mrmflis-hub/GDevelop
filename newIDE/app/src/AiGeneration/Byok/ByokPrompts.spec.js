@@ -134,7 +134,7 @@ describe('ByokPrompts v5 (Phase 7: composer + F2 progress discipline)', () => {
     // surfaces import_sprite_sheet through search_tools).
     // byok-v10 was Phase 14; byok-v9 was Phase 13; byok-v8 was
     // Phase 12 (discovery + runtime guidance).
-    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v17');
+    expect(BYOK_AGENT_PROMPT_VERSION).toBe('byok-v18');
   });
 
   it('teaches the F2 obligatory to-do list and per-item progress updates', () => {

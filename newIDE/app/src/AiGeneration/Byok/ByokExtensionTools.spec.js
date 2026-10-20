@@ -997,6 +997,77 @@ describe('ByokExtensionTools: Phase 11 internals (parameters, children, dependen
     expect(eventsBasedObject.getObjects().hasObjectNamed('Icon')).toBe(false);
   });
 
+  it('fits the area of a custom object to its children', async () => {
+    const collaborators = makeCollaborators(project);
+    await runTool(
+      'create_extension_BYOK',
+      { extension_name: 'Ext' },
+      collaborators
+    );
+    await runTool(
+      'create_custom_object_BYOK',
+      { extension_name: 'Ext', custom_object_name: 'Box' },
+      collaborators
+    );
+    const eventsBasedObject = project
+      .getEventsFunctionsExtension('Ext')
+      .getEventsBasedObjects()
+      .get('Box');
+
+    // A child with an instance of a known size.
+    eventsBasedObject
+      .getObjects()
+      .insertNewObject(project, 'Sprite', 'Body', 0);
+    const instance = eventsBasedObject
+      .getInitialInstances()
+      .insertNewInitialInstance();
+    instance.setObjectName('Body');
+    instance.setLayer('');
+    instance.setX(10);
+    instance.setY(10);
+    instance.setHasCustomSize(true);
+    instance.setCustomWidth(40);
+    instance.setCustomHeight(40);
+
+    const fitted = await runTool(
+      'change_custom_object_BYOK',
+      {
+        extension_name: 'Ext',
+        custom_object_name: 'Box',
+        fit_area_to_children: 'min_at_origin',
+      },
+      collaborators
+    );
+    expect(fitted.output.success).toBe(true);
+
+    const variant = eventsBasedObject.getDefaultVariant();
+    // The area now covers the children, whose minimum corner is at the
+    // origin.
+    expect(variant.getAreaMinX()).toBe(0);
+    expect(variant.getAreaMinY()).toBe(0);
+    expect(variant.getAreaMaxX()).toBe(40);
+    expect(variant.getAreaMaxY()).toBe(40);
+    // The child was moved with the area: a sprite's origin is its
+    // top-left corner, so the instance that was at 10;10 (its box going
+    // from 10;10 to 50;50) is now at the origin.
+    expect(instance.getX()).toBe(0);
+    expect(instance.getY()).toBe(0);
+
+    // An unknown mode is refused, and nothing is moved.
+    const refused = await runTool(
+      'change_custom_object_BYOK',
+      {
+        extension_name: 'Ext',
+        custom_object_name: 'Box',
+        fit_area_to_children: 'nope',
+      },
+      collaborators
+    );
+    expect(refused.output.success).toBe(false);
+    expect(refused.output.message).toContain('fit_area_to_children');
+    expect(eventsBasedObject.getDefaultVariant().getAreaMinX()).toBe(0);
+  });
+
   it('refuses to remove a child used by the object events', async () => {
     const collaborators = makeCollaborators(project);
     await runTool(

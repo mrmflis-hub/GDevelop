@@ -21,7 +21,10 @@ import './Knowledge/ByokJsApiPack';
  * one. Quality here decides BYOK quality.
  *
  * Bump BYOK_AGENT_PROMPT_VERSION whenever a change alters the prompt's
- * behavior, and note it in the worklog. byok-v17 (2026-10-19): the
+ * behavior, and note it in the worklog. byok-v18 (2026-10-19): the
+ * `fit_area_to_children` argument of `change_custom_object_BYOK` (the area
+ * of a custom object fitted to its children — the upstream capability the
+ * fork's tool was missing). byok-v17 (2026-10-19): the
  * extension authoring tools gained the duplication arguments upstream's
  * tools have (`duplicated_extension_name`, `duplicated_function_name`,
  * `duplicated_custom_object_name`, `duplicated_custom_behavior_name`,
@@ -66,7 +69,7 @@ import './Knowledge/ByokJsApiPack';
  * completion rules, skill pointers). byok-v5 (Phase 7): section composer
  * with a token budget + the F2 progress discipline in the planning section.
  */
-export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v17';
+export const BYOK_AGENT_PROMPT_VERSION: string = 'byok-v18';
 
 /**
  * Build the system prompt of the BYOK agent loop. The signature keeps the

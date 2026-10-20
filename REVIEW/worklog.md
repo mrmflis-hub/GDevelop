@@ -6907,3 +6907,92 @@ REVIEW/worklog.md                                              (this entry)
 - **`usertasks.md`** — §7 updated: the BYOK extension tools now have the
   duplication, so the "the BYOK agent cannot use upstream's richer
   variants" caveat is narrowed to the three remaining differences.
+
+## 2026-10-19 — `fit_area_to_children` added to `change_custom_object_BYOK` (owner order)
+
+**Agent:** ZCode main orchestrator (no subagents — one argument on one tool,
+verified by the gates).
+
+**Owner order (chat):** "the third is a single libGD call whenever you want
+it — let's implement this then" (about the three remaining differences
+between the fork's extension tools and upstream's, the third being
+`fit_area_to_children`).
+
+**Actions:**
+
+1. **The capability.** `change_custom_object_BYOK` now accepts
+   `fit_area_to_children` with the two modes upstream uses:
+   `min_at_origin` (the children are moved so their minimum corner is at
+   (0;0;0) and the area goes from 0 to the content size) and
+   `centered_on_origin` (their center is on the origin and the area is
+   symmetric — what a turret or anything spinning around itself needs).
+   An unknown mode is refused and nothing is moved.
+2. **Reused, not copied.** The fitting itself is upstream's module
+   (`EditorFunctions/Extensions/FitAreaToChildren.js`, the one the hosted
+   agent's `change_custom_object` uses) — the fork's tool calls it, so
+   upstream's improvements land for free. The fork's rule is to route calls
+   to an existing implementation rather than maintain a parallel copy.
+3. **The resources loader.** The module measures a 3D model child by
+   reading the model file, which needs the editor's `PixiResourcesLoader`.
+   The BYOK tools must NOT import it: it pulls `@esotericsoftware/
+   spine-pixi-v7` (an ESM package) into the module graph, and the Jest
+   transform cannot parse it — the whole suite failed to run. The fork's
+   existing pattern was followed instead (as in `ByokExternalSceneTools`):
+   the loader is OPTIONAL, taken from the collaborators when the host
+   provides one, and a texture-less fallback otherwise. A 3D model child
+   is then not measured, and the module REFUSES the fit rather than
+   writing an area computed from a guessed size — the honest outcome, and
+   the same one upstream gives for an unreadable model.
+4. **The surfaces.** The schema advertises the argument, the `extend-with-js`
+   skill teaches it, the skills index was regenerated, the prompt version
+   went `byok-v17` → `byok-v18`, and the prompt guard's argument allowlist
+   learned `fit_area_to_children` plus the two mode names (they read as
+   snake_case, so the guard collects them).
+5. **The test.** One new spec: a custom object with a child instance of a
+   known size, the area fitted with `min_at_origin`, the area and the
+   moved child asserted, and an unknown mode refused. It was checked to be
+   NON-VACUOUS by neutering the implementation and watching the test go
+   red. (The first version of the expectation was wrong: a sprite's origin
+   is its top-left corner, not its center, so the child ends at (0;0) and
+   not at (20;20) — the test now says so.)
+
+**Bugs found:**
+
+- `[B-jest-cannot-parse-spine]` importing the editor's `PixiResourcesLoader`
+  into a BYOK tool breaks EVERY Jest suite that loads it (the ESM
+  `spine-pixi-v7` is not in the transform allowlist). Found by probing the
+  import chain; fixed by following the fork's optional-loader pattern.
+
+**Issues found:**
+
+- `[I-fork-vs-upstream-extension-tools]` (updated) — `fit_area_to_children`
+  was the last of the three named differences that was a missing argument
+  rather than a design difference. What is left is upstream's variant
+  model (the custom object's NAMED variants) and its
+  `changed_shared_properties` — a different design from the fork's
+  `children_to_add`/`children_to_remove`, not a missing argument.
+
+**Files worked on:**
+
+```
+newIDE/app/src/AiGeneration/Byok/ByokExtensionTools.js         * (the fit, the optional loader)
+newIDE/app/src/AiGeneration/Byok/ByokExtensionTools.spec.js    * (the new spec)
+newIDE/app/src/AiGeneration/Byok/ByokExtraTools.js             * (the optional loader collaborator)
+newIDE/app/src/AiGeneration/Byok/ByokToolSchema.js             * (the argument)
+newIDE/app/src/AiGeneration/Byok/ByokPrompts.js                 * (byok-v18)
+newIDE/app/src/AiGeneration/Byok/ByokPrompts.spec.js            * (the version pin)
+newIDE/app/src/AiGeneration/Byok/ByokPromptGuard.spec.js        * (the argument allowlist)
+newIDE/app/src/AiGeneration/Byok/Skills/extend-with-js.md      * (the fitting)
+newIDE/app/src/AiGeneration/Byok/Skills/ByokBuiltinSkills.generated.js * (regenerated)
+REVIEW/deferred.md                                            * (the entry rewritten)
+REVIEW/worklog.md                                              (this entry)
+```
+
+### Triage
+
+- **`outofscoped.md`** — no new entry.
+- **`deferred.md`** — one entry UPDATED: `[I-fork-vs-upstream-extension-tools]`
+  (only the variant model and the shared properties are left). `no
+  deferred` for new items.
+- **`usertasks.md`** — §7 updated: the caveat about the BYOK agent not
+  having upstream's capabilities is now narrowed to the variant model.

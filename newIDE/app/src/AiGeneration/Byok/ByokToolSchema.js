@@ -1455,7 +1455,7 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
   {
     name: 'change_custom_object_BYOK',
     description:
-      'Change a custom object (rename it with project-wide reference updates, change its properties or metadata), or delete it. Deletion is refused while its object type is used. Its child objects are managed with children_to_add/children_to_remove.',
+      'Change a custom object (rename it with project-wide reference updates, change its properties or metadata), or delete it. Deletion is refused while its object type is used. Its child objects are managed with children_to_add/children_to_remove, and its area can be fitted to them with fit_area_to_children.',
     parameters: {
       type: 'object',
       properties: {
@@ -1493,6 +1493,10 @@ const BYOK_TOOL_SCHEMAS: Array<ByokToolSchema> = [
         children_to_remove: arrayProperty(
           'The names of the child objects to remove. Refused while the child is still used by the custom object functions.',
           stringProperty('Name of the child object.')
+        ),
+        fit_area_to_children: enumProperty(
+          'Fit the area of the custom object to its children, moving them: "min_at_origin" puts their minimum corner at (0;0;0) and the area goes from 0 to the content size; "centered_on_origin" puts their center at (0;0;0) and the area is symmetric, which is what a turret or anything spinning around itself needs.',
+          ['min_at_origin', 'centered_on_origin']
         ),
         delete_this_custom_object: booleanProperty(
           'Set to true to delete the custom object.'

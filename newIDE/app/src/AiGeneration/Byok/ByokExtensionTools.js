@@ -5,6 +5,15 @@ import {
   unserializeFromJSObject,
 } from '../../Utils/Serializer';
 import { parseByokEventScript } from './ByokEventScriptParser';
+// The upstream helper the fork's tools reuse instead of copying: fitting the
+// area of a custom object to its children is upstream's module (the same one
+// the hosted agent's `change_custom_object` uses).
+// The resources loader is NOT imported here: the BYOK tools must stay
+// loadable without the rendering stack (see getPixiResourcesLoader below).
+import {
+  fitCustomObjectAreaToChildren,
+  FIT_AREA_MODES,
+} from '../../EditorFunctions/Extensions/FitAreaToChildren';
 import { validateByokEventScript } from './ByokLocalEventWriter';
 import type { ByokExtraTool, ByokExtraToolResult } from './ByokExtraTools';
 
@@ -35,6 +44,22 @@ import type { ByokExtraTool, ByokExtraToolResult } from './ByokExtraTools';
  */
 
 const gd: libGDevelop = global.gd;
+
+/**
+ * The resources loader, when the host provides one. The BYOK tools must not
+ * import the rendering stack (it pulls an ESM dependency the tests cannot
+ * transform), so the fallback is a loader that reads no texture: a 3D model
+ * child is then NOT measured, and the area fitting refuses it instead of
+ * writing an area computed from a guessed size.
+ */
+const TEXTURELESS_PIXI_RESOURCES_LOADER = {
+  getPIXITexture: (): null => null,
+};
+
+const getPixiResourcesLoader = (collaborators: any): any =>
+  collaborators.getPixiResourcesLoader
+    ? collaborators.getPixiResourcesLoader()
+    : TEXTURELESS_PIXI_RESOURCES_LOADER;
 
 // -----------------------------------------------------------------------
 // The regeneration batch accumulator (once per batch, not per call)
@@ -1165,6 +1190,24 @@ const changeCustomObjectTool: ByokExtraTool = {
       };
     }
 
+    // Fit the area of the custom object to its children. The mode says
+    // how the children are moved: their minimum corner at the origin, or
+    // their center on it (what a turret or a wheel spinning around itself
+    // needs).
+    const fitAreaToChildren = readOptionalString(args, 'fit_area_to_children');
+    let fitAreaMode = null;
+    if (fitAreaToChildren) {
+      fitAreaMode =
+        FIT_AREA_MODES.find(mode => mode === fitAreaToChildren) || null;
+      if (!fitAreaMode) {
+        return makeFailure(
+          `Unknown \`fit_area_to_children\` mode "${fitAreaToChildren}": use ${FIT_AREA_MODES.join(
+            ', '
+          )}.`
+        );
+      }
+    }
+
     const messages: Array<string> = [];
     const newName = readOptionalString(args, 'new_name');
     if (newName && newName !== customObjectName) {
@@ -1209,9 +1252,28 @@ const changeCustomObjectTool: ByokExtraTool = {
       messages.push(`children: ${children.messages.join(', ')}`);
     }
 
+    // The area is fitted AFTER the children changed, so it matches them.
+    if (fitAreaMode) {
+      const fitMessages = await fitCustomObjectAreaToChildren({
+        project,
+        eventsBasedObject,
+        mode: fitAreaMode,
+        pixiResourcesLoader: getPixiResourcesLoader(collaborators),
+      });
+      messages.push(...fitMessages);
+      // The children were moved: the editors showing them must redraw.
+      if (collaborators.onObjectsModifiedOutsideEditor) {
+        collaborators.onObjectsModifiedOutsideEditor({
+          scene: null,
+          eventsBasedObject,
+          isNewObjectTypeUsed: false,
+        });
+      }
+    }
+
     if (messages.length === 0 && !fullName && !description && !defaultName) {
       return makeFailure(
-        'Nothing to change: pass new_name, full_name, description, default_name, changed_properties, children_to_add/children_to_remove or delete_this_custom_object.'
+        'Nothing to change: pass new_name, full_name, description, default_name, changed_properties, children_to_add/children_to_remove, fit_area_to_children or delete_this_custom_object.'
       );
     }
     gd.WholeProjectRefactorer.ensureObjectEventsFunctionsProperParameters(

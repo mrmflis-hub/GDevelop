@@ -59,6 +59,10 @@ description: Authoring JavaScript in a GDevelop project — events-based extensi
 - An "Expression" says what it returns with `expression_type`
   ("number" or "string"); an "ActionWithOperator" says which
   "Expression" it changes with `getter_name`.
+- `change_custom_object_BYOK` with `fit_area_to_children` fits the area of a
+  custom object to its children, moving them: `min_at_origin` puts their
+  minimum corner at (0;0;0), `centered_on_origin` puts their center there
+  (what a turret or anything spinning around itself needs).
 
 ## Discipline
 

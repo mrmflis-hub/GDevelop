@@ -377,9 +377,9 @@ One resolution was a fork divergence, and it is now settled:
    says which one runs, and the "which implementation wins" guard is gone.
    The cost: the BYOK agent answers different names than the hosted agent
    for the same job. The fork's tools have since gained upstream's
-   duplication, expression type and getter (2026-10-19); what is still
-   different is upstream's variant model (the custom object's named
-   variants), its shared properties and `fit_area_to_children`. Details:
+   duplication, expression type, getter and `fit_area_to_children`
+   (2026-10-19); what is still different is upstream's variant model (the
+   custom object's named variants) and its shared properties. Details:
    `deferred.md` → `[I-fork-vs-upstream-extension-tools]`.
    → nothing to decide; the entry stays as the standing note for the next
    upstream merge.

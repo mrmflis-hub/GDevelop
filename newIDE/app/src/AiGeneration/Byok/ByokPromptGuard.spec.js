@@ -143,6 +143,11 @@ const TOOL_ARGUMENT_TOKENS = new Set([
   'duplicated_from_extension_name',
   'expression_type',
   'getter_name',
+  // The area of a custom object fitted to its children, and its two
+  // modes (they read as snake_case, so the guard collects them).
+  'fit_area_to_children',
+  'min_at_origin',
+  'centered_on_origin',
 ]);
 
 /**
