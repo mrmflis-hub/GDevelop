@@ -1,12 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const {
-  writeByokFileAtomically,
-} = require('../../app/src/AiGeneration/Byok/ByokAtomicWriteCore');
-const {
-  resolveForkAssetIndexPath,
-} = require('../../app/src/Fork/AssetPipeline/ForkAssetIndexCore');
+const { writeByokFileAtomically } = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/ByokAtomicWriteCore'
+);
+const { resolveForkAssetIndexPath } = require('./SharedCore').loadSharedModule(
+  'Fork/AssetPipeline/ForkAssetIndexCore'
+);
 
 // The fork asset-index sidecar (Phase 17.2): the optional
 // <project>/assets-index.json. The RENDERER owns the format, the version

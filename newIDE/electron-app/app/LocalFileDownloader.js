@@ -11,7 +11,7 @@ const {
   validateLocalFileDownloadRequest,
   validateLocalFileSavePath,
   makeByteCapGuard,
-} = require('../../app/src/Utils/LocalFileDownloadCore');
+} = require('./SharedCore').loadSharedModule('Utils/LocalFileDownloadCore');
 
 const findGDevelopCloudCookieValue = async () => {
   /** @type {import("electron").Cookie[]} */

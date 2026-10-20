@@ -6996,3 +6996,120 @@ REVIEW/worklog.md                                              (this entry)
   deferred` for new items.
 - **`usertasks.md`** — §7 updated: the caveat about the BYOK agent not
   having upstream's capabilities is now narrowed to the variant model.
+
+## 2026-10-20 — A one-click build of the desktop app, and the packaged-app crash it uncovered
+
+**Agent:** ZCode main orchestrator (no subagents — one build script, one bug
+found and fixed while verifying it).
+
+**Owner request (chat):** "Can we create a script that is an executable file
+that builds the app for the user without the need to do it through terminal?"
+
+**Actions:**
+
+1. **The script.** `newIDE/scripts/build-desktop-app.js` orchestrates the
+   EXISTING npm pipeline and reimplements none of it: the IDE is built with
+   `npm run build` in `newIDE/app` (the resources are imported, the React app
+   is compiled), the result is copied into the desktop app with
+   `node scripts/app-build.js --skip-app-build` in `newIDE/electron-app`, and
+   the app is packaged with `node scripts/build.js --skip-app-build` (Electron
+   Builder). The dependencies of the four packages (the IDE, the game engine,
+   the desktop app and the main process of the desktop app) are installed when
+   they are missing. Options: `--dev` (development build of the IDE), `--web`
+   (the IDE only, no packaging), `--skip-app-build` (package the IDE that is
+   already built), `--skip-install`, `--portable` (no code signing), `--dry-run`
+   (print the commands without running them) and `--open-folder`. Each step is
+   timed, and the artifacts are listed at the end.
+2. **The launcher.** `Build GDevelop App.cmd`, at the root of the repository:
+   double click it and the build runs in a console window, one line per step,
+   the output folder is opened at the end, and the window stays open so the
+   errors can be read.
+3. **The memory of the build.** The first real build died with "FATAL ERROR:
+   Reached heap limit Allocation failed - JavaScript heap out of memory" in the
+   webpack minification: Node allows about 4 GB by default and the IDE needs
+   more. The script now gives its Node processes `--max-old-space-size=12288`
+   (unless the user set `NODE_OPTIONS` themselves). The same wall is hit by
+   `npm run build` in a terminal — the script is the way around it.
+4. **The packaged app could not start AT ALL** (the real find). The first
+   successful packaging produced an installer, but launching it showed a
+   JavaScript error in the main process: `Cannot find module
+   '../src/Utils/LocalFileDownloadCore'`. The cause: eight files of the
+   Electron main process require the pure modules of the IDE with
+   `require('../../app/src/...')`. That works in a development checkout, but
+   the IDE sources are NOT shipped in the package (only the compiled IDE is),
+   so the packaged app died on its first require. It was never noticed because
+   the desktop QA always ran the IDE from the sources (`npm run electron-app`),
+   never from a package.
+5. **The fix.** The shared modules are now listed in
+   `newIDE/electron-app/app/SharedModules.json`, loaded through
+   `newIDE/electron-app/app/SharedCore.js`
+   (`loadSharedModule('Utils/LocalFileDownloadCore')`), and shipped next to
+   the app by the `extraResources` of `electron-builder-config.js`
+   (`resources/Shared/...`). In a development checkout the modules are read
+   from the IDE sources — there is only one copy to maintain — and in a
+   packaged app from the shipped copies. The eight files of the main process
+   now go through the resolver.
+6. **The tests.** `newIDE/scripts/build-desktop-app.test.js` (18 tests, run
+   with Node's own runner) covers the options, the plan of the steps and the
+   preflight checks. `newIDE/electron-app/test/SharedCore.spec.js` (7 tests)
+   covers the resolution of the shared modules and GUARDS the bug: it fails if
+   a file of the main process requires the IDE sources directly. That guard
+   was checked to be non-vacuous (the offending require was put back and the
+   test went red), and so was the test of the module extension (the resolution
+   of the ".js" extension was removed and the test went red).
+7. **The verification.** Three real builds: the first one died of the heap
+   limit, the second one produced the installer and the portable zip, and the
+   packaged app was LAUNCHED: it showed the "JavaScript error in the main
+   process" dialog, which is how the crash was found. After the fix, the
+   packaged app starts and shows the IDE with the BYOK / RAG / Build tabs of
+   the fork in its Preferences.
+
+**Bugs found:**
+
+- `[B-packaged-app-cannot-start]` the packaged desktop app died at startup with
+  "Cannot find module": the Electron main process required the pure modules of
+  the IDE, which are not shipped in the package. Fixed as described above, and
+  verified by launching the packaged app.
+- `[B-build-out-of-memory]` the production build of the IDE needs more than
+  the ~4 GB of heap Node allows by default: it died in the webpack
+  minification. The build script gives its Node processes 12 GB.
+
+**Issues found:**
+
+- `[I-electron-builder-config-touched]` the fix needed ONE upstream file:
+  `newIDE/electron-app/electron-builder-config.js` (the `extraResources`
+  list). The fork had never modified it. It is recorded here, and in
+  `usertasks.md` §3, as the budget touch `AGENTS.md` §4 asks for.
+- `[I-desktop-app-never-packaged]` the desktop QA of the fork always ran the
+  IDE from the sources, so the packaging path was never exercised: the app was
+  broken for months. A line was added to the QA checklist of `usertasks.md` §3.
+
+**Files worked on:**
+
+```
+newIDE/scripts/build-desktop-app.js          * (new: the build script)
+newIDE/scripts/build-desktop-app.test.js     * (new: its tests)
+Build GDevelop App.cmd                       * (new: the double-clickable launcher)
+newIDE/electron-app/app/SharedCore.js        * (new: the resolver of the shared modules)
+newIDE/electron-app/app/SharedModules.json   * (new: the list of the shared modules)
+newIDE/electron-app/test/SharedCore.spec.js  * (new: its tests, and the guard)
+newIDE/electron-app/electron-builder-config.js * (the extraResources entry)
+newIDE/electron-app/app/ByokChatFiles.js     * (the shared module goes through the resolver)
+newIDE/electron-app/app/ByokGameCode.js      * (idem)
+newIDE/electron-app/app/ByokQdrant.js        * (idem)
+newIDE/electron-app/app/ByokRagFiles.js      * (idem)
+newIDE/electron-app/app/ByokResourceDownload.js * (idem)
+newIDE/electron-app/app/ForkAssetIndex.js    * (idem)
+newIDE/electron-app/app/ForkSpriteSheet.js   * (idem)
+newIDE/electron-app/app/LocalFileDownloader.js * (idem)
+AGENTS.md                                     * (the one-click build, in the cheat sheet)
+REVIEW/worklog.md                            * (this entry)
+REVIEW/usertasks.md                          * (the two follow-ups)
+```
+
+### Triage
+
+- **`outofscoped.md`** — no new entry.
+- **`deferred.md`** — no new entry.
+- **`usertasks.md`** — §3 updated: the packaging QA line and the upstream
+  touch (`[I-electron-builder-config-touched]`).

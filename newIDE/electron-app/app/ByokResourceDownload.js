@@ -9,7 +9,9 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { session } = require('electron');
-const core = require('../../app/src/AiGeneration/Byok/ByokResourceDownloader');
+const core = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/ByokResourceDownloader'
+);
 
 const findGDevelopCloudCookieValue = async () => {
   try {

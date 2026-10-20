@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const {
-  writeByokFileAtomically,
-} = require('../../app/src/AiGeneration/Byok/ByokAtomicWriteCore');
+const { writeByokFileAtomically } = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/ByokAtomicWriteCore'
+);
 const makeUniqueTempToken = () =>
   require('crypto')
     .randomBytes(8)

@@ -2,6 +2,8 @@
  * @type {import('electron-builder').Configuration}
  * @see https://www.electron.build/configuration/configuration
  */
+const sharedModulePaths = require('./app/SharedModules.json');
+
 const config = {
   appId: 'com.gdevelop-app.ide',
   directories: {
@@ -17,6 +19,13 @@ const config = {
     {
       from: '../app/resources/preview_node_modules',
       to: 'preview_node_modules',
+    },
+    {
+      // The pure modules shared with the IDE: the desktop app needs them at
+      // runtime, and the IDE sources are not shipped in the package.
+      from: '../app/src',
+      to: 'Shared',
+      filter: sharedModulePaths,
     },
   ],
   linux: {

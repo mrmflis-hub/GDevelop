@@ -4,7 +4,9 @@ const https = require('https');
 const http = require('http');
 const net = require('net');
 const childProcess = require('child_process');
-const core = require('../../app/src/AiGeneration/Byok/Rag/ByokQdrantSetupCore');
+const core = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/Rag/ByokQdrantSetupCore'
+);
 
 // The managed Qdrant instance (Phase 13.8, D13-1): the "Set up permanent
 // indexing with Qdrant" button installs the official binary under

@@ -456,6 +456,19 @@ npm run format                             Prettier write
   renderer-tested logic) and verify it with the manual checklist in
   `Phase3.md`. Its `check-format` is green (the two upstream files were
   formatted in owner commit `7283b2fc1c`) — all BYOK electron files pass.
+- **One-click build of the desktop app:** double click `Build GDevelop App.cmd`
+  at the root of the repository (or run `node newIDE\scripts\build-desktop-app.js`
+  — `--help` lists the options: `--dev`, `--web`, `--skip-app-build`,
+  `--skip-install`, `--portable`, `--dry-run`, `--open-folder`). It wraps the
+  existing npm pipeline, gives its Node processes `--max-old-space-size=12288`
+  (the production build of the IDE does NOT fit in Node's default ~4 GB heap),
+  and leaves the installer and the portable zip in
+  `newIDE\electron-app\dist`. The Electron main process shares pure modules
+  with the IDE through `app\SharedCore.js` and `app\SharedModules.json`: the
+  modules are read from the IDE sources in a checkout and shipped in
+  `resources\Shared` in a package — never require `../../app/src/...` from the
+  main process, the packaged app would die with "Cannot find module"
+  (`newIDE\electron-app\test\SharedCore.spec.js` guards it).
 
 ## 7. Using subagents
 

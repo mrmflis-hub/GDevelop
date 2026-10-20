@@ -134,6 +134,26 @@ audit100226 and outofscoped-closure sessions — one pass covers all of it.*
   creating the scene.
 - An empty event replacement no longer deletes the target event.
 
+**The packaged app `[I-desktop-app-never-packaged]`** — the QA of the fork
+always ran the IDE **from the sources** (`npm run electron-app`), never from a
+package, so the packaging path was never exercised. It was broken for
+months: the packaged app died at startup with "Cannot find module", because
+the Electron main process required the pure modules of the IDE, which are not
+shipped. Fixed on 2026-10-20 (the modules are now listed in
+`newIDE/electron-app/app/SharedModules.json`, loaded through
+`app/SharedCore.js` and shipped in `resources/Shared/`).
+→ One pass is still worth doing: double click `Build GDevelop App.cmd` at the
+root of the repository, then LAUNCH `newIDE/electron-app/dist/win-unpacked/
+GDevelop.exe` (the installer needs an installed copy). Check that the IDE
+opens, that a game preview starts, and that the MCP endpoint and the BYOK
+chat work — none of that was ever exercised on a package.
+
+**One upstream file was touched `[I-electron-builder-config-touched]`** —
+`newIDE/electron-app/electron-builder-config.js` gained one `extraResources`
+entry (the shared modules). The fork had never modified that file; it is
+recorded here because `AGENTS.md` §4 asks for every upstream touch to be
+known.
+
 **One deliberate behaviour change to confirm by hand:** a long chat tool (a
 preview wait, a sub-agent) now holds the project mutation lock, so an MCP
 call issued at that moment **waits** for it instead of interleaving. Nothing

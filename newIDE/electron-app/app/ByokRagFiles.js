@@ -2,16 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const crypto = require('crypto');
-const {
-  writeByokFileAtomically,
-} = require('../../app/src/AiGeneration/Byok/ByokAtomicWriteCore');
+const { writeByokFileAtomically } = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/ByokAtomicWriteCore'
+);
 // The same pure-CJS core the Qdrant module uses for its snapshot URL, so the
 // renderer-built bundle URLs are re-checked in THIS process before any
 // request leaves it (audit100226 ELEC-22).
 const {
   isAllowedByokRagBundleApiUrl,
   isAllowedByokRagBundleDownloadUrl,
-} = require('../../app/src/AiGeneration/Byok/Rag/ByokQdrantSetupCore');
+} = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/Rag/ByokQdrantSetupCore'
+);
 
 // BYOK RAG index files (Phase 13.7/13.8): the desktop side of the RAG
 // storage. The in-process index lives as one JSON file (base64 vectors) in

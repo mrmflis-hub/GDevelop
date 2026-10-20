@@ -1,14 +1,16 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const {
-  writeByokFileAtomically,
-} = require('../../app/src/AiGeneration/Byok/ByokAtomicWriteCore');
+const { writeByokFileAtomically } = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/ByokAtomicWriteCore'
+);
 const {
   isPathInsideFolder,
   resolveGameCodeFolder,
   resolveGameCodeFile,
-} = require('../../app/src/AiGeneration/Byok/GameCode/ByokGameCodePathCore');
+} = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/GameCode/ByokGameCodePathCore'
+);
 
 // The BYOK game-code files (Phase 15.1): the desktop side of
 // `<project>/<GameName>Code/`. The RENDERER owns the folder name, the load

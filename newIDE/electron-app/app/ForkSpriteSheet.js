@@ -1,13 +1,15 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const {
-  makeByokAtomicTempName,
-} = require('../../app/src/AiGeneration/Byok/ByokAtomicWriteCore');
+const { makeByokAtomicTempName } = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/ByokAtomicWriteCore'
+);
 const {
   isPathInsideFolder,
   resolveGameCodeFile,
-} = require('../../app/src/AiGeneration/Byok/GameCode/ByokGameCodePathCore');
+} = require('./SharedCore').loadSharedModule(
+  'AiGeneration/Byok/GameCode/ByokGameCodePathCore'
+);
 
 // Phase 19.2 — the desktop side of the sprite-sheet slicer.
 //
