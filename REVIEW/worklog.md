@@ -7113,3 +7113,76 @@ REVIEW/usertasks.md                          * (the two follow-ups)
 - **`deferred.md`** — no new entry.
 - **`usertasks.md`** — §3 updated: the packaging QA line and the upstream
   touch (`[I-electron-builder-config-touched]`).
+
+## 2026-10-20 — The v3 prebuilt RAG bundle rebuilt and verified (owner order)
+
+**Agent:** ZCode main orchestrator (no subagents).
+
+**Owner order (chat):** "could you build fresh RAG bundle please?" — the
+rebuild half of `usertasks.md` Task 2 (the upload stays with the owner: `gh`
+is not installed on this machine, and publishing to a release is the owner's
+call).
+
+**Actions:**
+
+1. **The rebuild.** `newIDE/app/scripts/byok-embedder/build-byok-rag-bundle.js`
+   was run as documented. The embedder was already in the local cache
+   (`~/.cache/byok-transformers`, the q8 `model_quantized.onnx`), so the
+   build needed no network: the corpus was built by the app's own
+   `buildByokRagCorpus` (through the app's Babel config, with the
+   EditorFunctions registry stubbed as the script does), then embedded with
+   the real MiniLM (384 dims, q8), serialized into the app's own index
+   payload and wrapped in the bundle envelope.
+2. **The artifact.**
+   `byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-7ec9fde4.json` — 4,024 chunks
+   (engine-reference 1,962, docs-min 1,863, docs-min-map 104, docs 53,
+   skill 31, example 11), corpus hash `7ec9fde4` (the v2 one was `571d1b30`),
+   index sha256 `ee66de92…`, 11.8 MB. The script's own verification pass
+   (reload of the WRITTEN file + eight spot-check queries) passed, and the
+   hits are on-topic (timer action → "Timers and time", sprite animation →
+   "Animation" / "Sprite", platformer game → the platformer skill).
+3. **The acceptance check that matters.** The app REFUSES a bundle whose
+   corpus hash is not its own, so the built hash was compared with the hash
+   the app computes at runtime (`getCurrentByokRagCorpusHash`, which builds
+   the real corpus): both are `7ec9fde4` — the app will accept this bundle.
+   The app's own validators (`validateByokRagBundleEnvelope`,
+   `checkByokRagBundleCompatibility`) accept it against the default embedder
+   `Xenova/all-MiniLM-L6-v2`, and a tampered copy (one chunk title edited)
+   is refused by the download's integrity check, as `usertasks.md` Task 2
+   step 4 requires. Both checks were run with temporary scripts that were
+   deleted afterwards.
+4. **A copy outside the repository.** The builder writes into
+   `newIDE/app/build/byok-rag-bundle/`, and `react-app-rewired build` EMPTIES
+   `build/` before it compiles — the v2 artifact was destroyed exactly that
+   way by the desktop build of the same session. The v3 artifact was copied
+   to `C:\Users\Administrator\Downloads\byok-rag-bundle-v3\` (outside the
+   repository), and the hazard is recorded in `deferred.md`.
+
+**Bugs found:**
+
+- none (the artifact-location hazard is a limitation of the Phase 14.4
+  script, not a defect of the app).
+
+**Issues found:**
+
+- `[BYOK-D-bundle-artifact-location]` — the bundle artifact is written inside
+  the folder that the production build of the IDE wipes. Recorded in
+  `deferred.md` with the proposal to write it to
+  `newIDE/app/artifacts/byok-rag-bundle/` instead.
+
+**Files worked on:**
+
+```
+newIDE/app/build/byok-rag-bundle/byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-7ec9fde4.json * (the new artifact, gitignored)
+REVIEW/deferred.md                                              * (the new entry)
+REVIEW/usertasks.md                                             * (Task 2: the rebuild is done, the upload is next)
+REVIEW/worklog.md                                               * (this entry)
+```
+
+### Triage
+
+- **`outofscoped.md`** — no new entry.
+- **`deferred.md`** — one new entry: `[BYOK-D-bundle-artifact-location]`.
+- **`usertasks.md`** — §2 updated: the rebuild is done (with the hashes and
+  the file name); the upload and the fresh-profile verification stay with
+  the owner.

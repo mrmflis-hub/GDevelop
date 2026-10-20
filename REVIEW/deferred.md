@@ -603,3 +603,30 @@ argument. (`fit_area_to_children`, the third one, was added on 2026-10-19:
 upstream's own module is called, not copied.) When it should be tackled: if
 the fork decides it wants the variant model, this entry is revisited — and at
 EVERY upstream merge, the two families must be compared again.
+
+## 2026-10-20 — The prebuilt RAG bundle is written inside the CRA build folder
+
+### [BYOK-D-bundle-artifact-location] The bundle artifact lives in a folder a build wipes — *accepted, with a copy outside*
+
+**What.** `scripts/byok-embedder/build-byok-rag-bundle.js` writes the artifact
+to `newIDE/app/build/byok-rag-bundle/`. That folder is the output of the
+React production build: `react-app-rewired build` empties `build/` before it
+compiles. The v2 artifact was lost exactly that way when the desktop app was
+built on 2026-10-20.
+
+**Why deferred.** Moving the artifact out of `build/` means choosing a folder
+that is not wiped and not committed by accident (it would need a
+`.gitignore` entry, or a location outside the repository). That is a small
+change to a Phase-14 script, but the artifact is uploaded by the owner
+rather than used by the app, and the copy below removes the actual risk for
+the release in flight.
+
+**The standing proposal to the owner.** Have the builder write to a folder
+outside `build/` — `newIDE/app/artifacts/byok-rag-bundle/`, added to
+`newIDE/app/.gitignore` — so a production build can never delete a release
+artifact. Until then: the v3 artifact was copied to
+`C:\Users\Administrator\Downloads\byok-rag-bundle-v3\` (outside the
+repository), and the copy inside `build/` is only a convenience.
+
+**When it should be tackled.** Before the next bundle build, so the artifact
+of the day is never at the mercy of the next `npm run build`.

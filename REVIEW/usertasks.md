@@ -72,15 +72,32 @@ The corpus hash changed on 2026-10-01 (tags folded into the hash, map-chunk
 tag split, two EventScript example fixes, fence-aware chunking), so the
 published **v2 bundle is stale and the app correctly refuses it**.
 
-1. Rebuild:
-   ```
-   cd newIDE\app
-   node scripts/byok-embedder/build-byok-rag-bundle.js
-   ```
-2. Upload the **new** file from `newIDE/app/build/byok-rag-bundle/` as a
-   release asset on `mrmflis-hub/GDevelop` (release tag
-   `byok-rag-bundle-v3`; the RAG tab finds any tag with the
-   `byok-rag-bundle-` prefix). **Do not re-upload v2** (`…-571d1b30.json`).
+**Step 1 is DONE (2026-10-20)** — the v3 artifact was rebuilt with the real
+embedder and verified:
+
+- **File:** `byok-rag-bundle-f1-Xenova-all-MiniLM-L6-v2-7ec9fde4.json`
+- **Where:** `newIDE/app/build/byok-rag-bundle/`, and a copy **outside the
+  repository** in `C:\Users\Administrator\Downloads\byok-rag-bundle-v3\`
+  (the `build/` folder is emptied by the next production build of the IDE —
+  see `deferred.md` → `[BYOK-D-bundle-artifact-location]`).
+- **Corpus hash:** `7ec9fde4` (the v2 one was `571d1b30`) — checked against
+  the hash the app computes at runtime, so the app will **accept** it.
+- **4,024 chunks** (engine-reference 1,962, docs-min 1,863, docs-min-map 104,
+  docs 53, skill 31, example 11) — 11.8 MB.
+- **Index sha256:** `ee66de922effa492a4cad1b71ffb2f99c36afdd7b03476b8d69fed25b696aef3`
+- **File sha256:** `0ff0ee862d1d961fe7ee20232365ae66e936ba229cc7407f2d11da26c585918f`
+- The app's own validators accept the envelope, and a tampered copy is
+  refused by the download's integrity check (verified).
+
+The rest of the task is yours — `gh` is not installed on this machine, so
+the upload was not done:
+
+1. Rebuild: **DONE** (see above).
+2. Upload the **new** file as a release asset on `mrmflis-hub/GDevelop`
+   (release tag **`byok-rag-bundle-v3`**; the RAG tab finds the newest tag
+   with the `byok-rag-bundle-v` prefix, numeric-aware). Upload the file
+   **under its exact name** — the tab matches the asset name
+   (`byok-rag-bundle-*.json`). **Do not re-upload v2** (`…-571d1b30.json`).
 3. Optional second asset on the same release: a Qdrant snapshot (name it
    `…-qdrant-snapshot`), produced by restoring the JSON bundle into a local
    Qdrant and taking a collection snapshot. Skip it — the in-process import
